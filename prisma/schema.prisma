@@ -1,0 +1,138 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          Int          @id @default(autoincrement())
+  email       String       @unique
+  name        String?
+  password    String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  bots        Bot[]
+  credentials Credential[]
+
+  @@map("users")
+}
+
+enum Exchange {
+  upbit
+  binance
+}
+
+enum BotStatus {
+  running
+  stopped
+  error
+}
+
+model Bot {
+  id                 Int        @id @default(autoincrement())
+  userId             Int
+  user               User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exchange           Exchange
+  ticker             String
+  lowerPrice         Float
+  upperPrice         Float
+  priceChangePercent Float
+  gridCount          Int
+  orderAmount        Float
+  stopAtMax          Boolean    @default(false)
+  status             BotStatus  @default(stopped)
+  investmentAmount   Float      @default(0)
+  currentProfit      Float      @default(0)
+  totalTrades        Int        @default(0)
+  lastExecutedAt     DateTime?
+  errorMessage       String?    @db.Text
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  gridLevels         GridLevel[]
+  trades             Trade[]
+
+  @@map("bots")
+}
+
+enum GridLevelStatus {
+  available
+  pending
+  filled
+  inactive
+}
+
+enum TradeType {
+  buy
+  sell
+}
+
+model GridLevel {
+  id         Int              @id @default(autoincrement())
+  botId      Int
+  bot        Bot              @relation(fields: [botId], references: [id], onDelete: Cascade)
+  price      Float
+  sellPrice  Float?           // 매수 레벨일 때: 이 가격에 매수 후 sellPrice에 매도
+  buyPrice   Float?           // 매도 레벨일 때: 이 가격에 매도 후 buyPrice에 매수
+  type       TradeType
+  status     GridLevelStatus  @default(available)
+  orderId    String?
+  filledAt   DateTime?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  trades     Trade[]
+
+  @@map("grid_levels")
+}
+
+enum TradeStatus {
+  pending
+  filled
+  cancelled
+}
+
+model Trade {
+  id           Int         @id @default(autoincrement())
+  botId        Int
+  bot          Bot         @relation(fields: [botId], references: [id], onDelete: Cascade)
+  gridLevelId  Int?
+  gridLevel    GridLevel?  @relation(fields: [gridLevelId], references: [id], onDelete: SetNull)
+  type         TradeType
+  price        Float
+  amount       Float
+  total        Float
+  profit       Float?
+  orderId      String
+  status       TradeStatus @default(pending)
+  executedAt   DateTime    @default(now())
+  filledAt     DateTime?
+  createdAt    DateTime    @default(now())
+
+  @@map("trades")
+}
+
+model Credential {
+  id              Int       @id @default(autoincrement())
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exchange        Exchange
+  apiKey          String    @db.Text
+  secretKey       String    @db.Text
+  ipWhitelist     String?
+  ipRestricted    Boolean   @default(false)
+  isValid         Boolean   @default(false)
+  lastValidatedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([userId, exchange])
+  @@map("credentials")
+}

@@ -1,0 +1,34 @@
+node_modules
+# Keep environment variables out of version control
+.env
+.env.local
+.env.production
+
+/src/generated/prisma
+
+# Build output
+dist
+build
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Coverage
+coverage
+*.lcov
+.nyc_output
