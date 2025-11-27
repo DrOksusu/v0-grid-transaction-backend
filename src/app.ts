@@ -6,7 +6,7 @@ import routes from './routes';
 const app: Express = express();
 
 app.use(cors({
-  origin: 'http://localhost:3009',
+  origin: process.env.CORS_ORIGIN || 'http://localhost:3009',
   credentials: true,
 }));
 
