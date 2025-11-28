@@ -1,0 +1,38 @@
+{
+  "ServiceName": "grid-transaction-backend",
+  "SourceConfiguration": {
+    "AuthenticationConfiguration": {
+      "AccessRoleArn": "arn:aws:iam::827899252497:role/service-role/AppRunnerECRAccessRole"
+    },
+    "AutoDeploymentsEnabled": true,
+    "ImageRepository": {
+      "ImageIdentifier": "827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest",
+      "ImageRepositoryType": "ECR",
+      "ImageConfiguration": {
+        "Port": "3010",
+        "RuntimeEnvironmentVariables": {
+          "NODE_ENV": "production",
+          "PORT": "3010",
+          "DATABASE_URL": "mysql://dbmasteruser:Ok2010ok!!@ls-1ec41c8ce559af427653b60e97baaa3f70f60df3.c0zy4csz1exi.ap-northeast-2.rds.amazonaws.com:3306/grid_transaction?charset=utf8mb4",
+          "JWT_SECRET": "7trYeHeuSTnOev+Guqzu6zYKyFO8PqjLIOhm/qjUXl0=",
+          "JWT_ACCESS_EXPIRY": "1h",
+          "JWT_REFRESH_EXPIRY": "7d",
+          "CORS_ORIGIN": "*",
+          "ENCRYPTION_KEY": "7trYeHeuSTnOev+Guqzu6zYKyFO8PqjLIOhm/qjUXl0="
+        }
+      }
+    }
+  },
+  "InstanceConfiguration": {
+    "Cpu": "1024",
+    "Memory": "2048"
+  },
+  "HealthCheckConfiguration": {
+    "Protocol": "HTTP",
+    "Path": "/api/health",
+    "Interval": 10,
+    "Timeout": 5,
+    "HealthyThreshold": 1,
+    "UnhealthyThreshold": 5
+  }
+}

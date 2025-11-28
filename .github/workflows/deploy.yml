@@ -6,7 +6,7 @@ on:
       - main
 
 env:
-  AWS_REGION: ap-northeast-2
+  AWS_REGION: ap-northeast-1
   ECR_REPOSITORY: grid-transaction-backend
 
 jobs:
