@@ -269,8 +269,13 @@ export const testUpbitApiKey = async (
     const apiKeyInfo = await getUpbitApiKeyInfo(decryptedApiKey, decryptedSecretKey);
 
     return successResponse(res, { apiKeyInfo }, '업비트 API 키 정보 조회 성공');
-  } catch (error) {
+  } catch (error: any) {
     console.error('Test error:', error);
-    next(error);
+    return errorResponse(
+      res,
+      'UPBIT_API_ERROR',
+      error.message || '업비트 API 호출 실패',
+      500
+    );
   }
 };
