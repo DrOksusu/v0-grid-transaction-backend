@@ -28,8 +28,7 @@
     "Memory": "2048"
   },
   "HealthCheckConfiguration": {
-    "Protocol": "HTTP",
-    "Path": "/api/health",
+    "Protocol": "TCP",
     "Interval": 10,
     "Timeout": 5,
     "HealthyThreshold": 1,
