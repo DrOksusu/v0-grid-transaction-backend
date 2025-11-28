@@ -8,7 +8,13 @@
       "Bash(npm run build:*)",
       "Bash(npm run dev:*)",
       "Bash(npx prisma:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(export AWS_ACCESS_KEY_ID=\"AKIA4BQVEB4ISU2GWQGS\")",
+      "Bash(export AWS_SECRET_ACCESS_KEY=\"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\")",
+      "Bash(export AWS_DEFAULT_REGION=\"ap-northeast-1\")",
+      "Bash(aws ec2 create-subnet:*)",
+      "Bash(aws ec2 create-internet-gateway:*)",
+      "Bash(aws ec2 attach-internet-gateway:*)"
     ],
     "deny": [],
     "ask": []

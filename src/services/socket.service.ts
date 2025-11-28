@@ -6,9 +6,14 @@ class SocketService {
   private botRooms: Map<string, Set<string>> = new Map(); // botId -> Set of socket ids
 
   initialize(httpServer: HttpServer) {
+    // CORS 설정: 쉼표로 구분된 여러 도메인 허용
+    const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
+      .split(',')
+      .map(origin => origin.trim());
+
     this.io = new SocketServer(httpServer, {
       cors: {
-        origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+        origin: allowedOrigins,
         methods: ['GET', 'POST'],
         credentials: true,
       },
