@@ -1,4 +1,4 @@
-name: Build and Deploy to AWS ECR
+name: Build and Deploy to Lightsail
 
 on:
   push:
@@ -8,9 +8,11 @@ on:
 env:
   AWS_REGION: ap-northeast-1
   ECR_REPOSITORY: grid-transaction-backend
+  LIGHTSAIL_HOST: 54.180.188.8
+  LIGHTSAIL_USER: bitnami
 
 jobs:
-  build-and-push:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -34,17 +36,45 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          # Build Docker image
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
-
-          # Push both tags
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Print image URI
-        run: |
-          echo "Image pushed: ${{ steps.build-image.outputs.image }}"
-          echo "Latest tag: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest"
+      - name: Deploy to Lightsail
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ env.LIGHTSAIL_HOST }}
+          username: ${{ env.LIGHTSAIL_USER }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          script: |
+            # ECR 로그인
+            aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 827899252497.dkr.ecr.ap-northeast-1.amazonaws.com
+
+            # 최신 이미지 pull
+            docker pull 827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest
+
+            # 기존 컨테이너 중지 및 삭제
+            docker stop grid-bot 2>/dev/null || true
+            docker rm grid-bot 2>/dev/null || true
+
+            # 새 컨테이너 실행
+            docker run -d \
+              --name grid-bot \
+              --restart unless-stopped \
+              -p 3010:3010 \
+              -e NODE_ENV=production \
+              -e PORT=3010 \
+              -e "DATABASE_URL=${{ secrets.DATABASE_URL }}" \
+              -e "JWT_SECRET=${{ secrets.JWT_SECRET }}" \
+              -e JWT_ACCESS_EXPIRY=1h \
+              -e JWT_REFRESH_EXPIRY=7d \
+              -e "CORS_ORIGIN=${{ secrets.CORS_ORIGIN }}" \
+              -e "ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}" \
+              827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest
+
+            # 상태 확인
+            sleep 5
+            docker ps | grep grid-bot
+            curl -s http://localhost:3010/api/health || echo "Health check pending..."
