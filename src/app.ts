@@ -6,7 +6,7 @@ import routes from './routes';
 const app: Express = express();
 
 // CORS 설정: 쉼표로 구분된 여러 도메인 허용
-const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http://localhost:3009')
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http://localhost:3009,https://v0-grid-transaction.vercel.app')
   .split(',')
   .map(origin => origin.trim());
 
