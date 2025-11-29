@@ -3,6 +3,14 @@ import axios from 'axios';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 
+// 티커 캐시 (메모리 캐시, 5분간 유효)
+let tickerCache: {
+  upbit: { data: any[]; timestamp: number } | null;
+  binance: { data: any[]; timestamp: number } | null;
+} = { upbit: null, binance: null };
+
+const CACHE_TTL = 5 * 60 * 1000; // 5분
+
 export const getTickers = async (
   req: AuthRequest,
   res: Response,
@@ -20,21 +28,62 @@ export const getTickers = async (
       );
     }
 
-    const mockTickers = exchange === 'upbit'
-      ? [
-          { symbol: 'KRW-BTC', koreanName: '비트코인', englishName: 'Bitcoin' },
-          { symbol: 'KRW-ETH', koreanName: '이더리움', englishName: 'Ethereum' },
-          { symbol: 'KRW-XRP', koreanName: '리플', englishName: 'Ripple' },
-        ]
-      : [
-          { symbol: 'BTCUSDT', koreanName: '비트코인', englishName: 'Bitcoin' },
-          { symbol: 'ETHUSDT', koreanName: '이더리움', englishName: 'Ethereum' },
-          { symbol: 'XRPUSDT', koreanName: '리플', englishName: 'Ripple' },
-        ];
+    const now = Date.now();
+    let tickers: any[] = [];
 
-    return successResponse(res, { tickers: mockTickers });
-  } catch (error) {
-    next(error);
+    if (exchange === 'upbit') {
+      // 캐시 확인
+      if (tickerCache.upbit && (now - tickerCache.upbit.timestamp) < CACHE_TTL) {
+        tickers = tickerCache.upbit.data;
+      } else {
+        // 업비트 API에서 전체 마켓 목록 가져오기
+        const response = await axios.get('https://api.upbit.com/v1/market/all');
+
+        // KRW 마켓만 필터링하고 프론트엔드 형식으로 변환
+        tickers = response.data
+          .filter((item: any) => item.market.startsWith('KRW-'))
+          .map((item: any) => ({
+            market: item.market,
+            korean_name: item.korean_name,
+            english_name: item.english_name,
+          }));
+
+        // 캐시 저장
+        tickerCache.upbit = { data: tickers, timestamp: now };
+        console.log(`[Exchange] Upbit tickers cached: ${tickers.length} items`);
+      }
+    } else {
+      // 캐시 확인
+      if (tickerCache.binance && (now - tickerCache.binance.timestamp) < CACHE_TTL) {
+        tickers = tickerCache.binance.data;
+      } else {
+        // 바이낸스 API에서 전체 심볼 목록 가져오기
+        const response = await axios.get('https://api.binance.com/api/v3/exchangeInfo');
+
+        // USDT 마켓만 필터링하고 프론트엔드 형식으로 변환
+        tickers = response.data.symbols
+          .filter((item: any) => item.quoteAsset === 'USDT' && item.status === 'TRADING')
+          .map((item: any) => ({
+            symbol: item.symbol,
+            baseAsset: item.baseAsset,
+            quoteAsset: item.quoteAsset,
+          }));
+
+        // 캐시 저장
+        tickerCache.binance = { data: tickers, timestamp: now };
+        console.log(`[Exchange] Binance tickers cached: ${tickers.length} items`);
+      }
+    }
+
+    return successResponse(res, { tickers });
+  } catch (error: any) {
+    console.error(`[Exchange] Failed to fetch tickers:`, error.message);
+    return errorResponse(
+      res,
+      'TICKER_FETCH_ERROR',
+      '티커 목록을 가져올 수 없습니다',
+      500
+    );
   }
 };
 
