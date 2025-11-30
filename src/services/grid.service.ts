@@ -1,5 +1,37 @@
 import prisma from '../config/database';
 
+/**
+ * Upbit KRW 마켓 주문가격 단위 (호가 단위)
+ * 가격대별 틱 사이즈에 맞게 가격을 반올림
+ */
+function roundToTickSize(price: number): number {
+  let tickSize: number;
+
+  if (price >= 2000000) {
+    tickSize = 1000;
+  } else if (price >= 1000000) {
+    tickSize = 500;
+  } else if (price >= 500000) {
+    tickSize = 100;
+  } else if (price >= 100000) {
+    tickSize = 50;
+  } else if (price >= 10000) {
+    tickSize = 10;
+  } else if (price >= 1000) {
+    tickSize = 5;
+  } else if (price >= 100) {
+    tickSize = 1;
+  } else if (price >= 10) {
+    tickSize = 0.1;
+  } else {
+    tickSize = 0.01;
+  }
+
+  // 부동소수점 오차 방지를 위해 정수 연산 후 다시 나누기
+  const multiplier = 1 / tickSize;
+  return Math.round(price * multiplier) / multiplier;
+}
+
 export class GridService {
   // 그리드 레벨 생성 (등비수열 방식)
   // 각 그리드는 buyPrice에 매수하고 sellPrice에 매도하는 구조
@@ -18,18 +50,18 @@ export class GridService {
 
       const prices: number[] = [];
 
-      // 등비수열로 가격 계산
+      // 등비수열로 가격 계산 (호가 단위에 맞게 반올림)
       if (priceChangePercent && priceChangePercent > 0) {
         const changeRatio = 1 + priceChangePercent / 100;
         let currentPrice = lowerPrice;
 
         while (currentPrice <= upperPrice) {
-          prices.push(currentPrice);
+          prices.push(roundToTickSize(currentPrice));
           currentPrice = currentPrice * changeRatio;
         }
         // 마지막 매도가를 위해 upperPrice 초과 가격도 추가
         if (prices[prices.length - 1] < upperPrice * changeRatio) {
-          prices.push(prices[prices.length - 1] * changeRatio);
+          prices.push(roundToTickSize(prices[prices.length - 1] * changeRatio));
         }
       } else {
         // 폴백: 등차수열
@@ -37,7 +69,7 @@ export class GridService {
         const gridSpacing = priceRange / gridCount;
 
         for (let i = 0; i <= gridCount + 1; i++) {
-          prices.push(lowerPrice + (gridSpacing * i));
+          prices.push(roundToTickSize(lowerPrice + (gridSpacing * i)));
         }
       }
 

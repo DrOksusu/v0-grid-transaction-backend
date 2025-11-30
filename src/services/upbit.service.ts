@@ -32,7 +32,9 @@ function roundToTickSize(price: number): number {
     tickSize = 0.01;
   }
 
-  return Math.round(price / tickSize) * tickSize;
+  // 부동소수점 오차 방지를 위해 정수 연산 후 다시 나누기
+  const multiplier = 1 / tickSize;
+  return Math.round(price * multiplier) / multiplier;
 }
 
 interface UpbitCredentials {
