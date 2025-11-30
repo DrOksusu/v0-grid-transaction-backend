@@ -65,48 +65,64 @@ export class TradingService {
       // 매수 주문 실행 (지정가 주문)
       if (executableGrids.buy) {
         try {
-          console.log(`[Trading] Bot ${botId}: 지정가 매수 주문 - ${executableGrids.buy.price}원`);
-
-          const volume = bot.orderAmount / executableGrids.buy.price;
-
-          const order = await upbit.buyLimit(
-            bot.ticker,
-            executableGrids.buy.price,
-            volume
-          );
-
-          await GridService.updateGridLevel(
-            executableGrids.buy.id,
-            'pending',
-            order.uuid
-          );
-
-          const newTrade = await prisma.trade.create({
+          // Race condition 방지: 상태가 여전히 available인 경우에만 pending으로 변경
+          const updateResult = await prisma.gridLevel.updateMany({
+            where: {
+              id: executableGrids.buy.id,
+              status: 'available',  // 아직 available 상태인 경우에만
+            },
             data: {
-              botId,
-              gridLevelId: executableGrids.buy.id,
+              status: 'pending',
+            },
+          });
+
+          // 이미 다른 프로세스가 처리 중이면 스킵
+          if (updateResult.count === 0) {
+            console.log(`[Trading] Bot ${botId}: 매수 그리드가 이미 처리 중입니다 (${executableGrids.buy.price}원)`);
+          } else {
+            console.log(`[Trading] Bot ${botId}: 지정가 매수 주문 - ${executableGrids.buy.price}원`);
+
+            const volume = bot.orderAmount / executableGrids.buy.price;
+
+            const order = await upbit.buyLimit(
+              bot.ticker,
+              executableGrids.buy.price,
+              volume
+            );
+
+            // orderId 업데이트
+            await prisma.gridLevel.update({
+              where: { id: executableGrids.buy.id },
+              data: { orderId: order.uuid },
+            });
+
+            const newTrade = await prisma.trade.create({
+              data: {
+                botId,
+                gridLevelId: executableGrids.buy.id,
+                type: 'buy',
+                price: executableGrids.buy.price,
+                amount: volume,
+                total: bot.orderAmount,
+                orderId: order.uuid,
+              },
+            });
+
+            socketService.emitNewTrade(botId, {
+              id: newTrade.id,
               type: 'buy',
               price: executableGrids.buy.price,
               amount: volume,
               total: bot.orderAmount,
               orderId: order.uuid,
-            },
-          });
+              status: 'pending',
+              createdAt: newTrade.createdAt,
+            });
 
-          socketService.emitNewTrade(botId, {
-            id: newTrade.id,
-            type: 'buy',
-            price: executableGrids.buy.price,
-            amount: volume,
-            total: bot.orderAmount,
-            orderId: order.uuid,
-            status: 'pending',
-            createdAt: newTrade.createdAt,
-          });
+            console.log(`[Trading] Bot ${botId}: 지정가 매수 주문 완료 - ${executableGrids.buy.price.toLocaleString()}원`);
 
-          console.log(`[Trading] Bot ${botId}: 지정가 매수 주문 완료 - ${executableGrids.buy.price.toLocaleString()}원`);
-
-          executed = true;
+            executed = true;
+          }
         } catch (error: any) {
           console.error(`매수 주문 실패 (Bot ${botId}):`, error.message);
 
@@ -128,49 +144,64 @@ export class TradingService {
       // 매도 주문 실행
       if (executableGrids.sell) {
         try {
-          // 주문 수량 계산
-          const volume = bot.orderAmount / executableGrids.sell.price;
-
-          // 매도 주문
-          const order = await upbit.sellLimit(
-            bot.ticker,
-            executableGrids.sell.price,
-            volume
-          );
-
-          // 그리드 레벨 상태 업데이트
-          await GridService.updateGridLevel(
-            executableGrids.sell.id,
-            'pending',
-            order.uuid
-          );
-
-          // 거래 기록 저장
-          const newTrade = await prisma.trade.create({
+          // Race condition 방지: 상태가 여전히 available인 경우에만 pending으로 변경
+          const updateResult = await prisma.gridLevel.updateMany({
+            where: {
+              id: executableGrids.sell.id,
+              status: 'available',  // 아직 available 상태인 경우에만
+            },
             data: {
-              botId,
-              gridLevelId: executableGrids.sell.id,
+              status: 'pending',
+            },
+          });
+
+          // 이미 다른 프로세스가 처리 중이면 스킵
+          if (updateResult.count === 0) {
+            console.log(`[Trading] Bot ${botId}: 매도 그리드가 이미 처리 중입니다 (${executableGrids.sell.price}원)`);
+          } else {
+            // 주문 수량 계산
+            const volume = bot.orderAmount / executableGrids.sell.price;
+
+            // 매도 주문
+            const order = await upbit.sellLimit(
+              bot.ticker,
+              executableGrids.sell.price,
+              volume
+            );
+
+            // orderId 업데이트
+            await prisma.gridLevel.update({
+              where: { id: executableGrids.sell.id },
+              data: { orderId: order.uuid },
+            });
+
+            // 거래 기록 저장
+            const newTrade = await prisma.trade.create({
+              data: {
+                botId,
+                gridLevelId: executableGrids.sell.id,
+                type: 'sell',
+                price: executableGrids.sell.price,
+                amount: volume,
+                total: bot.orderAmount,
+                orderId: order.uuid,
+              },
+            });
+
+            // 소켓으로 새 거래 알림
+            socketService.emitNewTrade(botId, {
+              id: newTrade.id,
               type: 'sell',
               price: executableGrids.sell.price,
               amount: volume,
               total: bot.orderAmount,
               orderId: order.uuid,
-            },
-          });
+              status: 'pending',
+              createdAt: newTrade.createdAt,
+            });
 
-          // 소켓으로 새 거래 알림
-          socketService.emitNewTrade(botId, {
-            id: newTrade.id,
-            type: 'sell',
-            price: executableGrids.sell.price,
-            amount: volume,
-            total: bot.orderAmount,
-            orderId: order.uuid,
-            status: 'pending',
-            createdAt: newTrade.createdAt,
-          });
-
-          executed = true;
+            executed = true;
+          }
         } catch (error: any) {
           console.error(`매도 주문 실패 (Bot ${botId}):`, error.message);
 
@@ -371,17 +402,18 @@ export class TradingService {
 
         console.log(`[Trading] Bot ${bot.id}: 매수 체결 후 즉시 매도 주문 - ${sellPrice.toLocaleString()}원`);
 
-        // 매도 그리드 레벨 찾기
+        // 매도 그리드 레벨 찾기 (inactive 상태만)
         const sellGrid = await prisma.gridLevel.findFirst({
           where: {
             botId: bot.id,
             price: sellPrice,
             type: 'sell',
+            status: 'inactive',  // 아직 사용되지 않은 그리드만
           },
         });
 
         if (!sellGrid) {
-          console.error(`[Trading] Bot ${bot.id}: 매도 그리드 레벨을 찾을 수 없습니다 (${sellPrice}원)`);
+          console.log(`[Trading] Bot ${bot.id}: 매도 그리드 레벨을 찾을 수 없거나 이미 주문 중입니다 (${sellPrice}원)`);
           return;
         }
 
@@ -425,17 +457,18 @@ export class TradingService {
 
         console.log(`[Trading] Bot ${bot.id}: 매도 체결 후 즉시 매수 주문 - ${buyPrice.toLocaleString()}원`);
 
-        // 매수 그리드 레벨 찾기
+        // 매수 그리드 레벨 찾기 (filled 상태만 - 이전 사이클에서 완료된 것)
         const buyGrid = await prisma.gridLevel.findFirst({
           where: {
             botId: bot.id,
             price: buyPrice,
             type: 'buy',
+            status: 'filled',  // 이전에 체결 완료된 그리드만
           },
         });
 
         if (!buyGrid) {
-          console.error(`[Trading] Bot ${bot.id}: 매수 그리드 레벨을 찾을 수 없습니다 (${buyPrice}원)`);
+          console.log(`[Trading] Bot ${bot.id}: 재매수할 그리드 레벨을 찾을 수 없거나 이미 주문 중입니다 (${buyPrice}원)`);
           return;
         }
 
