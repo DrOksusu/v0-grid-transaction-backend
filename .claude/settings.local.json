@@ -14,7 +14,8 @@
       "Bash(export AWS_DEFAULT_REGION=\"ap-northeast-1\")",
       "Bash(aws ec2 create-subnet:*)",
       "Bash(aws ec2 create-internet-gateway:*)",
-      "Bash(aws ec2 attach-internet-gateway:*)"
+      "Bash(aws ec2 attach-internet-gateway:*)",
+      "Bash(aws ec2 delete-nat-gateway:*)"
     ],
     "deny": [],
     "ask": []

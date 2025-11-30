@@ -3,28 +3,39 @@ import prisma from '../config/database';
 /**
  * Upbit KRW 마켓 주문가격 단위 (호가 단위)
  * 가격대별 틱 사이즈에 맞게 가격을 반올림
+ * https://docs.upbit.com/kr/docs/krw-market-info
  */
-function roundToTickSize(price: number): number {
+export function roundToTickSize(price: number): number {
   let tickSize: number;
 
   if (price >= 2000000) {
-    tickSize = 1000;
+    tickSize = 1000;      // 2,000,000원 이상
   } else if (price >= 1000000) {
-    tickSize = 500;
+    tickSize = 1000;      // 1,000,000 ~ 2,000,000원
   } else if (price >= 500000) {
-    tickSize = 100;
+    tickSize = 500;       // 500,000 ~ 1,000,000원
   } else if (price >= 100000) {
-    tickSize = 50;
+    tickSize = 100;       // 100,000 ~ 500,000원
+  } else if (price >= 50000) {
+    tickSize = 50;        // 50,000 ~ 100,000원
   } else if (price >= 10000) {
-    tickSize = 10;
+    tickSize = 10;        // 10,000 ~ 50,000원
+  } else if (price >= 5000) {
+    tickSize = 5;         // 5,000 ~ 10,000원
   } else if (price >= 1000) {
-    tickSize = 5;
+    tickSize = 1;         // 1,000 ~ 5,000원
   } else if (price >= 100) {
-    tickSize = 1;
+    tickSize = 1;         // 100 ~ 1,000원
   } else if (price >= 10) {
-    tickSize = 0.1;
+    tickSize = 0.1;       // 10 ~ 100원
+  } else if (price >= 1) {
+    tickSize = 0.01;      // 1 ~ 10원
+  } else if (price >= 0.1) {
+    tickSize = 0.001;     // 0.1 ~ 1원
+  } else if (price >= 0.01) {
+    tickSize = 0.0001;    // 0.01 ~ 0.1원
   } else {
-    tickSize = 0.01;
+    tickSize = 0.00001;   // 0.01원 미만
   }
 
   // 부동소수점 오차 방지를 위해 정수 연산 후 다시 나누기

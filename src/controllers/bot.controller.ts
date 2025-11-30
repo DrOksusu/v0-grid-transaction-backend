@@ -2,7 +2,7 @@ import { Response, NextFunction } from 'express';
 import prisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
-import { GridService } from '../services/grid.service';
+import { GridService, roundToTickSize } from '../services/grid.service';
 import { UpbitService } from '../services/upbit.service';
 import { decrypt } from '../utils/encryption';
 
@@ -128,7 +128,7 @@ export const getAllBots = async (
       let price = bot.lowerPrice;
 
       for (let i = 0; i < bot.gridCount; i++) {
-        buyPrices.push(Math.round(price)); // 정수로 반올림
+        buyPrices.push(roundToTickSize(price)); // 호가 단위에 맞게 반올림
         price *= multiplier;
       }
 
@@ -180,13 +180,13 @@ export const getBotById = async (
       return errorResponse(res, 'BOT_NOT_FOUND', '봇을 찾을 수 없습니다', 404);
     }
 
-    // 매수 가격 배열 계산
+    // 매수 가격 배열 계산 (호가 단위에 맞게)
     const buyPrices: number[] = [];
     const multiplier = 1 + bot.priceChangePercent / 100;
     let price = bot.lowerPrice;
 
     for (let i = 0; i < bot.gridCount; i++) {
-      buyPrices.push(Math.round(price));
+      buyPrices.push(roundToTickSize(price));
       price *= multiplier;
     }
 
