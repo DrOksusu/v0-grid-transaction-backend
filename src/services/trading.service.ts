@@ -402,18 +402,18 @@ export class TradingService {
 
         console.log(`[Trading] Bot ${bot.id}: 매수 체결 후 즉시 매도 주문 - ${sellPrice.toLocaleString()}원`);
 
-        // 매도 그리드 레벨 찾기 (inactive 상태만)
+        // 매도 그리드 레벨 찾기 (inactive 또는 filled 상태 - 사이클 완료 후 재사용)
         const sellGrid = await prisma.gridLevel.findFirst({
           where: {
             botId: bot.id,
             price: sellPrice,
             type: 'sell',
-            status: 'inactive',  // 아직 사용되지 않은 그리드만
+            status: { in: ['inactive', 'filled'] },  // 첫 사이클 또는 완료된 사이클
           },
         });
 
         if (!sellGrid) {
-          console.log(`[Trading] Bot ${bot.id}: 매도 그리드 레벨을 찾을 수 없거나 이미 주문 중입니다 (${sellPrice}원)`);
+          console.log(`[Trading] Bot ${bot.id}: 매도 그리드 레벨을 찾을 수 없거나 이미 주문 중입니다 (${sellPrice}원, status: pending)`);
           return;
         }
 
