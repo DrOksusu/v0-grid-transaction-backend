@@ -1,4 +1,4 @@
-import cron from 'node-cron';
+import cron, { ScheduledTask } from 'node-cron';
 import prisma from '../config/database';
 import { KisService } from './kis.service';
 import { decrypt } from '../utils/encryption';
@@ -16,8 +16,8 @@ interface StockWithCredential {
 }
 
 export class InfiniteBuySchedulerService {
-  private autoBuyJob: cron.ScheduledTask | null = null;
-  private priceCheckJob: cron.ScheduledTask | null = null;
+  private autoBuyJob: ScheduledTask | null = null;
+  private priceCheckJob: ScheduledTask | null = null;
   private isRunning: boolean = false;
   private config: SchedulerConfig = {
     autoBuyEnabled: true,
@@ -180,7 +180,7 @@ export class InfiniteBuySchedulerService {
     }
 
     const currentPrice = priceData.currentPrice;
-    const previousClose = priceData.previousClose || currentPrice;
+    const previousClose = priceData.prevClose || currentPrice;
 
     // 매수 조건 체크
     const shouldBuy = await this.checkBuyCondition(
