@@ -4,6 +4,24 @@ import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 
 const UPBIT_API_URL = 'https://api.upbit.com/v1';
+// API 요청 쓰로틀링을 위한 설정
+const ORDER_API_MIN_INTERVAL = 200; // 주문 API 최소 간격 (ms)
+let lastOrderApiCall = 0;
+
+/**
+ * 주문 API 호출 전 딜레이 (429 에러 방지)
+ */
+async function throttleOrderApi(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastOrderApiCall;
+
+  if (elapsed < ORDER_API_MIN_INTERVAL) {
+    const delay = ORDER_API_MIN_INTERVAL - elapsed;
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+
+  lastOrderApiCall = Date.now();
+}
 
 /**
  * Upbit KRW 마켓 주문가격 단위 (호가 단위)
@@ -132,6 +150,7 @@ export class UpbitService {
   // 지정가 매수 주문
   async buyLimit(market: string, price: number, volume: number) {
     try {
+      await throttleOrderApi();  // ← 여기 추가
       const roundedPrice = roundToTickSize(price);
       const params: OrderParams = {
         market,
@@ -161,6 +180,7 @@ export class UpbitService {
   // price: 매수에 사용할 총 금액 (KRW)
   async buyMarket(market: string, totalPrice: number) {
     try {
+      await throttleOrderApi();  // ← 여기 추가
       const params: OrderParams = {
         market,
         side: 'bid',
@@ -187,6 +207,7 @@ export class UpbitService {
   // 지정가 매도 주문
   async sellLimit(market: string, price: number, volume: number) {
     try {
+      await throttleOrderApi();  // ← 여기 추가
       const roundedPrice = roundToTickSize(price);
       const params: OrderParams = {
         market,
@@ -215,6 +236,7 @@ export class UpbitService {
   // 주문 취소
   async cancelOrder(uuid: string) {
     try {
+      await throttleOrderApi();  // ← 여기 추가
       const queryString = `uuid=${uuid}`;
 
       const response = await axios.delete(

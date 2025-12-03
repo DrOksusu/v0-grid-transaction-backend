@@ -3,6 +3,8 @@ import authRoutes from './auth';
 import botRoutes from './bots';
 import exchangeRoutes from './exchange';
 import credentialRoutes from './credentials';
+import kisRoutes from './kis';
+import infiniteBuyRoutes from './infinite-buy';
 
 const router = Router();
 
@@ -18,5 +20,7 @@ router.use('/auth', authRoutes);
 router.use('/bots', botRoutes);
 router.use('/exchange', exchangeRoutes);
 router.use('/credentials', credentialRoutes);
+router.use('/kis', kisRoutes);
+router.use('/infinite-buy', infiniteBuyRoutes);
 
 export default router;

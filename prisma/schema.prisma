@@ -14,14 +14,15 @@ datasource db {
 }
 
 model User {
-  id          Int          @id @default(autoincrement())
-  email       String       @unique
-  name        String?
-  password    String
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  bots        Bot[]
-  credentials Credential[]
+  id                Int          @id @default(autoincrement())
+  email             String       @unique
+  name              String?
+  password          String
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  bots              Bot[]
+  credentials       Credential[]
+  infiniteBuyStocks InfiniteBuyStock[]
 
   @@map("users")
 }
@@ -29,6 +30,7 @@ model User {
 enum Exchange {
   upbit
   binance
+  kis  // 한국투자증권
 }
 
 enum BotStatus {
@@ -133,6 +135,91 @@ model Credential {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+  // 한국투자증권(KIS) 전용 필드
+  accountNo       String?           // 계좌번호 (예: 12345678-01)
+  isPaper         Boolean   @default(true)  // 모의투자 여부
+  accessToken     String?   @db.Text  // OAuth Access Token
+  tokenExpireAt   DateTime?         // 토큰 만료 시간
+
   @@unique([userId, exchange])
   @@map("credentials")
+}
+
+// ============ 무한매수법 (Infinite Buy) ============
+
+enum InfiniteBuyStatus {
+  buying      // 매수 진행중
+  completed   // 익절 완료
+  stopped     // 중단됨
+}
+
+// 무한매수 종목
+model InfiniteBuyStock {
+  id              Int       @id @default(autoincrement())
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // 종목 정보
+  ticker          String                // 티커 (예: AAPL, TSLA)
+  name            String                // 종목명 (예: Apple Inc.)
+  exchange        String    @default("NAS")  // 거래소 (NAS, NYS, AMS)
+
+  // 무한매수 설정
+  buyAmount       Float                 // 1회 매수금액 (USD)
+  totalRounds     Int       @default(40) // 총 분할 횟수
+  targetProfit    Float     @default(10) // 목표 수익률 (%)
+
+  // 현재 상태
+  status          InfiniteBuyStatus @default(buying)
+  currentRound    Int       @default(0)  // 현재 회차
+  totalInvested   Float     @default(0)  // 총 투자금
+  totalQuantity   Float     @default(0)  // 총 보유수량
+  avgPrice        Float     @default(0)  // 평균단가
+
+  // 자동매수 설정
+  autoEnabled     Boolean   @default(true)
+  buyTime         String?              // 매수 시간 (예: "09:30")
+  buyCondition    String    @default("daily") // daily, weekly, condition
+
+  // 타임스탬프
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  completedAt     DateTime?            // 익절 완료 시간
+
+  // 관계
+  buyRecords      InfiniteBuyRecord[]
+
+  @@unique([userId, ticker])
+  @@index([userId])
+  @@index([status])
+  @@map("infinite_buy_stocks")
+}
+
+// 무한매수 기록
+model InfiniteBuyRecord {
+  id              Int       @id @default(autoincrement())
+  stockId         Int
+  stock           InfiniteBuyStock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  // 거래 정보
+  type            TradeType             // buy, sell
+  round           Int?                  // 회차 (매수시)
+  price           Float                 // 체결 가격
+  quantity        Float                 // 체결 수량
+  amount          Float                 // 체결 금액
+
+  // 매도시 수익 정보
+  profit          Float?                // 실현 손익
+  profitPercent   Float?                // 실현 수익률
+
+  // KIS 주문 정보
+  orderId         String?               // KIS 주문번호
+  orderStatus     String    @default("filled") // pending, filled, cancelled
+
+  // 타임스탬프
+  executedAt      DateTime  @default(now())
+
+  @@index([stockId])
+  @@index([type])
+  @@map("infinite_buy_records")
 }

@@ -4,6 +4,7 @@ import { config } from './config/env';
 import prisma from './config/database';
 import { botEngine } from './services/bot-engine.service';
 import { socketService } from './services/socket.service';
+import { infiniteBuyScheduler } from './services/infinite-buy-scheduler.service';
 
 const startServer = async () => {
   try {
@@ -23,6 +24,10 @@ const startServer = async () => {
       // 봇 엔진 시작
       botEngine.start();
       console.log('Bot trading engine started');
+
+      // 무한매수법 스케줄러 시작
+      infiniteBuyScheduler.start();
+      console.log('Infinite buy scheduler started');
     });
   } catch (error) {
     console.error('Failed to start server:', error);
@@ -34,12 +39,14 @@ startServer();
 
 process.on('SIGINT', async () => {
   botEngine.stop();
+  infiniteBuyScheduler.stop();
   await prisma.$disconnect();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   botEngine.stop();
+  infiniteBuyScheduler.stop();
   await prisma.$disconnect();
   process.exit(0);
 });
