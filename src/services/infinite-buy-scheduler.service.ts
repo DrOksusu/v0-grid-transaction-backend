@@ -35,9 +35,9 @@ export class InfiniteBuySchedulerService {
     console.log('[InfiniteBuyScheduler] 무한매수법 자동매매 스케줄러 시작');
 
     // 미국 장 시작 시간 (한국시간 23:30, 서머타임 22:30)
-    // 매일 22:35 (서머타임), 23:35 (동절기)에 자동 매수 실행
-    // 테스트를 위해 매 시간 35분에도 실행
-    this.autoBuyJob = cron.schedule('35 22,23 * * 1-5', async () => {
+    // 동절기 기준 23:35에 자동 매수 실행 (하루 1회)
+    // 서머타임 기간(3월~11월)에는 22:35로 변경 필요
+    this.autoBuyJob = cron.schedule('35 23 * * 1-5', async () => {
       console.log('[InfiniteBuyScheduler] 자동 매수 스케줄 실행');
       await this.executeAutoBuy();
     }, {
@@ -53,7 +53,7 @@ export class InfiniteBuySchedulerService {
 
     this.isRunning = true;
     console.log('[InfiniteBuyScheduler] 스케줄 등록 완료');
-    console.log('  - 자동 매수: 매일 22:35, 23:35 (KST)');
+    console.log('  - 자동 매수: 매일 23:35 (KST, 동절기)');
     console.log(`  - 가격 체크: 장중 매 ${this.config.priceCheckInterval}분`);
   }
 
@@ -163,6 +163,25 @@ export class InfiniteBuySchedulerService {
       return;
     }
 
+    // 하루 1회 매수 제한 체크 (오늘 이미 매수했는지 확인)
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const todayBuyCount = await prisma.infiniteBuyRecord.count({
+      where: {
+        stockId,
+        type: 'buy',
+        executedAt: {
+          gte: todayStart,
+        },
+      },
+    });
+
+    if (todayBuyCount > 0) {
+      console.log(`[InfiniteBuyScheduler] ${ticker}: 오늘 이미 매수함 (${todayBuyCount}회) - 스킵`);
+      return;
+    }
+
     // KIS 서비스 가져오기
     const kisService = await this.getKisService(userId);
     if (!kisService) {
@@ -196,10 +215,17 @@ export class InfiniteBuySchedulerService {
       return;
     }
 
-    console.log(`[InfiniteBuyScheduler] ${ticker}: 매수 실행 (${currentRound + 1}회차, $${currentPrice})`);
+    console.log(`[InfiniteBuyScheduler] ${ticker}: 매수 실행 (${currentRound + 1}회차, ${currentPrice})`);
 
-    // 매수 수량 계산
-    const quantity = buyAmount / currentPrice;
+    // 매수 수량 계산 (미국 주식은 정수만 가능)
+    const quantity = Math.floor(buyAmount / currentPrice);
+    if (quantity < 1) {
+      console.log(`[InfiniteBuyScheduler] ${ticker}: 매수 금액(${buyAmount})으로 1주도 살 수 없음 (현재가 ${currentPrice})`);
+      return;
+    }
+
+    // 실제 투자 금액 계산 (정수 수량 기준)
+    const actualInvestment = quantity * currentPrice;
     const nextRound = currentRound + 1;
 
     // 실제 매수 주문 실행
@@ -214,14 +240,15 @@ export class InfiniteBuySchedulerService {
         exchangeCode
       );
       orderId = orderResult.orderId;
-      console.log(`[InfiniteBuyScheduler] ${ticker}: 주문 완료 (주문번호: ${orderId})`);
+      console.log(`[InfiniteBuyScheduler] ${ticker}: 주문 완료 (주문번호: ${orderId}, ${quantity}주, ${actualInvestment.toFixed(2)})`);
     } catch (error: any) {
       console.error(`[InfiniteBuyScheduler] ${ticker}: 주문 실패 -`, error.message);
-      // 주문 실패해도 기록은 남김 (모의투자 테스트용)
+      // 주문 실패 시 기록하지 않고 리턴
+      return;
     }
 
-    // 새 평균단가 계산
-    const newTotalInvested = stock.totalInvested + buyAmount;
+    // 새 평균단가 계산 (실제 투자금액 기준)
+    const newTotalInvested = stock.totalInvested + actualInvestment;
     const newTotalQuantity = stock.totalQuantity + quantity;
     const newAvgPrice = newTotalQuantity > 0 ? newTotalInvested / newTotalQuantity : 0;
 
@@ -243,7 +270,7 @@ export class InfiniteBuySchedulerService {
           round: nextRound,
           price: currentPrice,
           quantity,
-          amount: buyAmount,
+          amount: actualInvestment,
           orderId,
           orderStatus: orderId ? 'filled' : 'pending',
         },

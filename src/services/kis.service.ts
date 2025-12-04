@@ -284,6 +284,12 @@ export class KisService {
       await this.getAccessToken();
     }
 
+    // 미국 주식은 정수 수량만 주문 가능
+    const intQuantity = Math.floor(quantity);
+    if (intQuantity < 1) {
+      throw new Error('주문 수량이 1주 미만입니다');
+    }
+
     // tr_id: 모의투자 VTTT1002U, 실전투자 TTTT1002U
     const trId = this.isPaper ? 'VTTT1002U' : 'TTTT1002U';
 
@@ -292,7 +298,7 @@ export class KisService {
       ACNT_PRDT_CD: this.accountNoSuffix,
       OVRS_EXCG_CD: exchange,          // 거래소 코드
       PDNO: ticker,                     // 종목코드
-      ORD_QTY: quantity.toString(),     // 주문수량
+      ORD_QTY: intQuantity.toString(),  // 주문수량 (정수)
       OVRS_ORD_UNPR: price.toFixed(2),  // 주문단가
       ORD_SVR_DVSN_CD: '0',             // 주문서버구분코드
       ORD_DVSN: '00',                   // 주문구분 (00: 지정가)

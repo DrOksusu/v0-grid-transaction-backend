@@ -6,7 +6,9 @@ import { v4 as uuidv4 } from 'uuid';
 const UPBIT_API_URL = 'https://api.upbit.com/v1';
 // API 요청 쓰로틀링을 위한 설정
 const ORDER_API_MIN_INTERVAL = 200; // 주문 API 최소 간격 (ms)
+const PUBLIC_API_MIN_INTERVAL = 100; // 공개 API 최소 간격 (ms)
 let lastOrderApiCall = 0;
+let lastPublicApiCall = 0;
 
 /**
  * 주문 API 호출 전 딜레이 (429 에러 방지)
@@ -22,6 +24,22 @@ async function throttleOrderApi(): Promise<void> {
 
   lastOrderApiCall = Date.now();
 }
+
+/**
+ * 공개 API (현재가 등) 호출 전 딜레이 (429 에러 방지)
+ */
+async function throttlePublicApi(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastPublicApiCall;
+
+  if (elapsed < PUBLIC_API_MIN_INTERVAL) {
+    const delay = PUBLIC_API_MIN_INTERVAL - elapsed;
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+
+  lastPublicApiCall = Date.now();
+}
+
 
 /**
  * Upbit KRW 마켓 주문가격 단위 (호가 단위)
@@ -271,14 +289,23 @@ export class UpbitService {
   }
 
   // 현재가 조회 (공개 API)
-  static async getCurrentPrice(market: string) {
-    try {
-      const response = await axios.get(
-        `${UPBIT_API_URL}/ticker?markets=${market}`
-      );
-      return response.data[0];
-    } catch (error: any) {
-      throw new Error(`현재가 조회 실패: ${error.message}`);
+  static async getCurrentPrice(market: string, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+      try {
+        await throttlePublicApi();
+        const response = await axios.get(
+          `${UPBIT_API_URL}/ticker?markets=${market}`
+        );
+        return response.data[0];
+      } catch (error: any) {
+        // 429 에러면 대기 후 재시도
+        if (error.response?.status === 429 && i < retries - 1) {
+          console.log(`[Upbit] 429 에러, ${(i + 1) * 500}ms 후 재시도...`);
+          await new Promise(resolve => setTimeout(resolve, (i + 1) * 500));
+          continue;
+        }
+        throw new Error(`현재가 조회 실패: ${error.message}`);
+      }
     }
   }
 }

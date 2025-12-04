@@ -234,14 +234,28 @@ export class TradingService {
     } catch (error: any) {
       console.error(`거래 실행 실패 (Bot ${botId}):`, error.message);
 
-      // 에러 상태로 업데이트
-      await prisma.bot.update({
-        where: { id: botId },
-        data: {
-          status: 'error',
-          errorMessage: error.message,
-        },
-      });
+      // 429 에러나 현재가 조회 실패는 일시적인 문제이므로 상태를 error로 변경하지 않음
+      const isTemporaryError = error.message.includes('429') ||
+                               error.message.includes('현재가 조회 실패') ||
+                               error.message.includes('Too Many Requests');
+
+      if (isTemporaryError) {
+        // 에러 메시지만 저장하고 상태는 유지
+        await prisma.bot.update({
+          where: { id: botId },
+          data: { errorMessage: error.message },
+        });
+        console.log(`[Trading] Bot ${botId}: 일시적 에러, 상태 유지 (running)`);
+      } else {
+        // 에러 상태로 업데이트
+        await prisma.bot.update({
+          where: { id: botId },
+          data: {
+            status: 'error',
+            errorMessage: error.message,
+          },
+        });
+      }
 
       return { success: false, message: error.message };
     }
