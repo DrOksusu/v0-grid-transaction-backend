@@ -515,8 +515,9 @@ export const getTrades = async (
   try {
     const userId = req.userId!;
     const botId = parseInt(req.params.id);
-    const limit = parseInt(req.query.limit as string) || 50;
+    const limit = parseInt(req.query.limit as string) || 100;
     const offset = parseInt(req.query.offset as string) || 0;
+    const status = req.query.status as string; // 'pending' | 'filled' 필터
 
     const bot = await prisma.bot.findFirst({
       where: { id: botId, userId },
@@ -526,14 +527,53 @@ export const getTrades = async (
       return errorResponse(res, 'BOT_NOT_FOUND', '봇을 찾을 수 없습니다', 404);
     }
 
+    // 미체결 주문은 GridLevel에서 조회 (실제 업비트에 걸린 주문)
+    if (status === 'pending') {
+      const pendingGridLevels = await prisma.gridLevel.findMany({
+        where: {
+          botId,
+          status: 'pending',
+          orderId: { not: null },
+        },
+        orderBy: { price: 'desc' },
+      });
+
+      return successResponse(res, {
+        trades: pendingGridLevels.map(gl => ({
+          _id: `grid-${gl.id}`,
+          type: gl.type,
+          price: gl.price,
+          amount: bot.orderAmount / gl.price, // 예상 수량
+          total: bot.orderAmount,
+          profit: null,
+          orderId: gl.orderId,
+          status: 'pending',
+          executedAt: gl.createdAt,
+          filledAt: null,
+        })),
+        pagination: {
+          total: pendingGridLevels.length,
+          limit: pendingGridLevels.length,
+          offset: 0,
+          hasMore: false,
+        },
+      });
+    }
+
+    // 체결 주문은 Trade에서 조회
+    const whereClause: any = { botId };
+    if (status === 'filled') {
+      whereClause.status = 'filled';
+    }
+
     const [trades, total] = await Promise.all([
       prisma.trade.findMany({
-        where: { botId },
+        where: whereClause,
         orderBy: { executedAt: 'desc' },
         skip: offset,
         take: limit,
       }),
-      prisma.trade.count({ where: { botId } }),
+      prisma.trade.count({ where: whereClause }),
     ]);
 
     return successResponse(res, {
