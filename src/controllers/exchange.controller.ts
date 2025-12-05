@@ -11,6 +11,23 @@ let tickerCache: {
 
 const CACHE_TTL = 5 * 60 * 1000; // 5분
 
+// 가격 캐시 (10초간 유효)
+const priceCache: Map<string, { data: any; timestamp: number }> = new Map();
+const PRICE_CACHE_TTL = 10 * 1000; // 10초
+
+// API 호출 쓰로틀링
+let lastPriceApiCall = 0;
+const PRICE_API_MIN_INTERVAL = 100; // 100ms
+
+async function throttlePriceApi(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastPriceApiCall;
+  if (elapsed < PRICE_API_MIN_INTERVAL) {
+    await new Promise(resolve => setTimeout(resolve, PRICE_API_MIN_INTERVAL - elapsed));
+  }
+  lastPriceApiCall = Date.now();
+}
+
 export const getTickers = async (
   req: AuthRequest,
   res: Response,
@@ -106,8 +123,18 @@ export const getPrice = async (
 
     let priceData;
 
+    // 캐시 확인
+    const cacheKey = `${exchange}:${ticker}`;
+    const cached = priceCache.get(cacheKey);
+    const now = Date.now();
+
+    if (cached && (now - cached.timestamp) < PRICE_CACHE_TTL) {
+      return successResponse(res, cached.data);
+    }
+
     if (exchange === 'upbit') {
-      // 업비트 API 호출
+      // 업비트 API 호출 (throttling 적용)
+      await throttlePriceApi();
       const response = await axios.get(`https://api.upbit.com/v1/ticker?markets=${ticker}`);
 
       if (!response.data || response.data.length === 0) {
@@ -129,6 +156,9 @@ export const getPrice = async (
         low24h: data.low_price,
         timestamp: new Date().toISOString(),
       };
+
+      // 캐시 저장
+      priceCache.set(cacheKey, { data: priceData, timestamp: now });
     } else {
       // 바이낸스 API 호출
       const [priceResponse, statsResponse] = await Promise.all([
@@ -145,6 +175,9 @@ export const getPrice = async (
         low24h: parseFloat(statsResponse.data.lowPrice),
         timestamp: new Date().toISOString(),
       };
+
+      // 캐시 저장
+      priceCache.set(cacheKey, { data: priceData, timestamp: now });
     }
 
     return successResponse(res, priceData);
@@ -154,6 +187,21 @@ export const getPrice = async (
     // API 에러 응답 처리
     if (error.response) {
       const status = error.response.status;
+      if (status === 429) {
+        console.log(`[Exchange] Rate limited for ${req.params.ticker}, returning cached or error`);
+        // 캐시가 있으면 만료되었더라도 반환
+        const cacheKey = `${req.params.exchange}:${req.params.ticker}`;
+        const cached = priceCache.get(cacheKey);
+        if (cached) {
+          return successResponse(res, cached.data);
+        }
+        return errorResponse(
+          res,
+          'RATE_LIMITED',
+          '요청이 너무 많습니다. 잠시 후 다시 시도해주세요.',
+          429
+        );
+      }
       if (status === 400 || status === 404) {
         return errorResponse(
           res,
