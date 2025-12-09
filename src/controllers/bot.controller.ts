@@ -569,7 +569,7 @@ export const getTrades = async (
     const [trades, total] = await Promise.all([
       prisma.trade.findMany({
         where: whereClause,
-        orderBy: { executedAt: 'desc' },
+        orderBy: { filledAt: 'desc' },
         skip: offset,
         take: limit,
       }),

@@ -103,11 +103,40 @@ export class InfiniteBuySchedulerService {
         isPaper: credential.isPaper,
       });
 
+      // 기존 토큰이 있고 유효한지 확인
+      let needNewToken = true;
       if (credential.accessToken && credential.tokenExpireAt) {
-        kisService.setAccessToken(
-          decrypt(credential.accessToken),
-          credential.tokenExpireAt
-        );
+        const now = new Date();
+        const bufferTime = 10 * 60 * 1000; // 10분 여유
+        if (credential.tokenExpireAt.getTime() - bufferTime > now.getTime()) {
+          kisService.setAccessToken(
+            decrypt(credential.accessToken),
+            credential.tokenExpireAt
+          );
+          needNewToken = false;
+        }
+      }
+
+      // 토큰이 없거나 만료됐으면 새로 발급 후 DB에 저장
+      if (needNewToken) {
+        console.log(`[InfiniteBuyScheduler] KIS 토큰 갱신 필요 (userId: ${userId})`);
+        try {
+          const tokenInfo = await kisService.getAccessToken();
+
+          // DB에 새 토큰 저장
+          const { encrypt } = await import('../utils/encryption');
+          await prisma.credential.update({
+            where: { id: credential.id },
+            data: {
+              accessToken: encrypt(tokenInfo.accessToken),
+              tokenExpireAt: tokenInfo.tokenExpireAt,
+            },
+          });
+          console.log(`[InfiniteBuyScheduler] KIS 토큰 갱신 완료 (만료: ${tokenInfo.tokenExpireAt.toISOString()})`);
+        } catch (tokenError: any) {
+          console.error(`[InfiniteBuyScheduler] KIS 토큰 발급 실패:`, tokenError.message);
+          return null;
+        }
       }
 
       return kisService;
