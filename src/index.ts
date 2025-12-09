@@ -21,13 +21,19 @@ const startServer = async () => {
       console.log(`Server is running on port ${config.port}`);
       console.log(`Environment: ${config.nodeEnv}`);
 
-      // 봇 엔진 시작
-      botEngine.start();
-      console.log('Bot trading engine started');
+      // 프로덕션 환경에서만 스케줄러 시작 (중복 주문 방지)
+      if (config.nodeEnv === 'production') {
+        // 봇 엔진 시작
+        botEngine.start();
+        console.log('Bot trading engine started');
 
-      // 무한매수법 스케줄러 시작
-      infiniteBuyScheduler.start();
-      console.log('Infinite buy scheduler started');
+        // 무한매수법 스케줄러 시작
+        infiniteBuyScheduler.start();
+        console.log('Infinite buy scheduler started');
+      } else {
+        console.log('⚠️  Development mode: Schedulers disabled to prevent duplicate orders');
+        console.log('   To enable schedulers, set NODE_ENV=production');
+      }
     });
   } catch (error) {
     console.error('Failed to start server:', error);
