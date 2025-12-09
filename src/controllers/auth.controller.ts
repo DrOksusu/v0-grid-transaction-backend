@@ -48,7 +48,8 @@ export const register = async (
 
     const token = jwt.sign(
       { userId: user.id, email: user.email },
-      config.jwt.secret
+      config.jwt.secret,
+      { expiresIn: '30d' }
     );
 
     return successResponse(
@@ -109,7 +110,8 @@ export const login = async (
 
     const token = jwt.sign(
       { userId: user.id, email: user.email },
-      config.jwt.secret
+      config.jwt.secret,
+      { expiresIn: '30d' }
     );
 
     return successResponse(res, {
