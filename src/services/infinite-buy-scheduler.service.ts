@@ -18,6 +18,7 @@ interface StockWithCredential {
 export class InfiniteBuySchedulerService {
   private autoBuyJob: ScheduledTask | null = null;
   private priceCheckJob: ScheduledTask | null = null;
+  private orderCheckJob: ScheduledTask | null = null;
   private isRunning: boolean = false;
   private config: SchedulerConfig = {
     autoBuyEnabled: true,
@@ -51,10 +52,18 @@ export class InfiniteBuySchedulerService {
       timezone: 'Asia/Seoul'
     });
 
+    // 체결 확인 (매 10분마다, 미국 장 시간)
+    this.orderCheckJob = cron.schedule('*/10 22,23,0,1,2,3,4,5 * * 1-6', async () => {
+      await this.checkPendingOrders();
+    }, {
+      timezone: 'Asia/Seoul'
+    });
+
     this.isRunning = true;
     console.log('[InfiniteBuyScheduler] 스케줄 등록 완료');
     console.log('  - 자동 매수: 매일 23:35 (KST, 동절기)');
     console.log(`  - 가격 체크: 장중 매 ${this.config.priceCheckInterval}분`);
+    console.log('  - 체결 확인: 장중 매 10분');
   }
 
   // 스케줄러 중지
@@ -66,6 +75,10 @@ export class InfiniteBuySchedulerService {
     if (this.priceCheckJob) {
       this.priceCheckJob.stop();
       this.priceCheckJob = null;
+    }
+    if (this.orderCheckJob) {
+      this.orderCheckJob.stop();
+      this.orderCheckJob = null;
     }
     this.isRunning = false;
     console.log('[InfiniteBuyScheduler] 스케줄러 중지됨');
@@ -301,12 +314,12 @@ export class InfiniteBuySchedulerService {
           quantity,
           amount: actualInvestment,
           orderId,
-          orderStatus: orderId ? 'filled' : 'pending',
+          orderStatus: 'pending', // 주문 접수 상태로 저장, 체결 확인 후 filled로 변경
         },
       }),
     ]);
 
-    console.log(`[InfiniteBuyScheduler] ${ticker}: 매수 완료 - 회차: ${nextRound}, 평단: $${newAvgPrice.toFixed(2)}`);
+    console.log(`[InfiniteBuyScheduler] ${ticker}: 주문 접수 완료 - 회차: ${nextRound}, 체결 대기중...`);
   }
 
   // 매수 조건 체크
@@ -489,6 +502,76 @@ export class InfiniteBuySchedulerService {
     ]);
 
     console.log(`[InfiniteBuyScheduler] ${ticker}: 익절 완료 - 수익: $${profit.toFixed(2)} (${profitPercent.toFixed(2)}%)`);
+  }
+
+  // 체결 대기중인 주문 확인
+  private async checkPendingOrders() {
+    try {
+      // pending 상태인 주문 조회
+      const pendingRecords = await prisma.infiniteBuyRecord.findMany({
+        where: {
+          orderStatus: 'pending',
+          orderId: { not: null },
+        },
+        include: {
+          stock: true,
+        },
+      });
+
+      if (pendingRecords.length === 0) {
+        return;
+      }
+
+      console.log(`[InfiniteBuyScheduler] 체결 대기 주문 확인: ${pendingRecords.length}건`);
+
+      // 유저별로 그룹화
+      const userRecordMap = new Map<number, typeof pendingRecords>();
+      for (const record of pendingRecords) {
+        const userId = record.stock.userId;
+        const userRecords = userRecordMap.get(userId) || [];
+        userRecords.push(record);
+        userRecordMap.set(userId, userRecords);
+      }
+
+      // 유저별로 KIS API 호출하여 체결 확인
+      for (const [userId, records] of userRecordMap) {
+        const kisService = await this.getKisService(userId);
+        if (!kisService) continue;
+
+        try {
+          // KIS API에서 체결 내역 조회
+          const kisOrders = await kisService.getUSStockOrders();
+
+          // orderId로 매칭하여 체결 확인
+          for (const record of records) {
+            const kisOrder = kisOrders.find((o: any) => o.orderId === record.orderId);
+
+            if (kisOrder && kisOrder.filledQty > 0) {
+              // 체결됨 - DB 업데이트
+              await prisma.infiniteBuyRecord.update({
+                where: { id: record.id },
+                data: {
+                  orderStatus: 'filled',
+                  price: kisOrder.filledPrice || record.price, // 실제 체결가로 업데이트
+                  quantity: kisOrder.filledQty,
+                  amount: kisOrder.filledPrice * kisOrder.filledQty,
+                  filledAt: new Date(),
+                },
+              });
+
+              console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: 체결 확인 완료 (주문번호: ${record.orderId}, ${kisOrder.filledQty}주, $${kisOrder.filledPrice})`);
+            }
+          }
+        } catch (error: any) {
+          console.error(`[InfiniteBuyScheduler] 체결 확인 실패 (userId: ${userId}):`, error.message);
+        }
+
+        // API 호출 간 딜레이
+        await this.delay(500);
+      }
+    } catch (error) {
+      console.error('[InfiniteBuyScheduler] 체결 확인 오류:', error);
+    }
   }
 
   // 딜레이 유틸리티

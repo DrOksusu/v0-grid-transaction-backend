@@ -214,10 +214,11 @@ model InfiniteBuyRecord {
 
   // KIS 주문 정보
   orderId         String?               // KIS 주문번호
-  orderStatus     String    @default("filled") // pending, filled, cancelled
+  orderStatus     String    @default("pending") // pending, filled, cancelled
 
   // 타임스탬프
-  executedAt      DateTime  @default(now())
+  executedAt      DateTime  @default(now())  // 주문 접수 시간
+  filledAt        DateTime?                   // 체결 확인 시간
 
   @@index([stockId])
   @@index([type])

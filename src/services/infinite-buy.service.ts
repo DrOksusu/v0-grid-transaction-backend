@@ -577,7 +577,8 @@ export class InfiniteBuyService {
   }
 
   // 종목별 매수 기록 조회
-  async getRecords(userId: number, stockId: number, type?: string, limit: number = 50) {
+  // filledOnly: true면 체결된 것만, false면 모든 주문
+  async getRecords(userId: number, stockId: number, type?: string, limit: number = 50, filledOnly: boolean = false) {
     const stock = await prisma.infiniteBuyStock.findFirst({
       where: { id: stockId, userId },
     });
@@ -589,6 +590,10 @@ export class InfiniteBuyService {
     const whereClause: any = { stockId };
     if (type) {
       whereClause.type = type;
+    }
+    // 매수 기록 조회 시 체결된 것만 표시 (filledOnly가 true이거나 type이 buy인 경우)
+    if (filledOnly || type === 'buy') {
+      whereClause.orderStatus = 'filled';
     }
 
     const records = await prisma.infiniteBuyRecord.findMany({
@@ -612,6 +617,7 @@ export class InfiniteBuyService {
         amount: record.amount,
         profit: record.profit,
         profitPercent: record.profitPercent,
+        orderStatus: record.orderStatus,
         cumulative,
         executedAt: record.executedAt.toISOString(),
       };
