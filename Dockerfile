@@ -44,5 +44,5 @@ EXPOSE 3010
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3010/api/health || exit 1
 
-# Start the application
-CMD ["node", "dist/index.js"]
+# Start the application (migrate deploy 후 서버 시작)
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]

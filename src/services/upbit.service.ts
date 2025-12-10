@@ -273,6 +273,7 @@ export class UpbitService {
   // 주문 조회
   async getOrder(uuid: string) {
     try {
+      await throttleOrderApi();  // Rate limiting 추가
       const queryString = `uuid=${uuid}`;
 
       const response = await axios.get(
