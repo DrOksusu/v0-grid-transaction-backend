@@ -150,8 +150,8 @@ export class InfiniteBuyService {
     let kisService: KisService | null = null;
     try {
       kisService = await this.getKisService(userId);
-    } catch {
-      // KIS 연결 안됨 - 현재가 없이 반환
+    } catch (error: any) {
+      console.error(`[InfiniteBuy] KIS 서비스 초기화 실패:`, error.message);
     }
 
     // 현재가 포함한 종목 정보 생성
@@ -248,8 +248,8 @@ export class InfiniteBuyService {
       const priceData = await kisService.getUSStockPrice(stock.ticker, stock.exchange);
       currentPrice = priceData.currentPrice;
       priceChangePercent = priceData.changePercent;
-    } catch {
-      // 가격 조회 실패
+    } catch (error: any) {
+      console.error(`[InfiniteBuy] ${stock.ticker} 현재가 조회 실패:`, error.message);
     }
 
     const currentValue = currentPrice * stock.totalQuantity;
