@@ -300,11 +300,28 @@ export class TradingService {
         if (!grid.orderId) continue;
 
         try {
-          // 업비트 API Rate Limit 방지를 위한 딜레이 (100ms)
-          await new Promise(resolve => setTimeout(resolve, 100));
+          // 업비트 API Rate Limit 방지를 위한 딜레이 (200ms - 초당 최대 5회)
+          await new Promise(resolve => setTimeout(resolve, 200));
 
-          // 주문 상태 확인
-          const order = await upbit.getOrder(grid.orderId);
+          // 주문 상태 확인 (429 에러 시 재시도)
+          let order;
+          let retryCount = 0;
+          while (retryCount < 3) {
+            try {
+              order = await upbit.getOrder(grid.orderId);
+              break;
+            } catch (err: any) {
+              if (err.response?.status === 429 && retryCount < 2) {
+                retryCount++;
+                console.log(`[Trading] Rate limit hit, retry ${retryCount}/3 after 1s delay...`);
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              } else {
+                throw err;
+              }
+            }
+          }
+
+          if (!order) continue;
 
           // 체결 완료 확인
           if (order.state === 'done') {
