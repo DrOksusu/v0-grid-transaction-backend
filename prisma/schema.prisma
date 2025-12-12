@@ -195,8 +195,8 @@ model InfiniteBuyStock {
   // 관계
   buyRecords      InfiniteBuyRecord[]
 
-  @@unique([userId, ticker])
   @@index([userId])
+  @@index([userId, ticker])  // 중복 허용, 인덱스만 유지
   @@index([status])
   @@map("infinite_buy_stocks")
 }

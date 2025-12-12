@@ -107,16 +107,7 @@ export class InfiniteBuyService {
       strategy = 'basic',  // 기본값: basic 전략
     } = params;
 
-    // 중복 체크
-    const existing = await prisma.infiniteBuyStock.findFirst({
-      where: { userId, ticker },
-    });
-
-    if (existing) {
-      throw new Error('이미 등록된 종목입니다');
-    }
-
-    // 종목 생성
+    // 종목 생성 (중복 허용)
     const stock = await prisma.infiniteBuyStock.create({
       data: {
         userId,
