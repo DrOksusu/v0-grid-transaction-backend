@@ -127,6 +127,50 @@ export class KisService {
     }
   }
 
+  // 토큰 만료 에러인지 확인
+  private isTokenExpiredError(error: any): boolean {
+    const msg = error.response?.data?.msg1 || error.response?.data?.message || error.message || '';
+    return msg.includes('기간이 만료된 token') ||
+           msg.includes('token') && msg.includes('만료') ||
+           msg.includes('EGW00123') ||  // 토큰 만료 에러 코드
+           error.response?.status === 401;
+  }
+
+  // 토큰 재발급 후 콜백 재실행 (자동 재시도)
+  private async withTokenRefresh<T>(apiCall: () => Promise<T>): Promise<T> {
+    try {
+      return await apiCall();
+    } catch (error: any) {
+      // 토큰 만료 에러면 재발급 후 재시도
+      if (this.isTokenExpiredError(error)) {
+        console.log('[KIS] 토큰 만료 감지, 재발급 시도...');
+        await this.getAccessToken();
+        console.log('[KIS] 토큰 재발급 완료, API 재시도');
+        return await apiCall();
+      }
+      throw error;
+    }
+  }
+
+  // 토큰 재발급 콜백 설정 (외부에서 DB 업데이트용)
+  private onTokenRefresh: ((token: string, expireAt: Date) => Promise<void>) | null = null;
+
+  setTokenRefreshCallback(callback: (token: string, expireAt: Date) => Promise<void>) {
+    this.onTokenRefresh = callback;
+  }
+
+  // OAuth Access Token 발급 (콜백 호출 포함)
+  async refreshToken(): Promise<KisTokenInfo> {
+    const tokenInfo = await this.getAccessToken();
+
+    // 콜백이 설정되어 있으면 호출 (DB 저장용)
+    if (this.onTokenRefresh) {
+      await this.onTokenRefresh(tokenInfo.accessToken, tokenInfo.tokenExpireAt);
+    }
+
+    return tokenInfo;
+  }
+
   // ============ 해외주식 현재가 조회 ============
 
   /**
@@ -135,16 +179,16 @@ export class KisService {
    * @param exchange 거래소 코드 (NYS: 뉴욕, NAS: 나스닥, AMS: 아멕스)
    */
   async getUSStockPrice(ticker: string, exchange: string = 'NAS') {
-    // 토큰 유효성 확인
-    if (!this.isTokenValid()) {
-      await this.getAccessToken();
-    }
+    return this.withTokenRefresh(async () => {
+      // 토큰 유효성 확인
+      if (!this.isTokenValid()) {
+        await this.getAccessToken();
+      }
 
-    // tr_id: 모의투자/실전투자 구분
-    // 해외주식 현재가: HHDFS00000300
-    const trId = 'HHDFS00000300';
+      // tr_id: 모의투자/실전투자 구분
+      // 해외주식 현재가: HHDFS00000300
+      const trId = 'HHDFS00000300';
 
-    try {
       const response = await axios.get(
         `${this.baseUrl}/uapi/overseas-price/v1/quotations/price`,
         {
@@ -178,10 +222,7 @@ export class KisService {
         volume: parseInt(output.tvol) || 0,          // 거래량
         exchange: exchange,
       };
-    } catch (error: any) {
-      const errorMsg = error.response?.data?.msg1 || error.message;
-      throw new Error(`해외주식 현재가 조회 실패: ${errorMsg}`);
-    }
+    });
   }
 
   /**
@@ -213,14 +254,14 @@ export class KisService {
    * 해외주식 잔고 조회
    */
   async getUSStockBalance() {
-    if (!this.isTokenValid()) {
-      await this.getAccessToken();
-    }
+    return this.withTokenRefresh(async () => {
+      if (!this.isTokenValid()) {
+        await this.getAccessToken();
+      }
 
-    // tr_id: 모의투자 VTTS3012R, 실전투자 TTTS3012R
-    const trId = this.isPaper ? 'VTTS3012R' : 'TTTS3012R';
+      // tr_id: 모의투자 VTTS3012R, 실전투자 TTTS3012R
+      const trId = this.isPaper ? 'VTTS3012R' : 'TTTS3012R';
 
-    try {
       const response = await axios.get(
         `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-balance`,
         {
@@ -264,10 +305,7 @@ export class KisService {
         holdings,
         summary,
       };
-    } catch (error: any) {
-      const errorMsg = error.response?.data?.msg1 || error.message;
-      throw new Error(`해외주식 잔고 조회 실패: ${errorMsg}`);
-    }
+    });
   }
 
   // ============ 해외주식 주문 ============
@@ -280,31 +318,31 @@ export class KisService {
    * @param exchange 거래소 코드
    */
   async buyUSStock(ticker: string, quantity: number, price: number, exchange: string = 'NASD') {
-    if (!this.isTokenValid()) {
-      await this.getAccessToken();
-    }
-
     // 미국 주식은 정수 수량만 주문 가능
     const intQuantity = Math.floor(quantity);
     if (intQuantity < 1) {
       throw new Error('주문 수량이 1주 미만입니다');
     }
 
-    // tr_id: 모의투자 VTTT1002U, 실전투자 TTTT1002U
-    const trId = this.isPaper ? 'VTTT1002U' : 'TTTT1002U';
+    return this.withTokenRefresh(async () => {
+      if (!this.isTokenValid()) {
+        await this.getAccessToken();
+      }
 
-    const body = {
-      CANO: this.accountNoPrefix,
-      ACNT_PRDT_CD: this.accountNoSuffix,
-      OVRS_EXCG_CD: exchange,          // 거래소 코드
-      PDNO: ticker,                     // 종목코드
-      ORD_QTY: intQuantity.toString(),  // 주문수량 (정수)
-      OVRS_ORD_UNPR: price.toFixed(2),  // 주문단가
-      ORD_SVR_DVSN_CD: '0',             // 주문서버구분코드
-      ORD_DVSN: '00',                   // 주문구분 (00: 지정가)
-    };
+      // tr_id: 모의투자 VTTT1002U, 실전투자 TTTT1002U
+      const trId = this.isPaper ? 'VTTT1002U' : 'TTTT1002U';
 
-    try {
+      const body = {
+        CANO: this.accountNoPrefix,
+        ACNT_PRDT_CD: this.accountNoSuffix,
+        OVRS_EXCG_CD: exchange,          // 거래소 코드
+        PDNO: ticker,                     // 종목코드
+        ORD_QTY: intQuantity.toString(),  // 주문수량 (정수)
+        OVRS_ORD_UNPR: price.toFixed(2),  // 주문단가
+        ORD_SVR_DVSN_CD: '0',             // 주문서버구분코드
+        ORD_DVSN: '00',                   // 주문구분 (00: 지정가)
+      };
+
       const hashKey = await this.getHashKey(body);
 
       const response = await axios.post(
@@ -329,10 +367,7 @@ export class KisService {
         orderDate: data.output?.ORD_TMD,   // 주문시간
         message: data.msg1,
       };
-    } catch (error: any) {
-      const errorMsg = error.response?.data?.msg1 || error.message;
-      throw new Error(`해외주식 매수 주문 실패: ${errorMsg}`);
-    }
+    });
   }
 
   /**
@@ -343,25 +378,25 @@ export class KisService {
    * @param exchange 거래소 코드
    */
   async sellUSStock(ticker: string, quantity: number, price: number, exchange: string = 'NASD') {
-    if (!this.isTokenValid()) {
-      await this.getAccessToken();
-    }
+    return this.withTokenRefresh(async () => {
+      if (!this.isTokenValid()) {
+        await this.getAccessToken();
+      }
 
-    // tr_id: 모의투자 VTTT1001U, 실전투자 TTTT1001U (매도)
-    const trId = this.isPaper ? 'VTTT1001U' : 'TTTT1001U';
+      // tr_id: 모의투자 VTTT1001U, 실전투자 TTTT1001U (매도)
+      const trId = this.isPaper ? 'VTTT1001U' : 'TTTT1001U';
 
-    const body = {
-      CANO: this.accountNoPrefix,
-      ACNT_PRDT_CD: this.accountNoSuffix,
-      OVRS_EXCG_CD: exchange,
-      PDNO: ticker,
-      ORD_QTY: quantity.toString(),
-      OVRS_ORD_UNPR: price.toFixed(2),
-      ORD_SVR_DVSN_CD: '0',
-      ORD_DVSN: '00',
-    };
+      const body = {
+        CANO: this.accountNoPrefix,
+        ACNT_PRDT_CD: this.accountNoSuffix,
+        OVRS_EXCG_CD: exchange,
+        PDNO: ticker,
+        ORD_QTY: quantity.toString(),
+        OVRS_ORD_UNPR: price.toFixed(2),
+        ORD_SVR_DVSN_CD: '0',
+        ORD_DVSN: '00',
+      };
 
-    try {
       const hashKey = await this.getHashKey(body);
 
       const response = await axios.post(
@@ -386,10 +421,7 @@ export class KisService {
         orderDate: data.output?.ORD_TMD,
         message: data.msg1,
       };
-    } catch (error: any) {
-      const errorMsg = error.response?.data?.msg1 || error.message;
-      throw new Error(`해외주식 매도 주문 실패: ${errorMsg}`);
-    }
+    });
   }
 
   // ============ 해외주식 주문 내역 조회 ============
@@ -398,14 +430,14 @@ export class KisService {
    * 해외주식 체결 내역 조회
    */
   async getUSStockOrders() {
-    if (!this.isTokenValid()) {
-      await this.getAccessToken();
-    }
+    return this.withTokenRefresh(async () => {
+      if (!this.isTokenValid()) {
+        await this.getAccessToken();
+      }
 
-    // tr_id: 모의투자 VTTS3035R, 실전투자 TTTS3035R
-    const trId = this.isPaper ? 'VTTS3035R' : 'TTTS3035R';
+      // tr_id: 모의투자 VTTS3035R, 실전투자 TTTS3035R
+      const trId = this.isPaper ? 'VTTS3035R' : 'TTTS3035R';
 
-    try {
       const today = new Date();
       const startDate = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000); // 7일 전
 
@@ -451,10 +483,7 @@ export class KisService {
       })) || [];
 
       return orders;
-    } catch (error: any) {
-      const errorMsg = error.response?.data?.msg1 || error.message;
-      throw new Error(`체결 내역 조회 실패: ${errorMsg}`);
-    }
+    });
   }
 
   // ============ 환율 조회 ============
@@ -468,30 +497,30 @@ export class KisService {
    * @param exchange 거래소 코드
    */
   async buyUSStockLOC(ticker: string, quantity: number, price: number, exchange: string = 'NASD') {
-    if (!this.isTokenValid()) {
-      await this.getAccessToken();
-    }
-
     const intQuantity = Math.floor(quantity);
     if (intQuantity < 1) {
       throw new Error('주문 수량이 1주 미만입니다');
     }
 
-    // tr_id: 모의투자 VTTT1002U, 실전투자 TTTT1002U
-    const trId = this.isPaper ? 'VTTT1002U' : 'TTTT1002U';
+    return this.withTokenRefresh(async () => {
+      if (!this.isTokenValid()) {
+        await this.getAccessToken();
+      }
 
-    const body = {
-      CANO: this.accountNoPrefix,
-      ACNT_PRDT_CD: this.accountNoSuffix,
-      OVRS_EXCG_CD: exchange,
-      PDNO: ticker,
-      ORD_QTY: intQuantity.toString(),
-      OVRS_ORD_UNPR: price.toFixed(2),
-      ORD_SVR_DVSN_CD: '0',
-      ORD_DVSN: '34',  // 34: LOC (Limit on Close) 지정가
-    };
+      // tr_id: 모의투자 VTTT1002U, 실전투자 TTTT1002U
+      const trId = this.isPaper ? 'VTTT1002U' : 'TTTT1002U';
 
-    try {
+      const body = {
+        CANO: this.accountNoPrefix,
+        ACNT_PRDT_CD: this.accountNoSuffix,
+        OVRS_EXCG_CD: exchange,
+        PDNO: ticker,
+        ORD_QTY: intQuantity.toString(),
+        OVRS_ORD_UNPR: price.toFixed(2),
+        ORD_SVR_DVSN_CD: '0',
+        ORD_DVSN: '34',  // 34: LOC (Limit on Close) 지정가
+      };
+
       const hashKey = await this.getHashKey(body);
 
       const response = await axios.post(
@@ -517,10 +546,7 @@ export class KisService {
         message: data.msg1,
         orderType: 'LOC',
       };
-    } catch (error: any) {
-      const errorMsg = error.response?.data?.msg1 || error.message;
-      throw new Error(`해외주식 LOC 매수 주문 실패: ${errorMsg}`);
-    }
+    });
   }
 
   /**
@@ -532,25 +558,25 @@ export class KisService {
    * @param exchange 거래소 코드
    */
   async sellUSStockLOC(ticker: string, quantity: number, price: number, exchange: string = 'NASD') {
-    if (!this.isTokenValid()) {
-      await this.getAccessToken();
-    }
+    return this.withTokenRefresh(async () => {
+      if (!this.isTokenValid()) {
+        await this.getAccessToken();
+      }
 
-    // tr_id: 모의투자 VTTT1001U, 실전투자 TTTT1001U (매도)
-    const trId = this.isPaper ? 'VTTT1001U' : 'TTTT1001U';
+      // tr_id: 모의투자 VTTT1001U, 실전투자 TTTT1001U (매도)
+      const trId = this.isPaper ? 'VTTT1001U' : 'TTTT1001U';
 
-    const body = {
-      CANO: this.accountNoPrefix,
-      ACNT_PRDT_CD: this.accountNoSuffix,
-      OVRS_EXCG_CD: exchange,
-      PDNO: ticker,
-      ORD_QTY: quantity.toString(),
-      OVRS_ORD_UNPR: price.toFixed(2),
-      ORD_SVR_DVSN_CD: '0',
-      ORD_DVSN: '34',  // 34: LOC (Limit on Close) 지정가
-    };
+      const body = {
+        CANO: this.accountNoPrefix,
+        ACNT_PRDT_CD: this.accountNoSuffix,
+        OVRS_EXCG_CD: exchange,
+        PDNO: ticker,
+        ORD_QTY: quantity.toString(),
+        OVRS_ORD_UNPR: price.toFixed(2),
+        ORD_SVR_DVSN_CD: '0',
+        ORD_DVSN: '34',  // 34: LOC (Limit on Close) 지정가
+      };
 
-    try {
       const hashKey = await this.getHashKey(body);
 
       const response = await axios.post(
@@ -576,49 +602,48 @@ export class KisService {
         message: data.msg1,
         orderType: 'LOC',
       };
-    } catch (error: any) {
-      const errorMsg = error.response?.data?.msg1 || error.message;
-      throw new Error(`해외주식 LOC 매도 주문 실패: ${errorMsg}`);
-    }
+    });
   }
 
   /**
    * 환율 조회 (USD/KRW)
    */
   async getExchangeRate() {
-    if (!this.isTokenValid()) {
-      await this.getAccessToken();
-    }
-
-    const trId = 'CTRP6504R';
-
     try {
-      const response = await axios.get(
-        `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-present-balance`,
-        {
-          headers: this.getHeaders(trId),
-          params: {
-            CANO: this.accountNoPrefix,
-            ACNT_PRDT_CD: this.accountNoSuffix,
-            WCRC_FRCR_DVSN_CD: '02',  // 02: 외화
-            NATN_CD: '840',           // 840: 미국
-            TR_MKET_CD: '00',
-            INQR_DVSN_CD: '00',
-          },
+      return await this.withTokenRefresh(async () => {
+        if (!this.isTokenValid()) {
+          await this.getAccessToken();
         }
-      );
 
-      const data = response.data;
+        const trId = 'CTRP6504R';
 
-      // 환율 정보 추출 (여러 방법으로 시도)
-      const exchangeRate = parseFloat(data.output2?.[0]?.frst_bltn_exrt) ||
-                          parseFloat(data.output3?.exrt) ||
-                          1350;  // 기본값
+        const response = await axios.get(
+          `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-present-balance`,
+          {
+            headers: this.getHeaders(trId),
+            params: {
+              CANO: this.accountNoPrefix,
+              ACNT_PRDT_CD: this.accountNoSuffix,
+              WCRC_FRCR_DVSN_CD: '02',  // 02: 외화
+              NATN_CD: '840',           // 840: 미국
+              TR_MKET_CD: '00',
+              INQR_DVSN_CD: '00',
+            },
+          }
+        );
 
-      return {
-        currency: 'USD/KRW',
-        rate: exchangeRate,
-      };
+        const data = response.data;
+
+        // 환율 정보 추출 (여러 방법으로 시도)
+        const exchangeRate = parseFloat(data.output2?.[0]?.frst_bltn_exrt) ||
+                            parseFloat(data.output3?.exrt) ||
+                            1350;  // 기본값
+
+        return {
+          currency: 'USD/KRW',
+          rate: exchangeRate,
+        };
+      });
     } catch (error: any) {
       // 환율 조회 실패 시 기본값 반환
       console.error('환율 조회 실패:', error.message);
