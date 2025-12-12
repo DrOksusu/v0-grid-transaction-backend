@@ -1,7 +1,7 @@
 import prisma from '../config/database';
 import { KisService } from './kis.service';
 import { decrypt, encrypt } from '../utils/encryption';
-import { InfiniteBuyStatus } from '@prisma/client';
+import { InfiniteBuyStatus, InfiniteBuyStrategy } from '@prisma/client';
 
 interface CreateStockParams {
   userId: number;
@@ -15,6 +15,7 @@ interface CreateStockParams {
   buyTime?: string;
   buyCondition?: string;
   autoStart?: boolean;
+  strategy?: InfiniteBuyStrategy;  // 전략 선택 (basic | strategy1)
 }
 
 interface UpdateStockParams {
@@ -103,6 +104,7 @@ export class InfiniteBuyService {
       buyTime,
       buyCondition = 'daily',
       autoStart = false,
+      strategy = 'basic',  // 기본값: basic 전략
     } = params;
 
     // 중복 체크
@@ -127,6 +129,7 @@ export class InfiniteBuyService {
         autoEnabled,
         buyTime,
         buyCondition,
+        strategy,  // 전략 추가
         status: autoStart ? 'buying' : 'stopped',
       },
     });
@@ -187,6 +190,7 @@ export class InfiniteBuyService {
           name: stock.name,
           exchange: stock.exchange,
           status: stock.status,
+          strategy: stock.strategy,  // 전략 추가
           buyAmount: stock.buyAmount,
           totalRounds: stock.totalRounds,
           targetProfit: stock.targetProfit,
@@ -268,6 +272,7 @@ export class InfiniteBuyService {
       name: stock.name,
       exchange: stock.exchange,
       status: stock.status,
+      strategy: stock.strategy,  // 전략 추가
       buyAmount: stock.buyAmount,
       totalRounds: stock.totalRounds,
       targetProfit: stock.targetProfit,

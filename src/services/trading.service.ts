@@ -300,6 +300,9 @@ export class TradingService {
         if (!grid.orderId) continue;
 
         try {
+          // 업비트 API Rate Limit 방지를 위한 딜레이 (100ms)
+          await new Promise(resolve => setTimeout(resolve, 100));
+
           // 주문 상태 확인
           const order = await upbit.getOrder(grid.orderId);
 

@@ -3,7 +3,9 @@ import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { infiniteBuyService } from '../services/infinite-buy.service';
 import { infiniteBuyScheduler } from '../services/infinite-buy-scheduler.service';
+import { infiniteBuyStrategy1Service } from '../services/infinite-buy-strategy1.service';
 import { InfiniteBuyStatus } from '@prisma/client';
+import prisma from '../config/database';
 
 // 종목 생성
 export const createStock = async (
@@ -24,6 +26,7 @@ export const createStock = async (
       buyTime,
       buyCondition,
       autoStart,
+      strategy,  // 전략 선택 (basic | strategy1)
     } = req.body;
 
     if (!ticker || !name || !buyAmount) {
@@ -44,6 +47,16 @@ export const createStock = async (
       );
     }
 
+    // 전략 유효성 검사
+    if (strategy && !['basic', 'strategy1'].includes(strategy)) {
+      return errorResponse(
+        res,
+        'VALIDATION_ERROR',
+        '유효하지 않은 전략입니다. (basic 또는 strategy1)',
+        400
+      );
+    }
+
     const stock = await infiniteBuyService.createStock({
       userId,
       ticker,
@@ -56,8 +69,10 @@ export const createStock = async (
       buyTime,
       buyCondition,
       autoStart,
+      strategy,  // 전략 전달
     });
 
+    const strategyName = stock.strategy === 'strategy1' ? '무한매수전략1' : '기본 전략';
     return successResponse(
       res,
       {
@@ -66,6 +81,7 @@ export const createStock = async (
         name: stock.name,
         exchange: stock.exchange,
         status: stock.status,
+        strategy: stock.strategy,
         buyAmount: stock.buyAmount,
         totalRounds: stock.totalRounds,
         targetProfit: stock.targetProfit,
@@ -79,7 +95,7 @@ export const createStock = async (
         buyCondition: stock.buyCondition,
         createdAt: stock.createdAt.toISOString(),
       },
-      '종목이 추가되었습니다',
+      `종목이 추가되었습니다 (${strategyName})`,
       201
     );
   } catch (error: any) {
@@ -489,6 +505,195 @@ export const updateSchedulerConfig = async (
     const status = infiniteBuyScheduler.getStatus();
     return successResponse(res, status, '스케줄러 설정이 변경되었습니다');
   } catch (error) {
+    next(error);
+  }
+};
+
+// =====================
+// 무한매수전략1 API
+// =====================
+
+// 전략1 매수 실행
+export const executeStrategy1Buy = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const stockId = parseInt(req.params.id);
+
+    if (isNaN(stockId)) {
+      return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
+    }
+
+    // 종목의 전략이 strategy1인지 확인
+    const stock = await prisma.infiniteBuyStock.findFirst({
+      where: { id: stockId, userId },
+    });
+
+    if (!stock) {
+      return errorResponse(res, 'STOCK_NOT_FOUND', '종목을 찾을 수 없습니다', 404);
+    }
+
+    if (stock.strategy !== 'strategy1') {
+      return errorResponse(
+        res,
+        'STRATEGY_MISMATCH',
+        '이 종목은 무한매수전략1이 아닙니다. 종목 설정에서 전략을 변경해주세요.',
+        400
+      );
+    }
+
+    const result = await infiniteBuyStrategy1Service.executeBuy(userId, stockId);
+
+    return successResponse(
+      res,
+      result,
+      `${stock.currentRound + 1}회차 전략1 매수 주문이 접수되었습니다 (LOC)`
+    );
+  } catch (error: any) {
+    if (error.message === '종목을 찾을 수 없습니다') {
+      return errorResponse(res, 'STOCK_NOT_FOUND', error.message, 404);
+    }
+    if (error.message === '이미 익절 완료된 종목입니다') {
+      return errorResponse(res, 'ALREADY_COMPLETED', error.message, 400);
+    }
+    if (error.message === '최대 분할 횟수에 도달했습니다') {
+      return errorResponse(res, 'MAX_ROUNDS_REACHED', error.message, 400);
+    }
+    if (error.message.includes('한국투자증권 API')) {
+      return errorResponse(res, 'KIS_NOT_CONNECTED', error.message, 400);
+    }
+    next(error);
+  }
+};
+
+// 전략1 매도 실행
+export const executeStrategy1Sell = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const stockId = parseInt(req.params.id);
+
+    if (isNaN(stockId)) {
+      return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
+    }
+
+    // 종목의 전략이 strategy1인지 확인
+    const stock = await prisma.infiniteBuyStock.findFirst({
+      where: { id: stockId, userId },
+    });
+
+    if (!stock) {
+      return errorResponse(res, 'STOCK_NOT_FOUND', '종목을 찾을 수 없습니다', 404);
+    }
+
+    if (stock.strategy !== 'strategy1') {
+      return errorResponse(
+        res,
+        'STRATEGY_MISMATCH',
+        '이 종목은 무한매수전략1이 아닙니다. 종목 설정에서 전략을 변경해주세요.',
+        400
+      );
+    }
+
+    const result = await infiniteBuyStrategy1Service.executeSell(userId, stockId);
+
+    return successResponse(
+      res,
+      result,
+      `전략1 매도 주문이 접수되었습니다 (LOC/지정가)`
+    );
+  } catch (error: any) {
+    if (error.message === '종목을 찾을 수 없습니다') {
+      return errorResponse(res, 'STOCK_NOT_FOUND', error.message, 404);
+    }
+    if (error.message === '이미 익절 완료된 종목입니다') {
+      return errorResponse(res, 'ALREADY_COMPLETED', error.message, 400);
+    }
+    if (error.message === '매도할 수량이 없습니다') {
+      return errorResponse(res, 'NO_QUANTITY', error.message, 400);
+    }
+    if (error.message.includes('한국투자증권 API')) {
+      return errorResponse(res, 'KIS_NOT_CONNECTED', error.message, 400);
+    }
+    next(error);
+  }
+};
+
+// 전략1 상태 조회
+export const getStrategy1Status = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const stockId = parseInt(req.params.id);
+
+    if (isNaN(stockId)) {
+      return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
+    }
+
+    const status = await infiniteBuyStrategy1Service.getStrategyStatus(userId, stockId);
+
+    return successResponse(res, status);
+  } catch (error: any) {
+    if (error.message === '종목을 찾을 수 없습니다') {
+      return errorResponse(res, 'STOCK_NOT_FOUND', error.message, 404);
+    }
+    next(error);
+  }
+};
+
+// 종목 전략 변경
+export const updateStockStrategy = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const stockId = parseInt(req.params.id);
+    const { strategy } = req.body;
+
+    if (isNaN(stockId)) {
+      return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
+    }
+
+    if (!strategy || !['basic', 'strategy1'].includes(strategy)) {
+      return errorResponse(
+        res,
+        'VALIDATION_ERROR',
+        '유효하지 않은 전략입니다. (basic 또는 strategy1)',
+        400
+      );
+    }
+
+    const stock = await prisma.infiniteBuyStock.findFirst({
+      where: { id: stockId, userId },
+    });
+
+    if (!stock) {
+      return errorResponse(res, 'STOCK_NOT_FOUND', '종목을 찾을 수 없습니다', 404);
+    }
+
+    const updated = await prisma.infiniteBuyStock.update({
+      where: { id: stockId },
+      data: { strategy },
+    });
+
+    const strategyName = strategy === 'strategy1' ? '무한매수전략1' : '기본 전략';
+    return successResponse(
+      res,
+      { id: updated.id.toString(), strategy: updated.strategy },
+      `전략이 ${strategyName}(으)로 변경되었습니다`
+    );
+  } catch (error: any) {
     next(error);
   }
 };

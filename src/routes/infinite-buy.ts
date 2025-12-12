@@ -18,6 +18,11 @@ import {
   triggerManualBuy,
   triggerPriceCheck,
   updateSchedulerConfig,
+  // 무한매수전략1 API
+  executeStrategy1Buy,
+  executeStrategy1Sell,
+  getStrategy1Status,
+  updateStockStrategy,
 } from '../controllers/infinite-buy.controller';
 
 const router = Router();
@@ -55,5 +60,20 @@ router.get('/scheduler/status', getSchedulerStatus);
 router.post('/scheduler/trigger-buy', triggerManualBuy);
 router.post('/scheduler/trigger-price-check', triggerPriceCheck);
 router.put('/scheduler/config', updateSchedulerConfig);
+
+// =====================
+// 무한매수전략1 API
+// =====================
+// 전략 변경
+router.put('/stocks/:id/strategy', updateStockStrategy);
+
+// 전략1 상태 조회 (다음 매수/매도 가격 등)
+router.get('/stocks/:id/strategy1/status', getStrategy1Status);
+
+// 전략1 매수 실행 (LOC 주문)
+router.post('/stocks/:id/strategy1/buy', executeStrategy1Buy);
+
+// 전략1 매도 실행 (LOC + 지정가)
+router.post('/stocks/:id/strategy1/sell', executeStrategy1Sell);
 
 export default router;

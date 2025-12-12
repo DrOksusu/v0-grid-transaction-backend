@@ -153,6 +153,11 @@ enum InfiniteBuyStatus {
   stopped     // 중단됨
 }
 
+enum InfiniteBuyStrategy {
+  basic       // 기본 전략 (단순 분할매수)
+  strategy1   // 무한매수전략1 (전반전/후반전 LOC 매수)
+}
+
 // 무한매수 종목
 model InfiniteBuyStock {
   id              Int       @id @default(autoincrement())
@@ -168,6 +173,7 @@ model InfiniteBuyStock {
   buyAmount       Float                 // 1회 매수금액 (USD)
   totalRounds     Int       @default(40) // 총 분할 횟수
   targetProfit    Float     @default(10) // 목표 수익률 (%)
+  strategy        InfiniteBuyStrategy @default(basic) // 매수 전략
 
   // 현재 상태
   status          InfiniteBuyStatus @default(buying)
@@ -207,6 +213,11 @@ model InfiniteBuyRecord {
   price           Float                 // 체결 가격
   quantity        Float                 // 체결 수량
   amount          Float                 // 체결 금액
+
+  // LOC 주문 정보 (전략1용)
+  orderType       String    @default("market") // market, loc (Limit on Close)
+  targetPrice     Float?                // LOC 목표가격
+  orderSubType    String?               // 전략1: "first_half_a", "first_half_b", "second_half", "sell_a", "sell_b"
 
   // 매도시 수익 정보
   profit          Float?                // 실현 손익

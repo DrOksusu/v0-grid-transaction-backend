@@ -460,6 +460,129 @@ export class KisService {
   // ============ 환율 조회 ============
 
   /**
+   * 해외주식 LOC(Limit on Close) 매수 주문
+   * LOC: 장 마감 시점에 지정가 이하로 체결되는 주문
+   * @param ticker 종목코드
+   * @param quantity 수량
+   * @param price LOC 지정가 (USD)
+   * @param exchange 거래소 코드
+   */
+  async buyUSStockLOC(ticker: string, quantity: number, price: number, exchange: string = 'NASD') {
+    if (!this.isTokenValid()) {
+      await this.getAccessToken();
+    }
+
+    const intQuantity = Math.floor(quantity);
+    if (intQuantity < 1) {
+      throw new Error('주문 수량이 1주 미만입니다');
+    }
+
+    // tr_id: 모의투자 VTTT1002U, 실전투자 TTTT1002U
+    const trId = this.isPaper ? 'VTTT1002U' : 'TTTT1002U';
+
+    const body = {
+      CANO: this.accountNoPrefix,
+      ACNT_PRDT_CD: this.accountNoSuffix,
+      OVRS_EXCG_CD: exchange,
+      PDNO: ticker,
+      ORD_QTY: intQuantity.toString(),
+      OVRS_ORD_UNPR: price.toFixed(2),
+      ORD_SVR_DVSN_CD: '0',
+      ORD_DVSN: '34',  // 34: LOC (Limit on Close) 지정가
+    };
+
+    try {
+      const hashKey = await this.getHashKey(body);
+
+      const response = await axios.post(
+        `${this.baseUrl}/uapi/overseas-stock/v1/trading/order`,
+        body,
+        {
+          headers: {
+            ...this.getHeaders(trId),
+            hashkey: hashKey,
+          },
+        }
+      );
+
+      const data = response.data;
+
+      if (data.rt_cd !== '0') {
+        throw new Error(data.msg1 || 'LOC 매수 주문 실패');
+      }
+
+      return {
+        orderId: data.output?.ODNO,
+        orderDate: data.output?.ORD_TMD,
+        message: data.msg1,
+        orderType: 'LOC',
+      };
+    } catch (error: any) {
+      const errorMsg = error.response?.data?.msg1 || error.message;
+      throw new Error(`해외주식 LOC 매수 주문 실패: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * 해외주식 LOC(Limit on Close) 매도 주문
+   * LOC: 장 마감 시점에 지정가 이상으로 체결되는 주문
+   * @param ticker 종목코드
+   * @param quantity 수량
+   * @param price LOC 지정가 (USD)
+   * @param exchange 거래소 코드
+   */
+  async sellUSStockLOC(ticker: string, quantity: number, price: number, exchange: string = 'NASD') {
+    if (!this.isTokenValid()) {
+      await this.getAccessToken();
+    }
+
+    // tr_id: 모의투자 VTTT1001U, 실전투자 TTTT1001U (매도)
+    const trId = this.isPaper ? 'VTTT1001U' : 'TTTT1001U';
+
+    const body = {
+      CANO: this.accountNoPrefix,
+      ACNT_PRDT_CD: this.accountNoSuffix,
+      OVRS_EXCG_CD: exchange,
+      PDNO: ticker,
+      ORD_QTY: quantity.toString(),
+      OVRS_ORD_UNPR: price.toFixed(2),
+      ORD_SVR_DVSN_CD: '0',
+      ORD_DVSN: '34',  // 34: LOC (Limit on Close) 지정가
+    };
+
+    try {
+      const hashKey = await this.getHashKey(body);
+
+      const response = await axios.post(
+        `${this.baseUrl}/uapi/overseas-stock/v1/trading/order`,
+        body,
+        {
+          headers: {
+            ...this.getHeaders(trId),
+            hashkey: hashKey,
+          },
+        }
+      );
+
+      const data = response.data;
+
+      if (data.rt_cd !== '0') {
+        throw new Error(data.msg1 || 'LOC 매도 주문 실패');
+      }
+
+      return {
+        orderId: data.output?.ODNO,
+        orderDate: data.output?.ORD_TMD,
+        message: data.msg1,
+        orderType: 'LOC',
+      };
+    } catch (error: any) {
+      const errorMsg = error.response?.data?.msg1 || error.message;
+      throw new Error(`해외주식 LOC 매도 주문 실패: ${errorMsg}`);
+    }
+  }
+
+  /**
    * 환율 조회 (USD/KRW)
    */
   async getExchangeRate() {
