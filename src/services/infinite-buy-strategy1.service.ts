@@ -435,26 +435,41 @@ export class InfiniteBuyStrategy1Service {
     const isFirstHalf = this.isFirstHalf(stock.currentRound + 1, stock.totalRounds);
     const halfRound = stock.totalRounds / 2;
 
+    // 첫 매수 전에는 현재가 조회
+    let basePrice = stock.avgPrice;
+    let currentPrice: number | null = null;
+
+    if (stock.avgPrice === 0) {
+      // 현재가 조회 시도
+      try {
+        const kisService = await this.getKisService(userId);
+        const priceData = await kisService.getUSStockPrice(stock.ticker, stock.exchange);
+        basePrice = priceData.currentPrice;
+        currentPrice = priceData.currentPrice;
+      } catch (error) {
+        // 현재가 조회 실패 시 0으로 유지
+        console.error('[Strategy1] 현재가 조회 실패:', error);
+      }
+    }
+
     // 다음 매수 가격 계산
     let nextBuyPrices: { type: string; price: number }[] = [];
 
-    if (stock.currentRound < stock.totalRounds) {
-      const avgPrice = stock.avgPrice > 0 ? stock.avgPrice : 0;
-
+    if (stock.currentRound < stock.totalRounds && basePrice > 0) {
       if (isFirstHalf) {
         nextBuyPrices = [
-          { type: '전반전 A (평단 LOC)', price: avgPrice - 0.01 },
-          { type: '전반전 B (평단+%)', price: avgPrice * (1 + locPercent / 100) },
+          { type: '전반전 A (평단 LOC)', price: basePrice - 0.01 },
+          { type: '전반전 B (평단+%)', price: basePrice * (1 + locPercent / 100) },
         ];
       } else {
         nextBuyPrices = [
-          { type: '후반전 (평단-% LOC)', price: avgPrice * (1 - locPercent / 100) - 0.01 },
+          { type: '후반전 (평단-% LOC)', price: basePrice * (1 - locPercent / 100) - 0.01 },
         ];
       }
     }
 
     // 매도 가격 계산
-    const sellPrices = stock.totalQuantity > 0 ? [
+    const sellPrices = stock.totalQuantity > 0 && stock.avgPrice > 0 ? [
       { type: 'LOC 매도 (1/4)', price: stock.avgPrice * (1 + locPercent / 100), quantity: Math.floor(stock.totalQuantity / 4) },
       { type: '지정가 매도 (3/4)', price: stock.avgPrice * 1.10, quantity: Math.floor(stock.totalQuantity * 3 / 4) },
     ] : [];
@@ -469,10 +484,13 @@ export class InfiniteBuyStrategy1Service {
       t: t.toFixed(2),
       locPercent: locPercent.toFixed(2) + '%',
       avgPrice: stock.avgPrice,
+      currentPrice,  // 첫 매수 전일 때 현재가 반환
+      basePrice,     // 계산에 사용된 기준가 (평단 또는 현재가)
       totalInvested: stock.totalInvested,
       totalQuantity: stock.totalQuantity,
       nextBuyPrices,
       sellPrices,
+      isFirstBuy: stock.currentRound === 0,  // 첫 매수 여부
     };
   }
 }
