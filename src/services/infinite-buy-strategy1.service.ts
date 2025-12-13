@@ -1,6 +1,7 @@
 import prisma from '../config/database';
 import { KisService } from './kis.service';
 import { decrypt, encrypt } from '../utils/encryption';
+import { getNextLOCExecutionTime } from '../utils/us-market-holidays';
 
 /**
  * 무한매수전략1 서비스
@@ -474,6 +475,9 @@ export class InfiniteBuyStrategy1Service {
       { type: '지정가 매도 (3/4)', price: stock.avgPrice * 1.10, quantity: Math.floor(stock.totalQuantity * 3 / 4) },
     ] : [];
 
+    // 다음 LOC 체결 예정 시간
+    const nextExecution = getNextLOCExecutionTime();
+
     return {
       ticker: stock.ticker,
       strategy: 'strategy1',
@@ -491,6 +495,14 @@ export class InfiniteBuyStrategy1Service {
       nextBuyPrices,
       sellPrices,
       isFirstBuy: stock.currentRound === 0,  // 첫 매수 여부
+      nextExecution: {
+        dateStr: nextExecution.dateStr,
+        dayOfWeek: nextExecution.dayOfWeek,
+        isToday: nextExecution.isToday,
+        daysUntil: nextExecution.daysUntil,
+        executionTimeKST: nextExecution.executionTimeKST,
+        executionTimeET: nextExecution.executionTimeET,
+      },
     };
   }
 }

@@ -1,0 +1,266 @@
+/**
+ * 미국 주식 시장 휴일 및 거래일 계산 유틸리티
+ *
+ * NYSE/NASDAQ 휴일:
+ * - New Year's Day (1월 1일)
+ * - Martin Luther King Jr. Day (1월 셋째 월요일)
+ * - Presidents' Day (2월 셋째 월요일)
+ * - Good Friday (부활절 전 금요일)
+ * - Memorial Day (5월 마지막 월요일)
+ * - Juneteenth (6월 19일)
+ * - Independence Day (7월 4일)
+ * - Labor Day (9월 첫째 월요일)
+ * - Thanksgiving Day (11월 넷째 목요일)
+ * - Christmas Day (12월 25일)
+ */
+
+// 특정 월의 n번째 특정 요일 계산
+function getNthDayOfMonth(year: number, month: number, dayOfWeek: number, n: number): Date {
+  const firstDay = new Date(year, month, 1);
+  const firstDayOfWeek = firstDay.getDay();
+  let offset = dayOfWeek - firstDayOfWeek;
+  if (offset < 0) offset += 7;
+  const day = 1 + offset + (n - 1) * 7;
+  return new Date(year, month, day);
+}
+
+// 특정 월의 마지막 특정 요일 계산
+function getLastDayOfMonth(year: number, month: number, dayOfWeek: number): Date {
+  const lastDay = new Date(year, month + 1, 0);
+  const lastDayOfWeek = lastDay.getDay();
+  let offset = lastDayOfWeek - dayOfWeek;
+  if (offset < 0) offset += 7;
+  return new Date(year, month + 1, -offset);
+}
+
+// 부활절 계산 (Anonymous Gregorian algorithm)
+function getEasterSunday(year: number): Date {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31) - 1;
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month, day);
+}
+
+// Good Friday (부활절 2일 전)
+function getGoodFriday(year: number): Date {
+  const easter = getEasterSunday(year);
+  return new Date(easter.getTime() - 2 * 24 * 60 * 60 * 1000);
+}
+
+// 휴일이 주말인 경우 대체휴일 적용
+function observedHoliday(date: Date): Date {
+  const day = date.getDay();
+  if (day === 0) { // 일요일 -> 월요일
+    return new Date(date.getTime() + 24 * 60 * 60 * 1000);
+  }
+  if (day === 6) { // 토요일 -> 금요일
+    return new Date(date.getTime() - 24 * 60 * 60 * 1000);
+  }
+  return date;
+}
+
+// 특정 연도의 모든 미국 주식 시장 휴일 반환
+export function getUSMarketHolidays(year: number): Date[] {
+  const holidays: Date[] = [];
+
+  // New Year's Day (1월 1일)
+  holidays.push(observedHoliday(new Date(year, 0, 1)));
+
+  // Martin Luther King Jr. Day (1월 셋째 월요일)
+  holidays.push(getNthDayOfMonth(year, 0, 1, 3));
+
+  // Presidents' Day (2월 셋째 월요일)
+  holidays.push(getNthDayOfMonth(year, 1, 1, 3));
+
+  // Good Friday (부활절 전 금요일)
+  holidays.push(getGoodFriday(year));
+
+  // Memorial Day (5월 마지막 월요일)
+  holidays.push(getLastDayOfMonth(year, 4, 1));
+
+  // Juneteenth (6월 19일) - 2021년부터 연방 휴일
+  holidays.push(observedHoliday(new Date(year, 5, 19)));
+
+  // Independence Day (7월 4일)
+  holidays.push(observedHoliday(new Date(year, 6, 4)));
+
+  // Labor Day (9월 첫째 월요일)
+  holidays.push(getNthDayOfMonth(year, 8, 1, 1));
+
+  // Thanksgiving Day (11월 넷째 목요일)
+  holidays.push(getNthDayOfMonth(year, 10, 4, 4));
+
+  // Christmas Day (12월 25일)
+  holidays.push(observedHoliday(new Date(year, 11, 25)));
+
+  return holidays;
+}
+
+// 날짜가 휴일인지 확인
+export function isUSMarketHoliday(date: Date): boolean {
+  const year = date.getFullYear();
+  const holidays = getUSMarketHolidays(year);
+
+  const dateStr = date.toISOString().split('T')[0];
+  return holidays.some(h => h.toISOString().split('T')[0] === dateStr);
+}
+
+// 날짜가 거래일인지 확인 (주말 + 휴일 제외)
+export function isUSMarketOpen(date: Date): boolean {
+  const day = date.getDay();
+  // 주말 체크
+  if (day === 0 || day === 6) return false;
+  // 휴일 체크
+  return !isUSMarketHoliday(date);
+}
+
+// 다음 거래일 계산
+export function getNextTradingDay(fromDate: Date = new Date()): Date {
+  const result = new Date(fromDate);
+  result.setHours(0, 0, 0, 0);
+
+  // 다음 날부터 시작
+  result.setDate(result.getDate() + 1);
+
+  // 거래일을 찾을 때까지 반복 (최대 10일)
+  let count = 0;
+  while (!isUSMarketOpen(result) && count < 10) {
+    result.setDate(result.getDate() + 1);
+    count++;
+  }
+
+  return result;
+}
+
+// 미국 동부시간이 일광절약시간(DST)인지 확인
+function isUSEasternDST(date: Date): boolean {
+  // 미국 DST: 3월 둘째 일요일 ~ 11월 첫째 일요일
+  const year = date.getFullYear();
+
+  // 3월 둘째 일요일
+  const marchSecondSunday = getNthDayOfMonth(year, 2, 0, 2);
+  // 11월 첫째 일요일
+  const novFirstSunday = getNthDayOfMonth(year, 10, 0, 1);
+
+  return date >= marchSecondSunday && date < novFirstSunday;
+}
+
+// LOC 주문 체결 예정 시간 (미국 동부 기준 오후 4시)
+export function getNextLOCExecutionTime(fromDate: Date = new Date()): {
+  date: Date;
+  dateStr: string;
+  dayOfWeek: string;
+  isToday: boolean;
+  daysUntil: number;
+  executionTimeKST: string;  // 한국시간 체결 예정 시간
+  executionTimeET: string;   // 미국 동부시간 체결 예정 시간
+} {
+  const now = new Date();
+  const koreaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  const usEasternTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+
+  // 현재 미국 동부 시간 기준으로 장 마감 전인지 확인
+  const usHour = usEasternTime.getHours();
+  const usMinutes = usEasternTime.getMinutes();
+
+  let checkDate = new Date(fromDate);
+  checkDate.setHours(0, 0, 0, 0);
+
+  // 오늘이 거래일이고 장 마감 전(오후 4시 전)이면 오늘 체결
+  const todayIsTradingDay = isUSMarketOpen(checkDate);
+  const beforeMarketClose = usHour < 16 || (usHour === 16 && usMinutes === 0);
+
+  let targetDate: Date;
+  let isToday = false;
+
+  if (todayIsTradingDay && beforeMarketClose) {
+    targetDate = checkDate;
+    isToday = true;
+  } else {
+    targetDate = getNextTradingDay(checkDate);
+  }
+
+  const days = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+  const dayOfWeek = days[targetDate.getDay()];
+
+  // 오늘부터 며칠 후인지
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const daysUntil = Math.round((targetDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+
+  // 날짜 포맷 (예: 12/16)
+  const dateStr = `${targetDate.getMonth() + 1}/${targetDate.getDate()}`;
+
+  // 체결 시간 계산 (미국 동부시간 16:00 장 마감)
+  // DST 여부에 따라 한국시간 계산
+  // - DST (3월~11월): ET = UTC-4, KST = UTC+9 → 차이 13시간
+  // - 표준시 (11월~3월): ET = UTC-5, KST = UTC+9 → 차이 14시간
+  const isDST = isUSEasternDST(targetDate);
+  const kstHour = isDST ? 5 : 6; // 다음날 새벽 5시 또는 6시
+
+  const executionTimeET = '16:00 ET';
+  const executionTimeKST = `${kstHour}:00 (다음날 새벽)`;
+
+  return {
+    date: targetDate,
+    dateStr,
+    dayOfWeek,
+    isToday,
+    daysUntil,
+    executionTimeKST,
+    executionTimeET,
+  };
+}
+
+// 휴일 이름 반환
+export function getHolidayName(date: Date): string | null {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const day = date.getDate();
+  const dateStr = date.toISOString().split('T')[0];
+
+  // 각 휴일 체크
+  if (observedHoliday(new Date(year, 0, 1)).toISOString().split('T')[0] === dateStr) {
+    return '새해 첫날';
+  }
+  if (getNthDayOfMonth(year, 0, 1, 3).toISOString().split('T')[0] === dateStr) {
+    return '마틴 루터 킹 주니어의 날';
+  }
+  if (getNthDayOfMonth(year, 1, 1, 3).toISOString().split('T')[0] === dateStr) {
+    return '대통령의 날';
+  }
+  if (getGoodFriday(year).toISOString().split('T')[0] === dateStr) {
+    return '성금요일';
+  }
+  if (getLastDayOfMonth(year, 4, 1).toISOString().split('T')[0] === dateStr) {
+    return '현충일';
+  }
+  if (observedHoliday(new Date(year, 5, 19)).toISOString().split('T')[0] === dateStr) {
+    return '준틴스 독립기념일';
+  }
+  if (observedHoliday(new Date(year, 6, 4)).toISOString().split('T')[0] === dateStr) {
+    return '독립기념일';
+  }
+  if (getNthDayOfMonth(year, 8, 1, 1).toISOString().split('T')[0] === dateStr) {
+    return '노동절';
+  }
+  if (getNthDayOfMonth(year, 10, 4, 4).toISOString().split('T')[0] === dateStr) {
+    return '추수감사절';
+  }
+  if (observedHoliday(new Date(year, 11, 25)).toISOString().split('T')[0] === dateStr) {
+    return '크리스마스';
+  }
+
+  return null;
+}
