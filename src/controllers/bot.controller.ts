@@ -5,6 +5,7 @@ import { AuthRequest } from '../types';
 import { GridService, roundToTickSize } from '../services/grid.service';
 import { UpbitService } from '../services/upbit.service';
 import { decrypt } from '../utils/encryption';
+import { botEngine } from '../services/bot-engine.service';
 
 export const createBot = async (
   req: AuthRequest,
@@ -74,6 +75,8 @@ export const createBot = async (
         gridCount,
         priceChangePercent
       );
+      // WebSocket 티커 구독 추가
+      botEngine.subscribeTicker(ticker);
       console.log(`Bot ${bot.id} created with ${gridCount} grid levels (autoStart)`);
     }
 
@@ -293,6 +296,9 @@ export const startBot = async (
       },
     });
 
+    // WebSocket 티커 구독 추가
+    botEngine.subscribeTicker(bot.ticker);
+
     return successResponse(
       res,
       {
@@ -374,6 +380,9 @@ export const stopBot = async (
       data: { status: 'stopped' },
     });
 
+    // WebSocket 티커 구독 해제 (다른 봇이 사용 중이 아닌 경우)
+    await botEngine.unsubscribeTicker(bot.ticker);
+
     return successResponse(
       res,
       {
@@ -445,6 +454,11 @@ export const deleteBot = async (
           }
         }
       }
+    }
+
+    // WebSocket 티커 구독 해제 (봇이 running 상태였던 경우)
+    if (bot.status === 'running') {
+      await botEngine.unsubscribeTicker(bot.ticker);
     }
 
     // 봇 삭제 (관련 gridLevels와 trades도 cascade로 삭제됨)
@@ -645,6 +659,25 @@ export const getPerformance = async (
       currentValue: bot.investmentAmount + bot.currentProfit,
       runningDays,
       dailyAvgProfit,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// WebSocket PriceManager 상태 조회
+export const getPriceManagerStatus = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const status = botEngine.getPriceManagerStatus();
+    const engineStatus = botEngine.getStatus();
+
+    return successResponse(res, {
+      engine: engineStatus,
+      priceManager: status,
     });
   } catch (error) {
     next(error);

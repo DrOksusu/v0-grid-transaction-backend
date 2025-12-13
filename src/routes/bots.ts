@@ -10,6 +10,7 @@ import {
   getGridLevels,
   getTrades,
   getPerformance,
+  getPriceManagerStatus,
 } from '../controllers/bot.controller';
 import { authenticate } from '../middlewares/auth';
 
@@ -20,6 +21,7 @@ router.use(authenticate);
 
 router.post('/', createBot);
 router.get('/', getAllBots);
+router.get('/status/price-manager', getPriceManagerStatus); // WebSocket 상태 조회 (봇 ID보다 먼저 배치)
 router.get('/:id', getBotById);
 router.put('/:id', updateBot);
 router.post('/:id/start', startBot);

@@ -3,6 +3,7 @@ import { UpbitService } from './upbit.service';
 import { GridService } from './grid.service';
 import { decrypt } from '../utils/encryption';
 import { socketService } from './socket.service';
+import { priceManager } from './upbit-price-manager';
 
 export class TradingService {
   // 특정 봇에 대한 거래 실행
@@ -49,11 +50,10 @@ export class TradingService {
         secretKey: secretKey,
       });
 
-      // 현재가 조회
-      const priceData = await UpbitService.getCurrentPrice(bot.ticker);
-      const currentPrice = priceData.trade_price;
+      // 현재가 조회 (WebSocket 캐시 우선, 없으면 REST 폴백)
+      const currentPrice = await priceManager.getPriceWithFallback(bot.ticker);
 
-      console.log(`[Trading] Bot ${botId} (${bot.ticker}): currentPrice=${currentPrice.toLocaleString()}`);
+      console.log(`[Trading] Bot ${botId} (${bot.ticker}): currentPrice=${currentPrice.toLocaleString()} (via WebSocket)`);
 
       // 실행 가능한 그리드 찾기
       const executableGrids = await GridService.findExecutableGrids(botId, currentPrice);
