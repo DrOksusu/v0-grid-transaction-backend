@@ -2,6 +2,7 @@ import prisma from '../config/database';
 import { KisService } from './kis.service';
 import { decrypt, encrypt } from '../utils/encryption';
 import { InfiniteBuyStatus, InfiniteBuyStrategy } from '@prisma/client';
+import { getNextLOCExecutionTime } from '../utils/us-market-holidays';
 
 interface CreateStockParams {
   userId: number;
@@ -257,6 +258,9 @@ export class InfiniteBuyService {
       ? stock.avgPrice * (1 + stock.targetProfit / 100)
       : 0;
 
+    // 다음 거래일 및 체결 예정 시간
+    const nextExecution = getNextLOCExecutionTime();
+
     return {
       id: stock.id.toString(),
       ticker: stock.ticker,
@@ -283,6 +287,14 @@ export class InfiniteBuyService {
       createdAt: stock.createdAt.toISOString(),
       updatedAt: stock.updatedAt.toISOString(),
       completedAt: stock.completedAt?.toISOString(),
+      nextExecution: {
+        dateStr: nextExecution.dateStr,
+        dayOfWeek: nextExecution.dayOfWeek,
+        isToday: nextExecution.isToday,
+        daysUntil: nextExecution.daysUntil,
+        executionTimeKST: nextExecution.executionTimeKST,
+        executionTimeET: nextExecution.executionTimeET,
+      },
     };
   }
 
