@@ -23,6 +23,8 @@ model User {
   bots              Bot[]
   credentials       Credential[]
   infiniteBuyStocks InfiniteBuyStock[]
+  monthlyProfits    MonthlyProfit[]
+  profitSnapshots   ProfitSnapshot[]
 
   @@map("users")
 }
@@ -234,4 +236,49 @@ model InfiniteBuyRecord {
   @@index([stockId])
   @@index([type])
   @@map("infinite_buy_records")
+}
+
+// ============ 수익 히스토리 (Profit History) ============
+
+// 월별 수익 집계
+model MonthlyProfit {
+  id              Int       @id @default(autoincrement())
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exchange        Exchange  // upbit, kis
+  month           String    // YYYY-MM 형식 (예: 2024-01)
+  totalProfit     Float     @default(0)  // 월 총 수익
+  tradeCount      Int       @default(0)  // 거래 횟수
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([userId, exchange, month])
+  @@index([userId])
+  @@index([month])
+  @@map("monthly_profits")
+}
+
+// 삭제된 봇 성과 스냅샷
+model ProfitSnapshot {
+  id              Int       @id @default(autoincrement())
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exchange        Exchange  // upbit, kis
+  ticker          String    // 종목 티커
+  botType         String    @default("grid")  // grid, infinite_buy
+
+  // 최종 성과
+  finalProfit     Float     // 최종 수익
+  totalTrades     Int       // 총 거래 횟수
+  investmentAmount Float    // 투자금액
+  profitPercent   Float     // 수익률
+
+  // 운영 기간
+  startedAt       DateTime  // 봇 시작일
+  deletedAt       DateTime  @default(now())  // 삭제일
+  runningDays     Int       // 운영 일수
+
+  @@index([userId])
+  @@index([deletedAt])
+  @@map("profit_snapshots")
 }

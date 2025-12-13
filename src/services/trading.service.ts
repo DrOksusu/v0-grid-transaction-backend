@@ -4,6 +4,7 @@ import { GridService } from './grid.service';
 import { decrypt } from '../utils/encryption';
 import { socketService } from './socket.service';
 import { priceManager } from './upbit-price-manager';
+import { ProfitService } from './profit.service';
 
 export class TradingService {
   // 특정 봇에 대한 거래 실행
@@ -364,6 +365,11 @@ export class TradingService {
                 currentProfit: { increment: profit },
               },
             });
+
+            // 월별 수익 기록 (매도 체결 시에만)
+            if (grid.type === 'sell' && profit !== 0) {
+              await ProfitService.recordProfit(bot.userId, 'upbit', profit);
+            }
 
             // 거래 기록에 수익 업데이트
             const trade = await prisma.trade.findFirst({

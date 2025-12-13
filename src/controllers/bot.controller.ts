@@ -6,6 +6,7 @@ import { GridService, roundToTickSize } from '../services/grid.service';
 import { UpbitService } from '../services/upbit.service';
 import { decrypt } from '../utils/encryption';
 import { botEngine } from '../services/bot-engine.service';
+import { ProfitService } from '../services/profit.service';
 
 export const createBot = async (
   req: AuthRequest,
@@ -461,6 +462,18 @@ export const deleteBot = async (
       await botEngine.unsubscribeTicker(bot.ticker);
     }
 
+    // 수익 스냅샷 저장 (삭제 전)
+    await ProfitService.createBotSnapshot({
+      id: bot.id,
+      userId: bot.userId,
+      exchange: bot.exchange,
+      ticker: bot.ticker,
+      currentProfit: bot.currentProfit,
+      totalTrades: bot.totalTrades,
+      investmentAmount: bot.investmentAmount,
+      createdAt: bot.createdAt,
+    });
+
     // 봇 삭제 (관련 gridLevels와 trades도 cascade로 삭제됨)
     await prisma.bot.delete({
       where: { id: botId },
@@ -471,8 +484,12 @@ export const deleteBot = async (
       {
         cancelledOrders,
         failedCancellations,
+        snapshot: {
+          profit: bot.currentProfit,
+          trades: bot.totalTrades,
+        },
       },
-      `봇이 삭제되었습니다. ${cancelledOrders}개의 주문이 취소되었습니다.`
+      `봇이 삭제되었습니다. 수익 기록이 저장되었습니다.`
     );
   } catch (error) {
     next(error);
