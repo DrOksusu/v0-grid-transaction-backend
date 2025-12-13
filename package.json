@@ -16,6 +16,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@prisma/client": "^5.22.0",
     "@types/crypto-js": "^4.2.2",
     "axios": "^1.13.2",
     "bcryptjs": "^3.0.3",
@@ -32,7 +33,6 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
-    "@prisma/client": "^5.22.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.5",
