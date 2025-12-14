@@ -54,6 +54,40 @@ export const getMonthlyProfits = async (
 };
 
 /**
+ * 특정 월의 봇별 상세 수익 조회
+ * GET /api/profits/monthly/:month
+ */
+export const getMonthlyDetails = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const { month } = req.params;
+    const { exchange } = req.query;
+
+    // 월 형식 검증 (YYYY-MM)
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({
+        status: 'error',
+        message: '올바른 월 형식이 아닙니다 (YYYY-MM)',
+      });
+    }
+
+    const details = await ProfitService.getMonthlyDetails(
+      userId,
+      month,
+      exchange as Exchange | undefined
+    );
+
+    return successResponse(res, details);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * 삭제된 봇 성과 목록 조회
  * GET /api/profits/deleted-bots
  */

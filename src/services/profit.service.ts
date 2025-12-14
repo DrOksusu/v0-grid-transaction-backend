@@ -248,6 +248,108 @@ export class ProfitService {
   }
 
   /**
+   * 특정 월의 봇별 상세 수익 조회
+   */
+  static async getMonthlyDetails(userId: number, month: string, exchange?: Exchange) {
+    // 해당 월의 시작/끝 날짜 계산
+    const [year, monthNum] = month.split('-').map(Number);
+    const startDate = new Date(year, monthNum - 1, 1);
+    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+
+    // 사용자의 활성 봇 조회
+    const bots = await prisma.bot.findMany({
+      where: { userId, ...(exchange && { exchange }) },
+      select: {
+        id: true,
+        ticker: true,
+        orderAmount: true,
+        priceChangePercent: true,
+        exchange: true,
+      },
+    });
+
+    const botIds = bots.map(b => b.id);
+
+    // 해당 월의 매도 거래 조회 (수익이 있는 것만)
+    const trades = await prisma.trade.findMany({
+      where: {
+        botId: { in: botIds },
+        type: 'sell',
+        status: 'filled',
+        profit: { not: null },
+        filledAt: {
+          gte: startDate,
+          lte: endDate,
+        },
+      },
+      select: {
+        botId: true,
+        profit: true,
+        price: true,
+        amount: true,
+        filledAt: true,
+      },
+    });
+
+    // 봇별로 그룹핑
+    const botProfitMap = new Map<number, {
+      trades: number;
+      profit: number;
+      tradeDetails: Array<{
+        price: number;
+        amount: number;
+        profit: number;
+        filledAt: Date;
+      }>;
+    }>();
+
+    for (const trade of trades) {
+      if (trade.profit === null) continue;
+      const existing = botProfitMap.get(trade.botId) || { trades: 0, profit: 0, tradeDetails: [] };
+      botProfitMap.set(trade.botId, {
+        trades: existing.trades + 1,
+        profit: existing.profit + trade.profit,
+        tradeDetails: [...existing.tradeDetails, {
+          price: trade.price,
+          amount: trade.amount,
+          profit: trade.profit,
+          filledAt: trade.filledAt!,
+        }],
+      });
+    }
+
+    // 봇 정보와 수익 데이터 결합
+    const details = bots
+      .filter(bot => botProfitMap.has(bot.id))
+      .map(bot => {
+        const data = botProfitMap.get(bot.id)!;
+        return {
+          botId: bot.id,
+          ticker: bot.ticker,
+          exchange: bot.exchange,
+          orderAmount: bot.orderAmount,
+          priceChangePercent: bot.priceChangePercent,
+          trades: data.trades,
+          profit: data.profit,
+          tradeDetails: data.tradeDetails.sort((a, b) =>
+            b.filledAt.getTime() - a.filledAt.getTime()
+          ),
+        };
+      })
+      .sort((a, b) => b.profit - a.profit); // 수익 높은 순
+
+    const totalProfit = details.reduce((sum, d) => sum + d.profit, 0);
+    const totalTrades = details.reduce((sum, d) => sum + d.trades, 0);
+
+    return {
+      month,
+      totalProfit,
+      totalTrades,
+      details,
+    };
+  }
+
+  /**
    * 월별 수익 목록 조회
    */
   static async getMonthlyProfits(
