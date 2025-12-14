@@ -75,6 +75,9 @@ jobs:
               827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest
 
             # 상태 확인
-            sleep 5
+            sleep 10
             docker ps | grep grid-bot
-            curl -s http://localhost:3010/api/health || echo "Health check pending..."
+            echo "=== Container Logs ==="
+            docker logs grid-bot --tail 50
+            echo "=== Health Check ==="
+            curl -s http://localhost:3010/api/health || echo "Health check failed"
