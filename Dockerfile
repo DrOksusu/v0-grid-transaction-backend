@@ -31,8 +31,9 @@ COPY prisma ./prisma/
 # Install production dependencies only
 RUN npm ci --only=production
 
-# Generate Prisma client for production
-RUN npx prisma generate
+# Copy generated Prisma client from builder (instead of regenerating)
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/client
 
 # Copy built files from builder
 COPY --from=builder /app/dist ./dist
