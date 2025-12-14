@@ -326,12 +326,22 @@ export class TradingService {
 
           // 체결 완료 확인
           if (order.state === 'done') {
+            // 업비트 실제 체결 시간 추출 (trades 배열의 마지막 거래 시간 사용)
+            let actualFilledAt = new Date();
+            if (order.trades && order.trades.length > 0) {
+              // trades 배열의 마지막 거래가 최종 체결 시간
+              const lastTrade = order.trades[order.trades.length - 1];
+              if (lastTrade.created_at) {
+                actualFilledAt = new Date(lastTrade.created_at);
+              }
+            }
+
             // 그리드 레벨을 filled로 업데이트
             await GridService.updateGridLevel(
               grid.id,
               'filled',
               grid.orderId,
-              new Date()
+              actualFilledAt
             );
 
             // 수익 계산 (매도 체결 시에만, 수수료 포함)
@@ -378,12 +388,12 @@ export class TradingService {
 
             if (trade) {
               // Trade 상태를 filled로 업데이트 (+ 매도 시 수익 저장)
-              const filledAt = new Date();
+              // actualFilledAt은 위에서 업비트 API에서 가져온 실제 체결 시간
               await prisma.trade.update({
                 where: { id: trade.id },
                 data: {
                   status: 'filled',
-                  filledAt,
+                  filledAt: actualFilledAt,
                   ...(grid.type === 'sell' && profit !== 0 ? { profit } : {}),
                 },
               });
@@ -397,7 +407,7 @@ export class TradingService {
                 total: trade.total,
                 profit: profit !== 0 ? profit : undefined,
                 status: 'filled',
-                filledAt,
+                filledAt: actualFilledAt,
               });
             }
 
