@@ -157,37 +157,61 @@ export class ProfitService {
     const where: any = { userId };
     if (exchange) where.exchange = exchange;
 
-    // 월별 수익 합계
-    const monthlyProfits = await prisma.monthlyProfit.findMany({
-      where,
-      orderBy: { month: 'desc' },
-    });
-
     // 삭제된 봇 스냅샷
     const snapshots = await prisma.profitSnapshot.findMany({
       where,
       orderBy: { deletedAt: 'desc' },
     });
 
-    // 현재 실행 중인 봇들의 수익
+    // 현재 실행 중인 봇들의 수익 및 ID
     const activeBots = await prisma.bot.findMany({
       where: { userId, ...(exchange && { exchange }) },
       select: {
+        id: true,
         currentProfit: true,
         totalTrades: true,
       },
     });
 
+    const activeBotIds = activeBots.map(b => b.id);
+
+    // Trade 테이블에서 직접 월별 수익 계산 (매도 거래만, profit이 있는 것만)
+    const trades = await prisma.trade.findMany({
+      where: {
+        botId: { in: activeBotIds },
+        type: 'sell',
+        status: 'filled',
+        profit: { not: null },
+      },
+      select: {
+        profit: true,
+        filledAt: true,
+      },
+    });
+
+    // 월별로 그룹핑
+    const monthlyMap = new Map<string, { profit: number; trades: number }>();
+    for (const trade of trades) {
+      if (!trade.filledAt || trade.profit === null) continue;
+      const month = `${trade.filledAt.getFullYear()}-${String(trade.filledAt.getMonth() + 1).padStart(2, '0')}`;
+      const existing = monthlyMap.get(month) || { profit: 0, trades: 0 };
+      monthlyMap.set(month, {
+        profit: existing.profit + trade.profit,
+        trades: existing.trades + 1,
+      });
+    }
+
+    // 정렬된 월별 수익 배열
+    const monthlyProfits = Array.from(monthlyMap.entries())
+      .map(([month, data]) => ({ month, profit: data.profit, trades: data.trades }))
+      .sort((a, b) => b.month.localeCompare(a.month));
+
     const currentMonth = getCurrentMonth();
-
-    // 월별 수익 = 체결된 모든 수익 기록 (이미 활성 봇 수익 포함)
-    const monthlyTotalProfit = monthlyProfits.reduce((sum, mp) => sum + mp.totalProfit, 0);
-    const monthlyTotalTrades = monthlyProfits.reduce((sum, mp) => sum + mp.tradeCount, 0);
     const thisMonthData = monthlyProfits.find(mp => mp.month === currentMonth);
-    const thisMonthProfit = thisMonthData?.totalProfit || 0;
-    const thisMonthTrades = thisMonthData?.tradeCount || 0;
+    const thisMonthProfit = thisMonthData?.profit || 0;
+    const thisMonthTrades = thisMonthData?.trades || 0;
 
-    // 활성 봇 수익 합계 (참고용 - 월별 수익에 이미 포함됨)
+    // 활성 봇 수익 합계
     const activeProfit = activeBots.reduce((sum, bot) => sum + bot.currentProfit, 0);
     const activeTrades = activeBots.reduce((sum, bot) => sum + bot.totalTrades, 0);
 
@@ -201,19 +225,18 @@ export class ProfitService {
       totalTrades: activeTrades + deletedTrades,
       thisMonthProfit,
       thisMonthTrades,
-      monthlyProfits: monthlyProfits.map(mp => ({
-        month: mp.month,
-        profit: mp.totalProfit,
-        trades: mp.tradeCount,
-      })),
+      monthlyProfits,
       deletedBots: snapshots.map(s => ({
+        id: s.id,
         ticker: s.ticker,
         botType: s.botType,
         exchange: s.exchange,
         profit: s.finalProfit,
         profitPercent: s.profitPercent,
         trades: s.totalTrades,
+        investmentAmount: s.investmentAmount,
         runningDays: s.runningDays,
+        startedAt: s.startedAt,
         deletedAt: s.deletedAt,
       })),
       activeBots: {
