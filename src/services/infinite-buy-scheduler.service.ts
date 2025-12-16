@@ -691,6 +691,211 @@ export class InfiniteBuySchedulerService {
     };
   }
 
+  // 진단 정보 조회 (디버깅용)
+  async getDiagnostics(userId?: number) {
+    const now = new Date();
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    // 오늘이 거래일인지 확인
+    const isMarketDay = isUSMarketOpen(now);
+
+    // 기본 전략 대상 종목 조회
+    const basicStocksQuery: any = {
+      status: 'buying',
+      autoEnabled: true,
+      strategy: 'basic',
+    };
+    if (userId) basicStocksQuery.userId = userId;
+
+    const basicStocks = await prisma.infiniteBuyStock.findMany({
+      where: basicStocksQuery,
+      include: { user: { select: { email: true } } },
+    });
+
+    // Strategy1 대상 종목 조회
+    const strategy1StocksQuery: any = {
+      status: 'buying',
+      autoEnabled: true,
+      strategy: 'strategy1',
+    };
+    if (userId) strategy1StocksQuery.userId = userId;
+
+    const strategy1Stocks = await prisma.infiniteBuyStock.findMany({
+      where: strategy1StocksQuery,
+      include: { user: { select: { email: true } } },
+    });
+
+    // 각 종목별 상세 진단 정보
+    const basicDiagnostics = await Promise.all(
+      basicStocks.map(async (stock) => {
+        // 오늘 매수 기록 확인
+        const todayBuyCount = await prisma.infiniteBuyRecord.count({
+          where: {
+            stockId: stock.id,
+            type: 'buy',
+            executedAt: { gte: todayStart },
+          },
+        });
+
+        // 최대 회차 도달 여부
+        const maxRoundsReached = stock.currentRound >= stock.totalRounds;
+
+        // KIS 자격증명 확인
+        const credential = await prisma.credential.findFirst({
+          where: { userId: stock.userId, exchange: 'kis' },
+          select: { id: true, accessToken: true, tokenExpireAt: true },
+        });
+
+        const hasKisCredential = !!credential;
+        const hasValidToken = credential?.accessToken && credential?.tokenExpireAt
+          ? credential.tokenExpireAt.getTime() > now.getTime()
+          : false;
+
+        // 매수 조건 설명
+        let buyConditionDesc = '';
+        switch (stock.buyCondition) {
+          case 'daily':
+            buyConditionDesc = '일일 매수 - 항상 매수';
+            break;
+          case 'loc':
+            buyConditionDesc = 'LOC - 현재가 <= 전일종가일 때만 매수';
+            break;
+          case 'waterfall':
+            buyConditionDesc = '물타기 - 첫회차 또는 현재가 <= 평단-5%일 때만 매수';
+            break;
+          case 'loc_waterfall':
+            buyConditionDesc = 'LOC+물타기 - 두 조건 모두 충족시 매수';
+            break;
+          default:
+            buyConditionDesc = stock.buyCondition || '기본';
+        }
+
+        // 매수 가능 여부 판단
+        const canBuy = !maxRoundsReached && todayBuyCount === 0 && hasKisCredential;
+
+        return {
+          stockId: stock.id,
+          ticker: stock.ticker,
+          name: stock.name,
+          strategy: stock.strategy,
+          status: stock.status,
+          autoEnabled: stock.autoEnabled,
+          currentRound: stock.currentRound,
+          totalRounds: stock.totalRounds,
+          buyAmount: stock.buyAmount,
+          buyCondition: stock.buyCondition,
+          buyConditionDesc,
+          avgPrice: stock.avgPrice,
+          checks: {
+            maxRoundsReached,
+            alreadyBoughtToday: todayBuyCount > 0,
+            todayBuyCount,
+            hasKisCredential,
+            hasValidToken,
+          },
+          canBuy,
+          skipReason: !canBuy
+            ? maxRoundsReached
+              ? '최대 회차 도달'
+              : todayBuyCount > 0
+                ? '오늘 이미 매수함'
+                : !hasKisCredential
+                  ? 'KIS 자격증명 없음'
+                  : '알 수 없음'
+            : null,
+          userId: stock.userId,
+          userEmail: (stock as any).user?.email,
+        };
+      })
+    );
+
+    const strategy1Diagnostics = await Promise.all(
+      strategy1Stocks.map(async (stock) => {
+        // 오늘 매수 기록 확인
+        const todayBuyCount = await prisma.infiniteBuyRecord.count({
+          where: {
+            stockId: stock.id,
+            type: 'buy',
+            executedAt: { gte: todayStart },
+          },
+        });
+
+        // 최대 회차 도달 여부
+        const maxRoundsReached = stock.currentRound >= stock.totalRounds;
+
+        // KIS 자격증명 확인
+        const credential = await prisma.credential.findFirst({
+          where: { userId: stock.userId, exchange: 'kis' },
+          select: { id: true, accessToken: true, tokenExpireAt: true },
+        });
+
+        const hasKisCredential = !!credential;
+        const hasValidToken = credential?.accessToken && credential?.tokenExpireAt
+          ? credential.tokenExpireAt.getTime() > now.getTime()
+          : false;
+
+        // 매수 가능 여부 판단
+        const canBuy = isMarketDay && !maxRoundsReached && todayBuyCount === 0 && hasKisCredential;
+
+        return {
+          stockId: stock.id,
+          ticker: stock.ticker,
+          name: stock.name,
+          strategy: stock.strategy,
+          status: stock.status,
+          autoEnabled: stock.autoEnabled,
+          currentRound: stock.currentRound,
+          totalRounds: stock.totalRounds,
+          buyAmount: stock.buyAmount,
+          avgPrice: stock.avgPrice,
+          checks: {
+            isMarketDay,
+            maxRoundsReached,
+            alreadyBoughtToday: todayBuyCount > 0,
+            todayBuyCount,
+            hasKisCredential,
+            hasValidToken,
+          },
+          canBuy,
+          skipReason: !canBuy
+            ? !isMarketDay
+              ? '미국 장 휴일'
+              : maxRoundsReached
+                ? '최대 회차 도달'
+                : todayBuyCount > 0
+                  ? '오늘 이미 매수함'
+                  : !hasKisCredential
+                    ? 'KIS 자격증명 없음'
+                    : '알 수 없음'
+            : null,
+          userId: stock.userId,
+          userEmail: (stock as any).user?.email,
+        };
+      })
+    );
+
+    return {
+      timestamp: now.toISOString(),
+      schedulerStatus: this.getStatus(),
+      marketInfo: {
+        isMarketDay,
+        currentTime: now.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }),
+        dayOfWeek: now.toLocaleDateString('ko-KR', { weekday: 'long', timeZone: 'Asia/Seoul' }),
+      },
+      basic: {
+        totalTargets: basicStocks.length,
+        canBuyCount: basicDiagnostics.filter(d => d.canBuy).length,
+        stocks: basicDiagnostics,
+      },
+      strategy1: {
+        totalTargets: strategy1Stocks.length,
+        canBuyCount: strategy1Diagnostics.filter(d => d.canBuy).length,
+        stocks: strategy1Diagnostics,
+      },
+    };
+  }
+
   // 설정 변경
   updateConfig(newConfig: Partial<SchedulerConfig>) {
     this.config = { ...this.config, ...newConfig };

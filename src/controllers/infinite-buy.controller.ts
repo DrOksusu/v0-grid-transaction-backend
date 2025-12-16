@@ -459,6 +459,27 @@ export const getSchedulerStatus = async (
   }
 };
 
+// 스케줄러 진단 정보 조회 (디버깅용)
+export const getSchedulerDiagnostics = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId;
+    const { all } = req.query;
+
+    // all=true면 모든 유저의 종목 조회, 아니면 현재 유저만
+    const diagnostics = await infiniteBuyScheduler.getDiagnostics(
+      all === 'true' ? undefined : userId
+    );
+
+    return successResponse(res, diagnostics);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // 수동 매수 트리거
 export const triggerManualBuy = async (
   req: AuthRequest,
