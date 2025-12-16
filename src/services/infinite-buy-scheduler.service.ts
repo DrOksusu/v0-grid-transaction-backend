@@ -150,6 +150,12 @@ export class InfiniteBuySchedulerService {
     await this.checkPricesAndSell();
   }
 
+  // 수동 체결 확인
+  async runManualOrderCheck() {
+    console.log('[InfiniteBuyScheduler] 수동 체결 확인 실행');
+    await this.checkPendingOrders();
+  }
+
   // KIS 서비스 인스턴스 가져오기
   private async getKisService(userId: number): Promise<KisService | null> {
     try {
@@ -887,10 +893,21 @@ export class InfiniteBuySchedulerService {
       });
 
       if (pendingRecords.length === 0) {
+        console.log('[InfiniteBuyScheduler] 체결 대기 주문 없음');
         return;
       }
 
       console.log(`[InfiniteBuyScheduler] 체결 대기 주문 확인: ${pendingRecords.length}건`);
+
+      await saveLog({
+        type: 'order_check',
+        status: 'started',
+        message: `체결 대기 주문 확인 시작: ${pendingRecords.length}건`,
+        details: {
+          pendingCount: pendingRecords.length,
+          tickers: pendingRecords.map(r => r.stock.ticker).filter((v, i, a) => a.indexOf(v) === i),
+        },
+      });
 
       // 유저별로 그룹화
       const userRecordMap = new Map<number, typeof pendingRecords>();
@@ -901,18 +918,32 @@ export class InfiniteBuySchedulerService {
         userRecordMap.set(userId, userRecords);
       }
 
+      let filledCount = 0;
+      let errorCount = 0;
+
       // 유저별로 KIS API 호출하여 체결 확인
       for (const [userId, records] of userRecordMap) {
         const kisService = await this.getKisService(userId);
-        if (!kisService) continue;
+        if (!kisService) {
+          await saveLog({
+            type: 'order_check',
+            status: 'error',
+            message: `KIS 서비스 초기화 실패 (userId: ${userId})`,
+          });
+          continue;
+        }
 
         try {
           // KIS API에서 체결 내역 조회
           const kisOrders = await kisService.getUSStockOrders();
+          console.log(`[InfiniteBuyScheduler] KIS 주문 내역: ${kisOrders.length}건 조회됨`);
 
           // orderId로 매칭하여 체결 확인
           for (const record of records) {
             const kisOrder = kisOrders.find((o: any) => o.orderId === record.orderId);
+
+            console.log(`[InfiniteBuyScheduler] ${record.stock.ticker} 주문번호 ${record.orderId}: ` +
+              (kisOrder ? `찾음 (체결수량: ${kisOrder.filledQty})` : '찾지 못함'));
 
             if (kisOrder && kisOrder.filledQty > 0) {
               // 체결됨 - DB 업데이트
@@ -920,25 +951,73 @@ export class InfiniteBuySchedulerService {
                 where: { id: record.id },
                 data: {
                   orderStatus: 'filled',
-                  price: kisOrder.filledPrice || record.price, // 실제 체결가로 업데이트
+                  price: kisOrder.filledPrice || record.price,
                   quantity: kisOrder.filledQty,
                   amount: kisOrder.filledPrice * kisOrder.filledQty,
                   filledAt: new Date(),
                 },
               });
 
+              filledCount++;
               console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: 체결 확인 완료 (주문번호: ${record.orderId}, ${kisOrder.filledQty}주, $${kisOrder.filledPrice})`);
+
+              await saveLog({
+                type: 'order_check',
+                status: 'completed',
+                message: `${record.stock.ticker}: 체결 확인 완료`,
+                stockId: record.stockId,
+                ticker: record.stock.ticker,
+                details: {
+                  orderId: record.orderId,
+                  filledQty: kisOrder.filledQty,
+                  filledPrice: kisOrder.filledPrice,
+                },
+              });
+            } else if (!kisOrder) {
+              // KIS에서 주문을 찾지 못함 - 로그 기록
+              await saveLog({
+                type: 'order_check',
+                status: 'skipped',
+                message: `${record.stock.ticker}: KIS에서 주문을 찾지 못함`,
+                stockId: record.stockId,
+                ticker: record.stock.ticker,
+                details: {
+                  orderId: record.orderId,
+                  kisOrderCount: kisOrders.length,
+                },
+              });
             }
           }
         } catch (error: any) {
+          errorCount++;
           console.error(`[InfiniteBuyScheduler] 체결 확인 실패 (userId: ${userId}):`, error.message);
+
+          await saveLog({
+            type: 'order_check',
+            status: 'error',
+            message: `체결 확인 API 호출 실패 (userId: ${userId})`,
+            errorMessage: error.message,
+          });
         }
 
         // API 호출 간 딜레이
         await this.delay(500);
       }
-    } catch (error) {
+
+      await saveLog({
+        type: 'order_check',
+        status: 'completed',
+        message: `체결 확인 완료: 체결 ${filledCount}건, 에러 ${errorCount}건`,
+        details: { filledCount, errorCount, pendingCount: pendingRecords.length },
+      });
+    } catch (error: any) {
       console.error('[InfiniteBuyScheduler] 체결 확인 오류:', error);
+      await saveLog({
+        type: 'order_check',
+        status: 'error',
+        message: '체결 확인 중 오류 발생',
+        errorMessage: error.message,
+      });
     }
   }
 

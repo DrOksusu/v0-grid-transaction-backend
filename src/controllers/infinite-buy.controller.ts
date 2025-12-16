@@ -508,6 +508,20 @@ export const triggerPriceCheck = async (
   }
 };
 
+// 수동 체결 확인 트리거
+export const triggerOrderCheck = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    await infiniteBuyScheduler.runManualOrderCheck();
+    return successResponse(res, null, '체결 확인이 트리거되었습니다. 스케줄러 로그에서 결과를 확인하세요.');
+  } catch (error) {
+    next(error);
+  }
+};
+
 // 스케줄러 설정 변경
 export const updateSchedulerConfig = async (
   req: AuthRequest,

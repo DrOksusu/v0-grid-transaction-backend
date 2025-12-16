@@ -19,6 +19,7 @@ import {
   getSchedulerLogs,
   triggerManualBuy,
   triggerPriceCheck,
+  triggerOrderCheck,
   updateSchedulerConfig,
   // 무한매수전략1 API
   executeStrategy1Buy,
@@ -63,6 +64,7 @@ router.get('/scheduler/diagnostics', getSchedulerDiagnostics);  // 진단 API
 router.get('/scheduler/logs', getSchedulerLogs);  // 로그 조회 API
 router.post('/scheduler/trigger-buy', triggerManualBuy);
 router.post('/scheduler/trigger-price-check', triggerPriceCheck);
+router.post('/scheduler/trigger-order-check', triggerOrderCheck);  // 체결 확인 트리거
 router.put('/scheduler/config', updateSchedulerConfig);
 
 // =====================
