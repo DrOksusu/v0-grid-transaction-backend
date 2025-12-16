@@ -797,6 +797,7 @@ export class InfiniteBuyService {
 
   // 종목별 매수 기록 조회
   // filledOnly: true면 체결된 것만, false면 모든 주문
+  // 무한매수1 전략(LOC)은 체결 대기(pending) 상태도 포함해야 함
   async getRecords(userId: number, stockId: number, type?: string, limit: number = 50, filledOnly: boolean = false) {
     const stock = await prisma.infiniteBuyStock.findFirst({
       where: { id: stockId, userId },
@@ -810,8 +811,11 @@ export class InfiniteBuyService {
     if (type) {
       whereClause.type = type;
     }
-    // 매수 기록 조회 시 체결된 것만 표시 (filledOnly가 true이거나 type이 buy인 경우)
-    if (filledOnly || type === 'buy') {
+
+    // filledOnly가 true인 경우에만 체결된 것만 조회
+    // 기본 전략의 경우 즉시 체결되므로 filled만 표시해도 됨
+    // 무한매수1 전략(LOC)은 pending 상태도 있으므로 모두 표시
+    if (filledOnly && stock.strategy !== 'strategy1') {
       whereClause.orderStatus = 'filled';
     }
 
@@ -837,6 +841,9 @@ export class InfiniteBuyService {
         profit: record.profit,
         profitPercent: record.profitPercent,
         orderStatus: record.orderStatus,
+        orderType: record.orderType,        // LOC/시장가 등
+        targetPrice: record.targetPrice,    // 목표 체결가
+        orderSubType: record.orderSubType,  // LOC 세부 유형
         cumulative,
         executedAt: record.executedAt.toISOString(),
       };
