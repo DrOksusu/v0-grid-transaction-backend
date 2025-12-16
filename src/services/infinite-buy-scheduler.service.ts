@@ -58,6 +58,10 @@ export class InfiniteBuySchedulerService {
     priceCheckInterval: 5, // 5분마다 가격 체크
   };
 
+  // 토큰 발급 제한 (1시간에 1회만)
+  private lastTokenIssueTime: Map<number, Date> = new Map();
+  private TOKEN_ISSUE_COOLDOWN = 60 * 60 * 1000; // 1시간
+
   // 스케줄러 시작
   start() {
     if (this.isRunning) {
@@ -154,6 +158,7 @@ export class InfiniteBuySchedulerService {
       });
 
       if (!credential) {
+        console.log(`[InfiniteBuyScheduler] KIS 자격증명 없음 (userId: ${userId})`);
         return null;
       }
 
@@ -169,23 +174,59 @@ export class InfiniteBuySchedulerService {
 
       // 기존 토큰이 있고 유효한지 확인
       let needNewToken = true;
+      let tokenStatus = '';
+
       if (credential.accessToken && credential.tokenExpireAt) {
         const now = new Date();
         const bufferTime = 10 * 60 * 1000; // 10분 여유
-        if (credential.tokenExpireAt.getTime() - bufferTime > now.getTime()) {
-          kisService.setAccessToken(
-            decrypt(credential.accessToken),
-            credential.tokenExpireAt
-          );
-          needNewToken = false;
+        const timeUntilExpiry = credential.tokenExpireAt.getTime() - now.getTime();
+
+        if (timeUntilExpiry > bufferTime) {
+          try {
+            const decryptedToken = decrypt(credential.accessToken);
+            kisService.setAccessToken(decryptedToken, credential.tokenExpireAt);
+            needNewToken = false;
+            tokenStatus = `유효 (만료까지 ${Math.round(timeUntilExpiry / 60000)}분)`;
+          } catch (decryptError: any) {
+            tokenStatus = `복호화 실패: ${decryptError.message}`;
+          }
+        } else {
+          tokenStatus = `만료됨 (${Math.round(timeUntilExpiry / 60000)}분 전)`;
         }
+      } else {
+        tokenStatus = credential.accessToken ? 'tokenExpireAt 없음' : '토큰 없음';
       }
 
       // 토큰이 없거나 만료됐으면 새로 발급 후 DB에 저장
       if (needNewToken) {
+        // 토큰 발급 쿨다운 체크 (1시간에 1회만)
+        const lastIssue = this.lastTokenIssueTime.get(userId);
+        const now = new Date();
+
+        if (lastIssue && (now.getTime() - lastIssue.getTime()) < this.TOKEN_ISSUE_COOLDOWN) {
+          const waitMinutes = Math.ceil((this.TOKEN_ISSUE_COOLDOWN - (now.getTime() - lastIssue.getTime())) / 60000);
+          console.error(`[InfiniteBuyScheduler] KIS 토큰 발급 쿨다운 중 (userId: ${userId}, ${waitMinutes}분 후 재시도 가능)`);
+          console.error(`[InfiniteBuyScheduler] 토큰 상태: ${tokenStatus}`);
+
+          // 로그 저장
+          await saveLog({
+            type: 'auto_buy',
+            status: 'error',
+            message: `KIS 토큰 발급 쿨다운 - ${waitMinutes}분 후 재시도 가능`,
+            details: { userId, tokenStatus, lastIssue: lastIssue.toISOString() },
+          });
+
+          return null;
+        }
+
         console.log(`[InfiniteBuyScheduler] KIS 토큰 갱신 필요 (userId: ${userId})`);
+        console.log(`[InfiniteBuyScheduler] 토큰 상태: ${tokenStatus}`);
+
         try {
           const tokenInfo = await kisService.getAccessToken();
+
+          // 발급 시간 기록
+          this.lastTokenIssueTime.set(userId, now);
 
           // DB에 새 토큰 저장
           const { encrypt } = await import('../utils/encryption');
@@ -197,14 +238,32 @@ export class InfiniteBuySchedulerService {
             },
           });
           console.log(`[InfiniteBuyScheduler] KIS 토큰 갱신 완료 (만료: ${tokenInfo.tokenExpireAt.toISOString()})`);
+
+          // 로그 저장
+          await saveLog({
+            type: 'auto_buy',
+            status: 'completed',
+            message: `KIS 토큰 갱신 완료`,
+            details: { userId, expireAt: tokenInfo.tokenExpireAt.toISOString() },
+          });
         } catch (tokenError: any) {
           console.error(`[InfiniteBuyScheduler] KIS 토큰 발급 실패:`, tokenError.message);
+
+          // 로그 저장
+          await saveLog({
+            type: 'auto_buy',
+            status: 'error',
+            message: `KIS 토큰 발급 실패`,
+            errorMessage: tokenError.message,
+            details: { userId, tokenStatus },
+          });
+
           return null;
         }
       }
 
       return kisService;
-    } catch (error) {
+    } catch (error: any) {
       console.error(`[InfiniteBuyScheduler] KIS 서비스 생성 실패 (userId: ${userId}):`, error);
       return null;
     }
