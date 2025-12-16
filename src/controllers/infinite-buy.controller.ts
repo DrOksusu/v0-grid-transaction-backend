@@ -718,3 +718,48 @@ export const updateStockStrategy = async (
     next(error);
   }
 };
+
+// =====================
+// 스케줄러 로그 API
+// =====================
+
+// 스케줄러 로그 조회
+export const getSchedulerLogs = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { type, status, stockId, startDate, endDate, limit, offset } = req.query;
+
+    const params: any = {};
+
+    if (type) {
+      params.type = type as string;
+    }
+    if (status) {
+      params.status = status as string;
+    }
+    if (stockId) {
+      params.stockId = parseInt(stockId as string);
+    }
+    if (startDate) {
+      params.startDate = new Date(startDate as string);
+    }
+    if (endDate) {
+      params.endDate = new Date(endDate as string);
+    }
+    if (limit) {
+      params.limit = parseInt(limit as string);
+    }
+    if (offset) {
+      params.offset = parseInt(offset as string);
+    }
+
+    const result = await infiniteBuyScheduler.getLogs(params);
+
+    return successResponse(res, result);
+  } catch (error) {
+    next(error);
+  }
+};

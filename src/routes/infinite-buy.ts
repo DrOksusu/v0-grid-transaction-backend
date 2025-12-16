@@ -16,6 +16,7 @@ import {
   getSummary,
   getSchedulerStatus,
   getSchedulerDiagnostics,
+  getSchedulerLogs,
   triggerManualBuy,
   triggerPriceCheck,
   updateSchedulerConfig,
@@ -59,6 +60,7 @@ router.get('/stocks/:id/records', getRecords);
 // 스케줄러 제어
 router.get('/scheduler/status', getSchedulerStatus);
 router.get('/scheduler/diagnostics', getSchedulerDiagnostics);  // 진단 API
+router.get('/scheduler/logs', getSchedulerLogs);  // 로그 조회 API
 router.post('/scheduler/trigger-buy', triggerManualBuy);
 router.post('/scheduler/trigger-price-check', triggerPriceCheck);
 router.put('/scheduler/config', updateSchedulerConfig);

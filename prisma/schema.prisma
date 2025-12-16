@@ -282,3 +282,48 @@ model ProfitSnapshot {
   @@index([deletedAt])
   @@map("profit_snapshots")
 }
+
+// ============ 스케줄러 로그 (Scheduler Log) ============
+
+enum SchedulerLogType {
+  auto_buy        // 자동 매수 스케줄
+  strategy1_buy   // 전략1 LOC 매수
+  price_check     // 가격 체크 (익절)
+  order_check     // 주문 체결 확인
+}
+
+enum SchedulerLogStatus {
+  started         // 시작됨
+  completed       // 완료
+  skipped         // 스킵됨
+  error           // 에러
+}
+
+// 스케줄러 실행 로그
+model SchedulerLog {
+  id              Int       @id @default(autoincrement())
+
+  // 실행 정보
+  type            SchedulerLogType      // 로그 타입
+  status          SchedulerLogStatus    // 실행 상태
+
+  // 대상 정보 (선택적)
+  stockId         Int?                  // 관련 종목 ID
+  ticker          String?               // 티커
+
+  // 실행 결과
+  message         String    @db.Text    // 로그 메시지
+  details         String?   @db.Text    // 상세 정보 (JSON)
+
+  // 에러 정보
+  errorMessage    String?   @db.Text    // 에러 메시지
+
+  // 타임스탬프
+  executedAt      DateTime  @default(now())
+
+  @@index([type])
+  @@index([status])
+  @@index([executedAt])
+  @@index([stockId])
+  @@map("scheduler_logs")
+}

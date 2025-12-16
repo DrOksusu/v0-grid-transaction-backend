@@ -2,9 +2,38 @@ import cron, { ScheduledTask } from 'node-cron';
 import prisma from '../config/database';
 import { KisService } from './kis.service';
 import { decrypt } from '../utils/encryption';
-import { InfiniteBuyStatus } from '@prisma/client';
+import { InfiniteBuyStatus, SchedulerLogType, SchedulerLogStatus } from '@prisma/client';
 import { infiniteBuyStrategy1Service } from './infinite-buy-strategy1.service';
 import { isUSMarketOpen } from '../utils/us-market-holidays';
+
+// 로그 저장 헬퍼
+interface LogParams {
+  type: SchedulerLogType;
+  status: SchedulerLogStatus;
+  stockId?: number;
+  ticker?: string;
+  message: string;
+  details?: any;
+  errorMessage?: string;
+}
+
+async function saveLog(params: LogParams) {
+  try {
+    await prisma.schedulerLog.create({
+      data: {
+        type: params.type,
+        status: params.status,
+        stockId: params.stockId,
+        ticker: params.ticker,
+        message: params.message,
+        details: params.details ? JSON.stringify(params.details) : null,
+        errorMessage: params.errorMessage,
+      },
+    });
+  } catch (error) {
+    console.error('[SchedulerLog] 로그 저장 실패:', error);
+  }
+}
 
 interface SchedulerConfig {
   autoBuyEnabled: boolean;
@@ -185,8 +214,26 @@ export class InfiniteBuySchedulerService {
   private async executeAutoBuy() {
     if (!this.config.autoBuyEnabled) {
       console.log('[InfiniteBuyScheduler] 자동 매수 비활성화됨');
+      await saveLog({
+        type: 'auto_buy',
+        status: 'skipped',
+        message: '자동 매수 비활성화됨',
+      });
       return;
     }
+
+    // 스케줄 시작 로그
+    await saveLog({
+      type: 'auto_buy',
+      status: 'started',
+      message: '기본 전략 자동 매수 스케줄 시작',
+    });
+
+    let processedCount = 0;
+    let successCount = 0;
+    let skipCount = 0;
+    let errorCount = 0;
+    const results: any[] = [];
 
     try {
       // 자동매수 활성화된 buying 상태 종목 조회 (기본 전략만)
@@ -204,17 +251,62 @@ export class InfiniteBuySchedulerService {
       console.log(`[InfiniteBuyScheduler] 기본 전략 자동 매수 대상: ${stocks.length}개 종목`);
 
       for (const stock of stocks) {
+        processedCount++;
         try {
-          await this.processBuyForStock(stock);
+          const result = await this.processBuyForStock(stock);
+          if (result.success) {
+            successCount++;
+          } else {
+            skipCount++;
+          }
+          results.push(result);
         } catch (error: any) {
+          errorCount++;
           console.error(`[InfiniteBuyScheduler] ${stock.ticker} 매수 처리 실패:`, error.message);
+          results.push({
+            stockId: stock.id,
+            ticker: stock.ticker,
+            success: false,
+            error: error.message,
+          });
+
+          // 개별 에러 로그
+          await saveLog({
+            type: 'auto_buy',
+            status: 'error',
+            stockId: stock.id,
+            ticker: stock.ticker,
+            message: `${stock.ticker} 매수 처리 실패`,
+            errorMessage: error.message,
+          });
         }
 
         // API 호출 간 딜레이 (rate limit 방지)
         await this.delay(1000);
       }
-    } catch (error) {
+
+      // 완료 로그
+      await saveLog({
+        type: 'auto_buy',
+        status: 'completed',
+        message: `기본 전략 자동 매수 완료: ${stocks.length}개 대상, ${successCount}개 성공, ${skipCount}개 스킵, ${errorCount}개 에러`,
+        details: {
+          totalTargets: stocks.length,
+          processed: processedCount,
+          success: successCount,
+          skipped: skipCount,
+          errors: errorCount,
+          results,
+        },
+      });
+    } catch (error: any) {
       console.error('[InfiniteBuyScheduler] 자동 매수 실행 오류:', error);
+      await saveLog({
+        type: 'auto_buy',
+        status: 'error',
+        message: '자동 매수 실행 중 오류 발생',
+        errorMessage: error.message,
+      });
     }
   }
 
@@ -222,6 +314,11 @@ export class InfiniteBuySchedulerService {
   private async executeStrategy1AutoBuy() {
     if (!this.config.autoBuyEnabled) {
       console.log('[InfiniteBuyScheduler] 자동 매수 비활성화됨');
+      await saveLog({
+        type: 'strategy1_buy',
+        status: 'skipped',
+        message: '자동 매수 비활성화됨',
+      });
       return;
     }
 
@@ -229,8 +326,26 @@ export class InfiniteBuySchedulerService {
     const today = new Date();
     if (!isUSMarketOpen(today)) {
       console.log('[InfiniteBuyScheduler] Strategy1: 오늘은 미국 장 휴일입니다');
+      await saveLog({
+        type: 'strategy1_buy',
+        status: 'skipped',
+        message: '오늘은 미국 장 휴일 - Strategy1 스케줄 스킵',
+      });
       return;
     }
+
+    // 스케줄 시작 로그
+    await saveLog({
+      type: 'strategy1_buy',
+      status: 'started',
+      message: 'Strategy1 LOC 자동 매수 스케줄 시작',
+    });
+
+    let processedCount = 0;
+    let successCount = 0;
+    let skipCount = 0;
+    let errorCount = 0;
+    const results: any[] = [];
 
     try {
       // 자동매수 활성화된 buying 상태 종목 조회 (strategy1만)
@@ -245,28 +360,82 @@ export class InfiniteBuySchedulerService {
       console.log(`[InfiniteBuyScheduler] Strategy1 자동 매수 대상: ${stocks.length}개 종목`);
 
       for (const stock of stocks) {
+        processedCount++;
         try {
-          await this.processStrategy1BuyForStock(stock);
+          const result = await this.processStrategy1BuyForStock(stock);
+          if (result.success) {
+            successCount++;
+          } else {
+            skipCount++;
+          }
+          results.push(result);
         } catch (error: any) {
+          errorCount++;
           console.error(`[InfiniteBuyScheduler] Strategy1 ${stock.ticker} 매수 처리 실패:`, error.message);
+          results.push({
+            stockId: stock.id,
+            ticker: stock.ticker,
+            success: false,
+            error: error.message,
+          });
+
+          // 개별 에러 로그
+          await saveLog({
+            type: 'strategy1_buy',
+            status: 'error',
+            stockId: stock.id,
+            ticker: stock.ticker,
+            message: `Strategy1 ${stock.ticker} LOC 매수 처리 실패`,
+            errorMessage: error.message,
+          });
         }
 
         // API 호출 간 딜레이 (rate limit 방지)
         await this.delay(2000);  // LOC 주문은 더 긴 딜레이
       }
-    } catch (error) {
+
+      // 완료 로그
+      await saveLog({
+        type: 'strategy1_buy',
+        status: 'completed',
+        message: `Strategy1 자동 매수 완료: ${stocks.length}개 대상, ${successCount}개 성공, ${skipCount}개 스킵, ${errorCount}개 에러`,
+        details: {
+          totalTargets: stocks.length,
+          processed: processedCount,
+          success: successCount,
+          skipped: skipCount,
+          errors: errorCount,
+          results,
+        },
+      });
+    } catch (error: any) {
       console.error('[InfiniteBuyScheduler] Strategy1 자동 매수 실행 오류:', error);
+      await saveLog({
+        type: 'strategy1_buy',
+        status: 'error',
+        message: 'Strategy1 자동 매수 실행 중 오류 발생',
+        errorMessage: error.message,
+      });
     }
   }
 
-  // Strategy1 개별 종목 매수 처리
-  private async processStrategy1BuyForStock(stock: any) {
+  // Strategy1 개별 종목 매수 처리 (결과 반환)
+  private async processStrategy1BuyForStock(stock: any): Promise<{
+    stockId: number;
+    ticker: string;
+    success: boolean;
+    skipped?: boolean;
+    reason?: string;
+    orders?: number;
+    totalQuantity?: number;
+  }> {
     const { id: stockId, userId, ticker, currentRound, totalRounds } = stock;
 
     // 최대 회차 도달 체크
     if (currentRound >= totalRounds) {
-      console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: 최대 회차 도달 (${currentRound}/${totalRounds})`);
-      return;
+      const reason = `최대 회차 도달 (${currentRound}/${totalRounds})`;
+      console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: ${reason}`);
+      return { stockId, ticker, success: false, skipped: true, reason };
     }
 
     // 하루 1회 매수 제한 체크
@@ -284,8 +453,9 @@ export class InfiniteBuySchedulerService {
     });
 
     if (todayBuyCount > 0) {
-      console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: 오늘 이미 매수함 - 스킵`);
-      return;
+      const reason = `오늘 이미 매수함 (${todayBuyCount}회)`;
+      console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: ${reason} - 스킵`);
+      return { stockId, ticker, success: false, skipped: true, reason };
     }
 
     console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: LOC 매수 실행 중...`);
@@ -294,19 +464,39 @@ export class InfiniteBuySchedulerService {
       // infiniteBuyStrategy1Service의 executeBuy 호출
       const result = await infiniteBuyStrategy1Service.executeBuy(userId, stockId);
       console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: LOC 주문 완료 - ${result.orders.length}개 주문, 총 ${result.totalQuantity}주`);
+      return {
+        stockId,
+        ticker,
+        success: true,
+        orders: result.orders.length,
+        totalQuantity: result.totalQuantity,
+      };
     } catch (error: any) {
-      console.error(`[InfiniteBuyScheduler] Strategy1 ${ticker}: LOC 주문 실패 -`, error.message);
+      const reason = `LOC 주문 실패 - ${error.message}`;
+      console.error(`[InfiniteBuyScheduler] Strategy1 ${ticker}: ${reason}`);
+      return { stockId, ticker, success: false, reason };
     }
   }
 
-  // 개별 종목 매수 처리
-  private async processBuyForStock(stock: any) {
+  // 개별 종목 매수 처리 (결과 반환)
+  private async processBuyForStock(stock: any): Promise<{
+    stockId: number;
+    ticker: string;
+    success: boolean;
+    skipped?: boolean;
+    reason?: string;
+    round?: number;
+    quantity?: number;
+    price?: number;
+    orderId?: string;
+  }> {
     const { id: stockId, userId, ticker, exchange, buyAmount, currentRound, totalRounds, avgPrice, buyCondition } = stock;
 
     // 최대 회차 도달 체크
     if (currentRound >= totalRounds) {
-      console.log(`[InfiniteBuyScheduler] ${ticker}: 최대 회차 도달 (${currentRound}/${totalRounds})`);
-      return;
+      const reason = `최대 회차 도달 (${currentRound}/${totalRounds})`;
+      console.log(`[InfiniteBuyScheduler] ${ticker}: ${reason}`);
+      return { stockId, ticker, success: false, skipped: true, reason };
     }
 
     // 하루 1회 매수 제한 체크 (오늘 이미 매수했는지 확인)
@@ -324,15 +514,17 @@ export class InfiniteBuySchedulerService {
     });
 
     if (todayBuyCount > 0) {
-      console.log(`[InfiniteBuyScheduler] ${ticker}: 오늘 이미 매수함 (${todayBuyCount}회) - 스킵`);
-      return;
+      const reason = `오늘 이미 매수함 (${todayBuyCount}회)`;
+      console.log(`[InfiniteBuyScheduler] ${ticker}: ${reason} - 스킵`);
+      return { stockId, ticker, success: false, skipped: true, reason };
     }
 
     // KIS 서비스 가져오기
     const kisService = await this.getKisService(userId);
     if (!kisService) {
-      console.log(`[InfiniteBuyScheduler] ${ticker}: KIS 서비스 없음`);
-      return;
+      const reason = 'KIS 서비스 없음';
+      console.log(`[InfiniteBuyScheduler] ${ticker}: ${reason}`);
+      return { stockId, ticker, success: false, skipped: true, reason };
     }
 
     // 현재가 조회
@@ -340,8 +532,9 @@ export class InfiniteBuySchedulerService {
     try {
       priceData = await kisService.getUSStockPrice(ticker, exchange);
     } catch (error: any) {
-      console.error(`[InfiniteBuyScheduler] ${ticker}: 가격 조회 실패 -`, error.message);
-      return;
+      const reason = `가격 조회 실패 - ${error.message}`;
+      console.error(`[InfiniteBuyScheduler] ${ticker}: ${reason}`);
+      return { stockId, ticker, success: false, reason };
     }
 
     const currentPrice = priceData.currentPrice;
@@ -357,8 +550,9 @@ export class InfiniteBuySchedulerService {
     );
 
     if (!shouldBuy.result) {
-      console.log(`[InfiniteBuyScheduler] ${ticker}: 매수 조건 미충족 - ${shouldBuy.reason}`);
-      return;
+      const reason = `매수 조건 미충족 - ${shouldBuy.reason}`;
+      console.log(`[InfiniteBuyScheduler] ${ticker}: ${reason}`);
+      return { stockId, ticker, success: false, skipped: true, reason };
     }
 
     console.log(`[InfiniteBuyScheduler] ${ticker}: 매수 실행 (${currentRound + 1}회차, ${currentPrice})`);
@@ -366,8 +560,9 @@ export class InfiniteBuySchedulerService {
     // 매수 수량 계산 (미국 주식은 정수만 가능)
     const quantity = Math.floor(buyAmount / currentPrice);
     if (quantity < 1) {
-      console.log(`[InfiniteBuyScheduler] ${ticker}: 매수 금액(${buyAmount})으로 1주도 살 수 없음 (현재가 ${currentPrice})`);
-      return;
+      const reason = `매수 금액(${buyAmount})으로 1주도 살 수 없음 (현재가 ${currentPrice})`;
+      console.log(`[InfiniteBuyScheduler] ${ticker}: ${reason}`);
+      return { stockId, ticker, success: false, skipped: true, reason };
     }
 
     // 실제 투자 금액 계산 (정수 수량 기준)
@@ -388,9 +583,9 @@ export class InfiniteBuySchedulerService {
       orderId = orderResult.orderId;
       console.log(`[InfiniteBuyScheduler] ${ticker}: 주문 완료 (주문번호: ${orderId}, ${quantity}주, ${actualInvestment.toFixed(2)})`);
     } catch (error: any) {
-      console.error(`[InfiniteBuyScheduler] ${ticker}: 주문 실패 -`, error.message);
-      // 주문 실패 시 기록하지 않고 리턴
-      return;
+      const reason = `주문 실패 - ${error.message}`;
+      console.error(`[InfiniteBuyScheduler] ${ticker}: ${reason}`);
+      return { stockId, ticker, success: false, reason };
     }
 
     // 새 평균단가 계산 (실제 투자금액 기준)
@@ -424,6 +619,16 @@ export class InfiniteBuySchedulerService {
     ]);
 
     console.log(`[InfiniteBuyScheduler] ${ticker}: 주문 접수 완료 - 회차: ${nextRound}, 체결 대기중...`);
+
+    return {
+      stockId,
+      ticker,
+      success: true,
+      round: nextRound,
+      quantity,
+      price: currentPrice,
+      orderId: orderId || undefined,
+    };
   }
 
   // 매수 조건 체크
@@ -900,6 +1105,78 @@ export class InfiniteBuySchedulerService {
   updateConfig(newConfig: Partial<SchedulerConfig>) {
     this.config = { ...this.config, ...newConfig };
     console.log('[InfiniteBuyScheduler] 설정 변경:', this.config);
+  }
+
+  // 로그 조회
+  async getLogs(params?: {
+    type?: SchedulerLogType;
+    status?: SchedulerLogStatus;
+    stockId?: number;
+    startDate?: Date;
+    endDate?: Date;
+    limit?: number;
+    offset?: number;
+  }) {
+    const where: any = {};
+
+    if (params?.type) {
+      where.type = params.type;
+    }
+    if (params?.status) {
+      where.status = params.status;
+    }
+    if (params?.stockId) {
+      where.stockId = params.stockId;
+    }
+    if (params?.startDate || params?.endDate) {
+      where.executedAt = {};
+      if (params?.startDate) {
+        where.executedAt.gte = params.startDate;
+      }
+      if (params?.endDate) {
+        where.executedAt.lte = params.endDate;
+      }
+    }
+
+    const [logs, total] = await Promise.all([
+      prisma.schedulerLog.findMany({
+        where,
+        orderBy: { executedAt: 'desc' },
+        take: params?.limit || 100,
+        skip: params?.offset || 0,
+      }),
+      prisma.schedulerLog.count({ where }),
+    ]);
+
+    // details 필드 파싱
+    const parsedLogs = logs.map((log) => ({
+      ...log,
+      details: log.details ? JSON.parse(log.details) : null,
+    }));
+
+    return {
+      logs: parsedLogs,
+      total,
+      limit: params?.limit || 100,
+      offset: params?.offset || 0,
+    };
+  }
+
+  // 오래된 로그 정리 (30일 이상)
+  async cleanupOldLogs(daysToKeep: number = 30) {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
+
+    const result = await prisma.schedulerLog.deleteMany({
+      where: {
+        executedAt: {
+          lt: cutoffDate,
+        },
+      },
+    });
+
+    console.log(`[InfiniteBuyScheduler] ${result.count}개의 오래된 로그 삭제됨`);
+    return result.count;
   }
 }
 
