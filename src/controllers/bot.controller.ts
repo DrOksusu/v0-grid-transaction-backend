@@ -700,3 +700,124 @@ export const getPriceManagerStatus = async (
     next(error);
   }
 };
+
+// 전체 거래내역 조회 (모든 봇)
+export const getAllTrades = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const limit = parseInt(req.query.limit as string) || 100;
+    const offset = parseInt(req.query.offset as string) || 0;
+    const type = req.query.type as string; // 'buy' | 'sell'
+    const ticker = req.query.ticker as string;
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
+
+    // 사용자의 모든 봇 ID 조회
+    const userBots = await prisma.bot.findMany({
+      where: { userId },
+      select: { id: true, ticker: true },
+    });
+
+    const botIds = userBots.map(b => b.id);
+    const botMap = new Map(userBots.map(b => [b.id, b.ticker]));
+
+    if (botIds.length === 0) {
+      return successResponse(res, {
+        trades: [],
+        summary: {
+          totalTrades: 0,
+          buyTrades: 0,
+          sellTrades: 0,
+          totalProfit: 0,
+          totalVolume: 0,
+        },
+        pagination: {
+          total: 0,
+          limit,
+          offset,
+          hasMore: false,
+        },
+      });
+    }
+
+    // 필터 조건 구성
+    const whereClause: any = {
+      botId: { in: botIds },
+      status: 'filled', // 체결된 것만
+    };
+
+    if (type) {
+      whereClause.type = type;
+    }
+
+    if (ticker) {
+      const tickerBotIds = userBots.filter(b => b.ticker === ticker).map(b => b.id);
+      whereClause.botId = { in: tickerBotIds };
+    }
+
+    if (startDate || endDate) {
+      whereClause.filledAt = {};
+      if (startDate) {
+        whereClause.filledAt.gte = new Date(startDate);
+      }
+      if (endDate) {
+        whereClause.filledAt.lte = new Date(endDate + 'T23:59:59.999Z');
+      }
+    }
+
+    // 거래 내역 조회
+    const [trades, total] = await Promise.all([
+      prisma.trade.findMany({
+        where: whereClause,
+        orderBy: { filledAt: 'desc' },
+        skip: offset,
+        take: limit,
+      }),
+      prisma.trade.count({ where: whereClause }),
+    ]);
+
+    // 요약 통계 조회
+    const allTrades = await prisma.trade.findMany({
+      where: { botId: { in: botIds }, status: 'filled' },
+      select: { type: true, profit: true, total: true },
+    });
+
+    const summary = {
+      totalTrades: allTrades.length,
+      buyTrades: allTrades.filter(t => t.type === 'buy').length,
+      sellTrades: allTrades.filter(t => t.type === 'sell').length,
+      totalProfit: allTrades.reduce((sum, t) => sum + (t.profit || 0), 0),
+      totalVolume: allTrades.reduce((sum, t) => sum + t.total, 0),
+    };
+
+    return successResponse(res, {
+      trades: trades.map(t => ({
+        _id: t.id.toString(),
+        botId: t.botId.toString(),
+        ticker: botMap.get(t.botId) || 'Unknown',
+        type: t.type,
+        price: t.price,
+        amount: t.amount,
+        total: t.total,
+        profit: t.profit,
+        orderId: t.orderId,
+        status: t.status,
+        executedAt: t.executedAt,
+        filledAt: t.filledAt,
+      })),
+      summary,
+      pagination: {
+        total,
+        limit,
+        offset,
+        hasMore: offset + limit < total,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
