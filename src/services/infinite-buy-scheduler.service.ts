@@ -3,6 +3,8 @@ import prisma from '../config/database';
 import { KisService } from './kis.service';
 import { decrypt } from '../utils/encryption';
 import { InfiniteBuyStatus } from '@prisma/client';
+import { infiniteBuyStrategy1Service } from './infinite-buy-strategy1.service';
+import { isUSMarketOpen } from '../utils/us-market-holidays';
 
 interface SchedulerConfig {
   autoBuyEnabled: boolean;
@@ -17,6 +19,7 @@ interface StockWithCredential {
 
 export class InfiniteBuySchedulerService {
   private autoBuyJob: ScheduledTask | null = null;
+  private strategy1BuyJob: ScheduledTask | null = null;  // strategy1 전용
   private priceCheckJob: ScheduledTask | null = null;
   private orderCheckJob: ScheduledTask | null = null;
   private isRunning: boolean = false;
@@ -36,11 +39,20 @@ export class InfiniteBuySchedulerService {
     console.log('[InfiniteBuyScheduler] 무한매수법 자동매매 스케줄러 시작');
 
     // 미국 장 시작 시간 (한국시간 23:30, 서머타임 22:30)
-    // 동절기 기준 23:35에 자동 매수 실행 (하루 1회)
+    // 동절기 기준 23:35에 자동 매수 실행 (하루 1회) - basic 전략용
     // 서머타임 기간(3월~11월)에는 22:35로 변경 필요
     this.autoBuyJob = cron.schedule('35 23 * * 1-5', async () => {
-      console.log('[InfiniteBuyScheduler] 자동 매수 스케줄 실행');
+      console.log('[InfiniteBuyScheduler] 기본 전략 자동 매수 스케줄 실행');
       await this.executeAutoBuy();
+    }, {
+      timezone: 'Asia/Seoul'
+    });
+
+    // Strategy1 LOC 주문 (장 시작 후 40분에 실행 - 23:40 KST 동절기)
+    // LOC 주문은 장중에 넣으면 장 마감 시 체결됨
+    this.strategy1BuyJob = cron.schedule('40 23 * * 1-5', async () => {
+      console.log('[InfiniteBuyScheduler] Strategy1 LOC 자동 매수 스케줄 실행');
+      await this.executeStrategy1AutoBuy();
     }, {
       timezone: 'Asia/Seoul'
     });
@@ -61,7 +73,8 @@ export class InfiniteBuySchedulerService {
 
     this.isRunning = true;
     console.log('[InfiniteBuyScheduler] 스케줄 등록 완료');
-    console.log('  - 자동 매수: 매일 23:35 (KST, 동절기)');
+    console.log('  - 기본 전략 매수: 매일 23:35 (KST, 동절기)');
+    console.log('  - Strategy1 LOC 매수: 매일 23:40 (KST, 동절기)');
     console.log(`  - 가격 체크: 장중 매 ${this.config.priceCheckInterval}분`);
     console.log('  - 체결 확인: 장중 매 10분');
   }
@@ -71,6 +84,10 @@ export class InfiniteBuySchedulerService {
     if (this.autoBuyJob) {
       this.autoBuyJob.stop();
       this.autoBuyJob = null;
+    }
+    if (this.strategy1BuyJob) {
+      this.strategy1BuyJob.stop();
+      this.strategy1BuyJob = null;
     }
     if (this.priceCheckJob) {
       this.priceCheckJob.stop();
@@ -86,8 +103,13 @@ export class InfiniteBuySchedulerService {
 
   // 수동 실행 (테스트용)
   async runManualBuy() {
-    console.log('[InfiniteBuyScheduler] 수동 매수 실행');
+    console.log('[InfiniteBuyScheduler] 수동 매수 실행 (기본 전략)');
     await this.executeAutoBuy();
+  }
+
+  async runManualStrategy1Buy() {
+    console.log('[InfiniteBuyScheduler] 수동 매수 실행 (Strategy1)');
+    await this.executeStrategy1AutoBuy();
   }
 
   async runManualPriceCheck() {
@@ -159,7 +181,7 @@ export class InfiniteBuySchedulerService {
     }
   }
 
-  // 자동 매수 실행
+  // 자동 매수 실행 (기본 전략용)
   private async executeAutoBuy() {
     if (!this.config.autoBuyEnabled) {
       console.log('[InfiniteBuyScheduler] 자동 매수 비활성화됨');
@@ -167,18 +189,19 @@ export class InfiniteBuySchedulerService {
     }
 
     try {
-      // 자동매수 활성화된 buying 상태 종목 조회
+      // 자동매수 활성화된 buying 상태 종목 조회 (기본 전략만)
       const stocks = await prisma.infiniteBuyStock.findMany({
         where: {
           status: 'buying',
           autoEnabled: true,
+          strategy: 'basic',  // 기본 전략만
         },
         include: {
           user: true,
         },
       });
 
-      console.log(`[InfiniteBuyScheduler] 자동 매수 대상: ${stocks.length}개 종목`);
+      console.log(`[InfiniteBuyScheduler] 기본 전략 자동 매수 대상: ${stocks.length}개 종목`);
 
       for (const stock of stocks) {
         try {
@@ -192,6 +215,87 @@ export class InfiniteBuySchedulerService {
       }
     } catch (error) {
       console.error('[InfiniteBuyScheduler] 자동 매수 실행 오류:', error);
+    }
+  }
+
+  // Strategy1 자동 매수 실행 (LOC 주문)
+  private async executeStrategy1AutoBuy() {
+    if (!this.config.autoBuyEnabled) {
+      console.log('[InfiniteBuyScheduler] 자동 매수 비활성화됨');
+      return;
+    }
+
+    // 오늘이 거래일인지 확인
+    const today = new Date();
+    if (!isUSMarketOpen(today)) {
+      console.log('[InfiniteBuyScheduler] Strategy1: 오늘은 미국 장 휴일입니다');
+      return;
+    }
+
+    try {
+      // 자동매수 활성화된 buying 상태 종목 조회 (strategy1만)
+      const stocks = await prisma.infiniteBuyStock.findMany({
+        where: {
+          status: 'buying',
+          autoEnabled: true,
+          strategy: 'strategy1',  // strategy1만
+        },
+      });
+
+      console.log(`[InfiniteBuyScheduler] Strategy1 자동 매수 대상: ${stocks.length}개 종목`);
+
+      for (const stock of stocks) {
+        try {
+          await this.processStrategy1BuyForStock(stock);
+        } catch (error: any) {
+          console.error(`[InfiniteBuyScheduler] Strategy1 ${stock.ticker} 매수 처리 실패:`, error.message);
+        }
+
+        // API 호출 간 딜레이 (rate limit 방지)
+        await this.delay(2000);  // LOC 주문은 더 긴 딜레이
+      }
+    } catch (error) {
+      console.error('[InfiniteBuyScheduler] Strategy1 자동 매수 실행 오류:', error);
+    }
+  }
+
+  // Strategy1 개별 종목 매수 처리
+  private async processStrategy1BuyForStock(stock: any) {
+    const { id: stockId, userId, ticker, currentRound, totalRounds } = stock;
+
+    // 최대 회차 도달 체크
+    if (currentRound >= totalRounds) {
+      console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: 최대 회차 도달 (${currentRound}/${totalRounds})`);
+      return;
+    }
+
+    // 하루 1회 매수 제한 체크
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const todayBuyCount = await prisma.infiniteBuyRecord.count({
+      where: {
+        stockId,
+        type: 'buy',
+        executedAt: {
+          gte: todayStart,
+        },
+      },
+    });
+
+    if (todayBuyCount > 0) {
+      console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: 오늘 이미 매수함 - 스킵`);
+      return;
+    }
+
+    console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: LOC 매수 실행 중...`);
+
+    try {
+      // infiniteBuyStrategy1Service의 executeBuy 호출
+      const result = await infiniteBuyStrategy1Service.executeBuy(userId, stockId);
+      console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: LOC 주문 완료 - ${result.orders.length}개 주문, 총 ${result.totalQuantity}주`);
+    } catch (error: any) {
+      console.error(`[InfiniteBuyScheduler] Strategy1 ${ticker}: LOC 주문 실패 -`, error.message);
     }
   }
 
