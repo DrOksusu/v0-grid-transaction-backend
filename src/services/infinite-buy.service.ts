@@ -265,6 +265,7 @@ export class InfiniteBuyService {
     // 현재가 조회
     let currentPrice = 0;
     let priceChangePercent = 0;
+    let priceError: string | null = null;
 
     try {
       const kisService = await this.getKisService(userId);
@@ -272,14 +273,25 @@ export class InfiniteBuyService {
       currentPrice = priceData.currentPrice;
       priceChangePercent = priceData.changePercent;
     } catch (error: any) {
+      priceError = error.message;
       console.error(`[InfiniteBuy] ${stock.ticker} 현재가 조회 실패:`, error.message);
+      // 진단용 로그 저장
+      await saveLog({
+        type: 'price_check',
+        status: 'error',
+        message: `[현재가조회] ${stock.ticker}: 가격 조회 실패`,
+        stockId: stock.id,
+        ticker: stock.ticker,
+        errorMessage: error.message,
+      });
     }
 
-    const currentValue = currentPrice * stock.totalQuantity;
-    const profitLoss = currentValue - stock.totalInvested;
-    const profitLossPercent = stock.totalInvested > 0
+    // 현재가가 0이면 손익 계산하지 않음 (null로 표시)
+    const currentValue = currentPrice > 0 ? currentPrice * stock.totalQuantity : null;
+    const profitLoss = currentValue !== null ? currentValue - stock.totalInvested : null;
+    const profitLossPercent = (profitLoss !== null && stock.totalInvested > 0)
       ? (profitLoss / stock.totalInvested) * 100
-      : 0;
+      : null;
 
     const targetPrice = stock.avgPrice > 0
       ? stock.avgPrice * (1 + stock.targetProfit / 100)
@@ -303,11 +315,12 @@ export class InfiniteBuyService {
       totalQuantity: stock.totalQuantity,
       avgPrice: stock.avgPrice,
       targetPrice,
-      currentPrice,
+      currentPrice: currentPrice || null,  // 0이면 null
       currentValue,
       profitLoss,
       profitLossPercent,
-      priceChangePercent,
+      priceChangePercent: currentPrice > 0 ? priceChangePercent : null,
+      priceError,  // 에러 메시지 전달
       autoEnabled: stock.autoEnabled,
       buyTime: stock.buyTime,
       buyCondition: stock.buyCondition,
