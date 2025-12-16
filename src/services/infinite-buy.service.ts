@@ -1,8 +1,35 @@
 import prisma from '../config/database';
 import { KisService } from './kis.service';
 import { decrypt, encrypt } from '../utils/encryption';
-import { InfiniteBuyStatus, InfiniteBuyStrategy } from '@prisma/client';
+import { InfiniteBuyStatus, InfiniteBuyStrategy, SchedulerLogType, SchedulerLogStatus } from '@prisma/client';
 import { getNextLOCExecutionTime } from '../utils/us-market-holidays';
+
+// 로그 저장 헬퍼 함수
+async function saveLog(params: {
+  type: SchedulerLogType;
+  status: SchedulerLogStatus;
+  message: string;
+  stockId?: number;
+  ticker?: string;
+  details?: object;
+  errorMessage?: string;
+}) {
+  try {
+    await prisma.schedulerLog.create({
+      data: {
+        type: params.type,
+        status: params.status,
+        message: params.message,
+        stockId: params.stockId,
+        ticker: params.ticker,
+        details: params.details ? JSON.stringify(params.details) : null,
+        errorMessage: params.errorMessage,
+      },
+    });
+  } catch (logError) {
+    console.error('[InfiniteBuy] 로그 저장 실패:', logError);
+  }
+}
 
 interface CreateStockParams {
   userId: number;
@@ -340,23 +367,73 @@ export class InfiniteBuyService {
     });
 
     if (!stock) {
+      await saveLog({
+        type: 'auto_buy',
+        status: 'error',
+        message: `[수동매수] 종목을 찾을 수 없습니다 (stockId: ${stockId})`,
+        stockId,
+        errorMessage: '종목을 찾을 수 없습니다',
+      });
       throw new Error('종목을 찾을 수 없습니다');
     }
 
     if (stock.status === 'completed') {
+      await saveLog({
+        type: 'auto_buy',
+        status: 'skipped',
+        message: `[수동매수] ${stock.ticker}: 이미 익절 완료된 종목`,
+        stockId,
+        ticker: stock.ticker,
+      });
       throw new Error('이미 익절 완료된 종목입니다');
     }
 
     if (stock.currentRound >= stock.totalRounds) {
+      await saveLog({
+        type: 'auto_buy',
+        status: 'skipped',
+        message: `[수동매수] ${stock.ticker}: 최대 분할 횟수 도달`,
+        stockId,
+        ticker: stock.ticker,
+        details: { currentRound: stock.currentRound, totalRounds: stock.totalRounds },
+      });
       throw new Error('최대 분할 횟수에 도달했습니다');
     }
 
     const buyAmount = amount || stock.buyAmount;
 
-    // KIS 서비스로 현재가 조회 및 매수
-    const kisService = await this.getKisService(userId);
-    const priceData = await kisService.getUSStockPrice(stock.ticker, stock.exchange);
-    const currentPrice = priceData.currentPrice;
+    // KIS 서비스 초기화
+    let kisService: KisService;
+    try {
+      kisService = await this.getKisService(userId);
+    } catch (error: any) {
+      await saveLog({
+        type: 'auto_buy',
+        status: 'error',
+        message: `[수동매수] ${stock.ticker}: KIS 서비스 초기화 실패`,
+        stockId,
+        ticker: stock.ticker,
+        errorMessage: error.message,
+      });
+      throw error;
+    }
+
+    // 현재가 조회
+    let currentPrice: number;
+    try {
+      const priceData = await kisService.getUSStockPrice(stock.ticker, stock.exchange);
+      currentPrice = priceData.currentPrice;
+    } catch (error: any) {
+      await saveLog({
+        type: 'auto_buy',
+        status: 'error',
+        message: `[수동매수] ${stock.ticker}: 현재가 조회 실패`,
+        stockId,
+        ticker: stock.ticker,
+        errorMessage: error.message,
+      });
+      throw new Error(`현재가 조회 실패: ${error.message}`);
+    }
 
     // 매수 수량 계산 (미국 주식은 정수 수량만 가능)
     const quantity = Math.floor(buyAmount / currentPrice);
@@ -364,7 +441,16 @@ export class InfiniteBuyService {
 
     // 수량이 0이면 매수 불가
     if (quantity < 1) {
-      throw new Error(`매수 금액(${buyAmount}원)이 1주 가격(${currentPrice}달러)보다 적습니다`);
+      await saveLog({
+        type: 'auto_buy',
+        status: 'error',
+        message: `[수동매수] ${stock.ticker}: 매수 수량 부족`,
+        stockId,
+        ticker: stock.ticker,
+        details: { buyAmount, currentPrice, calculatedQuantity: quantity },
+        errorMessage: `매수 금액(${buyAmount}달러)이 1주 가격(${currentPrice}달러)보다 적습니다`,
+      });
+      throw new Error(`매수 금액(${buyAmount}달러)이 1주 가격(${currentPrice}달러)보다 적습니다`);
     }
 
     // 실제 매수 주문 실행 (모의투자에서도 동작)
@@ -381,6 +467,15 @@ export class InfiniteBuyService {
       );
       orderId = orderResult.orderId;
     } catch (error: any) {
+      await saveLog({
+        type: 'auto_buy',
+        status: 'error',
+        message: `[수동매수] ${stock.ticker}: KIS 매수 주문 실패`,
+        stockId,
+        ticker: stock.ticker,
+        details: { quantity, price: currentPrice, buyAmount },
+        errorMessage: error.message,
+      });
       console.error("KIS 매수 주문 오류:", error.message);
       throw new Error(`매수 주문 실패: ${error.message}`);
     }
@@ -391,48 +486,76 @@ export class InfiniteBuyService {
     const newAvgPrice = newTotalQuantity > 0 ? newTotalInvested / newTotalQuantity : 0;
 
     // DB 업데이트
-    const [updatedStock, record] = await prisma.$transaction([
-      prisma.infiniteBuyStock.update({
-        where: { id: stockId },
-        data: {
-          currentRound: nextRound,
-          totalInvested: newTotalInvested,
-          totalQuantity: newTotalQuantity,
-          avgPrice: newAvgPrice,
-          status: 'buying',
-        },
-      }),
-      prisma.infiniteBuyRecord.create({
-        data: {
-          stockId,
-          type: 'buy',
+    try {
+      const [updatedStock, record] = await prisma.$transaction([
+        prisma.infiniteBuyStock.update({
+          where: { id: stockId },
+          data: {
+            currentRound: nextRound,
+            totalInvested: newTotalInvested,
+            totalQuantity: newTotalQuantity,
+            avgPrice: newAvgPrice,
+            status: 'buying',
+          },
+        }),
+        prisma.infiniteBuyRecord.create({
+          data: {
+            stockId,
+            type: 'buy',
+            round: nextRound,
+            price: currentPrice,
+            quantity,
+            amount: buyAmount,
+            orderId,
+            orderStatus: orderId ? 'filled' : 'pending',
+          },
+        }),
+      ]);
+
+      // 성공 로그
+      await saveLog({
+        type: 'auto_buy',
+        status: 'completed',
+        message: `[수동매수] ${stock.ticker}: 매수 성공 (${nextRound}회차)`,
+        stockId,
+        ticker: stock.ticker,
+        details: {
           round: nextRound,
-          price: currentPrice,
           quantity,
+          price: currentPrice,
           amount: buyAmount,
           orderId,
-          orderStatus: orderId ? 'filled' : 'pending',
         },
-      }),
-    ]);
+      });
 
-    return {
-      record: {
-        id: record.id.toString(),
-        type: record.type,
-        round: record.round,
-        price: record.price,
-        quantity: record.quantity,
-        amount: record.amount,
-        executedAt: record.executedAt.toISOString(),
-      },
-      stock: {
-        currentRound: updatedStock.currentRound,
-        totalInvested: updatedStock.totalInvested,
-        totalQuantity: updatedStock.totalQuantity,
-        avgPrice: updatedStock.avgPrice,
-      },
-    };
+      return {
+        record: {
+          id: record.id.toString(),
+          type: record.type,
+          round: record.round,
+          price: record.price,
+          quantity: record.quantity,
+          amount: record.amount,
+          executedAt: record.executedAt.toISOString(),
+        },
+        stock: {
+          currentRound: updatedStock.currentRound,
+          totalInvested: updatedStock.totalInvested,
+          totalQuantity: updatedStock.totalQuantity,
+          avgPrice: updatedStock.avgPrice,
+        },
+      };
+    } catch (error: any) {
+      await saveLog({
+        type: 'auto_buy',
+        status: 'error',
+        message: `[수동매수] ${stock.ticker}: DB 업데이트 실패`,
+        stockId,
+        ticker: stock.ticker,
+        errorMessage: error.message,
+      });
+      throw new Error(`DB 업데이트 실패: ${error.message}`);
+    }
   }
 
   // 익절 (전량 매도)
@@ -442,23 +565,72 @@ export class InfiniteBuyService {
     });
 
     if (!stock) {
+      await saveLog({
+        type: 'price_check',
+        status: 'error',
+        message: `[수동매도] 종목을 찾을 수 없습니다 (stockId: ${stockId})`,
+        stockId,
+        errorMessage: '종목을 찾을 수 없습니다',
+      });
       throw new Error('종목을 찾을 수 없습니다');
     }
 
     if (stock.status === 'completed') {
+      await saveLog({
+        type: 'price_check',
+        status: 'skipped',
+        message: `[수동매도] ${stock.ticker}: 이미 익절 완료된 종목`,
+        stockId,
+        ticker: stock.ticker,
+      });
       throw new Error('이미 익절 완료된 종목입니다');
     }
 
     if (stock.totalQuantity <= 0) {
+      await saveLog({
+        type: 'price_check',
+        status: 'skipped',
+        message: `[수동매도] ${stock.ticker}: 매도할 수량이 없습니다`,
+        stockId,
+        ticker: stock.ticker,
+      });
       throw new Error('매도할 수량이 없습니다');
     }
 
     const sellQuantity = quantity || stock.totalQuantity;
 
-    // KIS 서비스로 현재가 조회 및 매도
-    const kisService = await this.getKisService(userId);
-    const priceData = await kisService.getUSStockPrice(stock.ticker, stock.exchange);
-    const currentPrice = priceData.currentPrice;
+    // KIS 서비스 초기화
+    let kisService: KisService;
+    try {
+      kisService = await this.getKisService(userId);
+    } catch (error: any) {
+      await saveLog({
+        type: 'price_check',
+        status: 'error',
+        message: `[수동매도] ${stock.ticker}: KIS 서비스 초기화 실패`,
+        stockId,
+        ticker: stock.ticker,
+        errorMessage: error.message,
+      });
+      throw error;
+    }
+
+    // 현재가 조회
+    let currentPrice: number;
+    try {
+      const priceData = await kisService.getUSStockPrice(stock.ticker, stock.exchange);
+      currentPrice = priceData.currentPrice;
+    } catch (error: any) {
+      await saveLog({
+        type: 'price_check',
+        status: 'error',
+        message: `[수동매도] ${stock.ticker}: 현재가 조회 실패`,
+        stockId,
+        ticker: stock.ticker,
+        errorMessage: error.message,
+      });
+      throw new Error(`현재가 조회 실패: ${error.message}`);
+    }
 
     // 매도 금액 및 수익 계산
     const sellAmount = currentPrice * sellQuantity;
@@ -479,6 +651,15 @@ export class InfiniteBuyService {
       );
       orderId = orderResult.orderId;
     } catch (error: any) {
+      await saveLog({
+        type: 'price_check',
+        status: 'error',
+        message: `[수동매도] ${stock.ticker}: KIS 매도 주문 실패`,
+        stockId,
+        ticker: stock.ticker,
+        details: { sellQuantity, price: currentPrice },
+        errorMessage: error.message,
+      });
       console.error("KIS 매도 주문 오류:", error.message);
       throw new Error(`매도 주문 실패: ${error.message}`);
     }
@@ -489,47 +670,77 @@ export class InfiniteBuyService {
     const newTotalInvested = isFullSell ? 0 : stock.totalInvested - costBasis;
 
     // DB 업데이트
-    const [updatedStock, record] = await prisma.$transaction([
-      prisma.infiniteBuyStock.update({
-        where: { id: stockId },
-        data: {
-          totalQuantity: newTotalQuantity,
-          totalInvested: newTotalInvested,
-          status: isFullSell ? 'completed' : 'buying',
-          completedAt: isFullSell ? new Date() : null,
-        },
-      }),
-      prisma.infiniteBuyRecord.create({
-        data: {
-          stockId,
-          type: 'sell',
+    try {
+      const [updatedStock, record] = await prisma.$transaction([
+        prisma.infiniteBuyStock.update({
+          where: { id: stockId },
+          data: {
+            totalQuantity: newTotalQuantity,
+            totalInvested: newTotalInvested,
+            status: isFullSell ? 'completed' : 'buying',
+            completedAt: isFullSell ? new Date() : null,
+          },
+        }),
+        prisma.infiniteBuyRecord.create({
+          data: {
+            stockId,
+            type: 'sell',
+            price: currentPrice,
+            quantity: sellQuantity,
+            amount: sellAmount,
+            profit,
+            profitPercent,
+            orderId,
+            orderStatus: orderId ? 'filled' : 'pending',
+          },
+        }),
+      ]);
+
+      // 성공 로그
+      await saveLog({
+        type: 'price_check',
+        status: 'completed',
+        message: `[수동매도] ${stock.ticker}: 매도 성공 (${isFullSell ? '전량' : '일부'})`,
+        stockId,
+        ticker: stock.ticker,
+        details: {
+          sellQuantity,
           price: currentPrice,
-          quantity: sellQuantity,
-          amount: sellAmount,
+          sellAmount,
           profit,
           profitPercent,
+          isFullSell,
           orderId,
-          orderStatus: orderId ? 'filled' : 'pending',
         },
-      }),
-    ]);
+      });
 
-    return {
-      record: {
-        id: record.id.toString(),
-        type: record.type,
-        price: record.price,
-        quantity: record.quantity,
-        amount: record.amount,
-        profit: record.profit,
-        profitPercent: record.profitPercent,
-        executedAt: record.executedAt.toISOString(),
-      },
-      stock: {
-        status: updatedStock.status,
-        completedAt: updatedStock.completedAt?.toISOString(),
-      },
-    };
+      return {
+        record: {
+          id: record.id.toString(),
+          type: record.type,
+          price: record.price,
+          quantity: record.quantity,
+          amount: record.amount,
+          profit: record.profit,
+          profitPercent: record.profitPercent,
+          executedAt: record.executedAt.toISOString(),
+        },
+        stock: {
+          status: updatedStock.status,
+          completedAt: updatedStock.completedAt?.toISOString(),
+        },
+      };
+    } catch (error: any) {
+      await saveLog({
+        type: 'price_check',
+        status: 'error',
+        message: `[수동매도] ${stock.ticker}: DB 업데이트 실패`,
+        stockId,
+        ticker: stock.ticker,
+        errorMessage: error.message,
+      });
+      throw new Error(`DB 업데이트 실패: ${error.message}`);
+    }
   }
 
   // 종목 중단
