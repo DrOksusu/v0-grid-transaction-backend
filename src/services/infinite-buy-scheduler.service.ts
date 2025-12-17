@@ -81,9 +81,9 @@ export class InfiniteBuySchedulerService {
       timezone: 'Asia/Seoul'
     });
 
-    // Strategy1 LOC 주문 (장 시작 후 40분에 실행 - 23:40 KST 동절기)
-    // LOC 주문은 장중에 넣으면 장 마감 시 체결됨
-    this.strategy1BuyJob = cron.schedule('40 23 * * 1-5', async () => {
+    // Strategy1 LOC 주문 (장 마감 1.5시간 전 - 04:30 KST 동절기)
+    // 장 마감 가까운 시간에 LOC 주문을 넣어야 종가 예측이 가능
+    this.strategy1BuyJob = cron.schedule('30 4 * * 2-6', async () => {
       console.log('[InfiniteBuyScheduler] Strategy1 LOC 자동 매수 스케줄 실행');
       await this.executeStrategy1AutoBuy();
     }, {
@@ -107,7 +107,7 @@ export class InfiniteBuySchedulerService {
     this.isRunning = true;
     console.log('[InfiniteBuyScheduler] 스케줄 등록 완료');
     console.log('  - 기본 전략 매수: 매일 23:35 (KST, 동절기)');
-    console.log('  - Strategy1 LOC 매수: 매일 23:40 (KST, 동절기)');
+    console.log('  - Strategy1 LOC 매수: 매일 04:30 (KST, 동절기) - 장 마감 1.5시간 전');
     console.log(`  - 가격 체크: 장중 매 ${this.config.priceCheckInterval}분`);
     console.log('  - 체결 확인: 장중 매 10분');
   }
