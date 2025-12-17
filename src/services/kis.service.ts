@@ -466,50 +466,62 @@ export class KisService {
         const trId = this.isPaper ? 'VTTS3035R' : 'TTTS3035R';
 
         const today = new Date();
-        const startDate = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000); // 7일 전
-
         const formatDate = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '');
 
-        const response = await axios.get(
-          `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-ccnl`,
-          {
-            headers: this.getHeaders(trId),
-            params: {
-              CANO: this.accountNoPrefix,
-              ACNT_PRDT_CD: this.accountNoSuffix,
-              PDNO: '%',                              // 전 종목
-              ORD_STRT_DT: formatDate(startDate),     // 시작일
-              ORD_END_DT: formatDate(today),          // 종료일
-              SLL_BUY_DVSN: '00',                     // 00: 전체
-              CCLD_NCCS_DVSN: '00',                   // 00: 전체
-              OVRS_EXCG_CD: 'NASD',
-              SORT_SQN: 'DS',                         // DS: 내림차순
-              CTX_AREA_FK200: '',
-              CTX_AREA_NK200: '',
-            },
+        // 최근 3일간의 주문 조회 (체결 확인 용도로 충분)
+        const allOrders: any[] = [];
+        const daysToCheck = 3;
+
+        for (let i = 0; i < daysToCheck; i++) {
+          const checkDate = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
+          const ordDt = formatDate(checkDate);
+
+          try {
+            const response = await axios.get(
+              `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-ccnl`,
+              {
+                headers: this.getHeaders(trId),
+                params: {
+                  CANO: this.accountNoPrefix,
+                  ACNT_PRDT_CD: this.accountNoSuffix,
+                  PDNO: '%',                              // 전 종목
+                  ORD_DT: ordDt,                           // 조회일자 (필수)
+                  ORD_GNO_BRNO: '',                        // 주문채번지점번호
+                  ODNO: '',                               // 주문번호
+                  SLL_BUY_DVSN_CD: '00',                   // 00: 전체
+                  CCLD_NCCS_DVSN: '00',                    // 00: 전체
+                  OVRS_EXCG_CD: 'NASD',
+                  SORT_SQN: 'DS',                          // DS: 내림차순
+                  CTX_AREA_FK200: '',
+                  CTX_AREA_NK200: '',
+                },
+              }
+            );
+
+            const data = response.data;
+
+            if (data.rt_cd === '0' && data.output) {
+              const orders = data.output.map((item: any) => ({
+                orderId: item.odno,                         // 주문번호
+                ticker: item.pdno,                          // 종목코드
+                orderType: item.sll_buy_dvsn_cd === '01' ? 'sell' : 'buy',  // 매수/매도
+                orderQty: parseInt(item.ft_ord_qty) || 0,   // 주문수량
+                filledQty: parseInt(item.ft_ccld_qty) || 0, // 체결수량
+                orderPrice: parseFloat(item.ft_ord_unpr3) || 0,  // 주문가격
+                filledPrice: parseFloat(item.ft_ccld_unpr3) || 0, // 체결가격
+                orderDate: item.ord_dt,                     // 주문일자
+                orderTime: item.ord_tmd,                    // 주문시간
+                status: parseInt(item.ft_ccld_qty) > 0 ? 'filled' : 'pending',
+              }));
+              allOrders.push(...orders);
+            }
+          } catch (error: any) {
+            // 특정 날짜 조회 실패 시 무시하고 계속
+            console.warn(`[KIS] ${ordDt} 체결내역 조회 실패:`, error.message);
           }
-        );
-
-        const data = response.data;
-
-        if (data.rt_cd !== '0') {
-          throw new Error(data.msg1 || '체결 내역 조회 실패');
         }
 
-        const orders = data.output?.map((item: any) => ({
-          orderId: item.odno,                         // 주문번호
-          ticker: item.pdno,                          // 종목코드
-          orderType: item.sll_buy_dvsn_cd === '01' ? 'sell' : 'buy',  // 매수/매도
-          orderQty: parseInt(item.ft_ord_qty) || 0,   // 주문수량
-          filledQty: parseInt(item.ft_ccld_qty) || 0, // 체결수량
-          orderPrice: parseFloat(item.ft_ord_unpr3) || 0,  // 주문가격
-          filledPrice: parseFloat(item.ft_ccld_unpr3) || 0, // 체결가격
-          orderDate: item.ord_dt,                     // 주문일자
-          orderTime: item.ord_tmd,                    // 주문시간
-          status: parseInt(item.ft_ccld_qty) > 0 ? 'filled' : 'pending',
-        })) || [];
-
-        return orders;
+        return allOrders;
       });
     });
   }
