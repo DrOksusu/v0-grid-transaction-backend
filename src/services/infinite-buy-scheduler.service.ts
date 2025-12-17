@@ -987,34 +987,35 @@ export class InfiniteBuySchedulerService {
               });
             } else if (!kisOrder) {
               // KIS에서 주문을 찾지 못함
-              // LOC 주문은 당일에만 유효하므로, 하루 이상 지난 주문은 취소된 것으로 처리
               const orderDate = new Date(record.executedAt);
               const now = new Date();
               const daysDiff = Math.floor((now.getTime() - orderDate.getTime()) / (24 * 60 * 60 * 1000));
 
-              if (daysDiff >= 1 && record.orderType === 'loc') {
-                // LOC 주문이 하루 이상 지났으면 자동 취소 처리
+              // 3일 이상 지난 주문은 KIS에서 만료/취소된 것으로 처리
+              // (LOC 주문은 당일만 유효, 일반 주문도 오래되면 조회 안 됨)
+              if (daysDiff >= 3) {
                 await prisma.infiniteBuyRecord.update({
                   where: { id: record.id },
                   data: { orderStatus: 'cancelled' },
                 });
 
-                console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: LOC 주문 만료로 취소 처리 (주문번호: ${record.orderId}, ${daysDiff}일 경과)`);
+                console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: 주문 만료로 취소 처리 (주문번호: ${record.orderId}, ${daysDiff}일 경과)`);
 
                 await saveLog({
                   type: 'order_check',
                   status: 'completed',
-                  message: `${record.stock.ticker}: LOC 주문 만료 취소`,
+                  message: `${record.stock.ticker}: 주문 만료 취소 (${daysDiff}일 경과)`,
                   stockId: record.stockId,
                   ticker: record.stock.ticker,
                   details: {
                     orderId: record.orderId,
                     daysSinceOrder: daysDiff,
-                    reason: 'LOC 주문은 당일에만 유효',
+                    orderType: record.orderType,
+                    reason: 'KIS에서 조회 불가 - 만료/취소된 주문',
                   },
                 });
               } else {
-                // 일반 주문이거나 당일 주문은 대기
+                // 3일 미만은 아직 대기 중
                 await saveLog({
                   type: 'order_check',
                   status: 'skipped',
