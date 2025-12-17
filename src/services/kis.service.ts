@@ -454,8 +454,9 @@ export class KisService {
 
   /**
    * 해외주식 체결 내역 조회 (Rate Limiting 적용)
+   * @param dates 조회할 날짜 목록 (선택사항, 없으면 최근 3일)
    */
-  async getUSStockOrders() {
+  async getUSStockOrders(dates?: Date[]) {
     return executeWithRateLimit(this.appKey, async () => {
       return this.withTokenRefresh(async () => {
         if (!this.isTokenValid()) {
@@ -465,17 +466,28 @@ export class KisService {
         // tr_id: 모의투자 VTTS3035R, 실전투자 TTTS3035R
         const trId = this.isPaper ? 'VTTS3035R' : 'TTTS3035R';
 
-        const today = new Date();
         const formatDate = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '');
 
-        // 최근 3일간의 주문 조회 (체결 확인 용도로 충분)
+        // 조회할 날짜 목록 결정 (중복 제거)
+        let datesToCheck: string[];
+        if (dates && dates.length > 0) {
+          // 전달받은 날짜 목록 사용 (중복 제거)
+          datesToCheck = [...new Set(dates.map(d => formatDate(d)))];
+        } else {
+          // 기본: 최근 3일
+          const today = new Date();
+          datesToCheck = [];
+          for (let i = 0; i < 3; i++) {
+            const checkDate = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
+            datesToCheck.push(formatDate(checkDate));
+          }
+        }
+
+        console.log(`[KIS] 체결내역 조회 날짜: ${datesToCheck.join(', ')}`);
+
         const allOrders: any[] = [];
-        const daysToCheck = 3;
 
-        for (let i = 0; i < daysToCheck; i++) {
-          const checkDate = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
-          const ordDt = formatDate(checkDate);
-
+        for (const ordDt of datesToCheck) {
           try {
             const response = await axios.get(
               `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-ccnl`,
@@ -514,6 +526,7 @@ export class KisService {
                 status: parseInt(item.ft_ccld_qty) > 0 ? 'filled' : 'pending',
               }));
               allOrders.push(...orders);
+              console.log(`[KIS] ${ordDt}: ${orders.length}건 조회됨`);
             }
           } catch (error: any) {
             // 특정 날짜 조회 실패 시 무시하고 계속

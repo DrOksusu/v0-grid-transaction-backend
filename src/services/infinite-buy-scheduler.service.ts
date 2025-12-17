@@ -934,9 +934,21 @@ export class InfiniteBuySchedulerService {
         }
 
         try {
-          // KIS API에서 체결 내역 조회
-          const kisOrders = await kisService.getUSStockOrders();
+          // pending 주문들의 executedAt 날짜 수집 (주문 생성일 기준으로 KIS 조회)
+          const orderDates = records.map(r => r.executedAt);
+          console.log(`[InfiniteBuyScheduler] 주문 생성일 목록:`, orderDates.map(d => d.toISOString().slice(0, 10)));
+
+          // KIS API에서 체결 내역 조회 (해당 날짜들만)
+          const kisOrders = await kisService.getUSStockOrders(orderDates);
           console.log(`[InfiniteBuyScheduler] KIS 주문 내역: ${kisOrders.length}건 조회됨`);
+
+          // 디버깅: KIS에서 반환된 주문번호 목록
+          if (kisOrders.length > 0) {
+            console.log(`[InfiniteBuyScheduler] KIS 주문번호 목록:`, kisOrders.map((o: any) => o.orderId));
+          }
+
+          // 디버깅: 매칭할 주문번호 목록
+          console.log(`[InfiniteBuyScheduler] 매칭 대상 주문번호:`, records.map(r => r.orderId));
 
           // orderId로 매칭하여 체결 확인
           for (const record of records) {
@@ -974,18 +986,48 @@ export class InfiniteBuySchedulerService {
                 },
               });
             } else if (!kisOrder) {
-              // KIS에서 주문을 찾지 못함 - 로그 기록
-              await saveLog({
-                type: 'order_check',
-                status: 'skipped',
-                message: `${record.stock.ticker}: KIS에서 주문을 찾지 못함`,
-                stockId: record.stockId,
-                ticker: record.stock.ticker,
-                details: {
-                  orderId: record.orderId,
-                  kisOrderCount: kisOrders.length,
-                },
-              });
+              // KIS에서 주문을 찾지 못함
+              // LOC 주문은 당일에만 유효하므로, 하루 이상 지난 주문은 취소된 것으로 처리
+              const orderDate = new Date(record.executedAt);
+              const now = new Date();
+              const daysDiff = Math.floor((now.getTime() - orderDate.getTime()) / (24 * 60 * 60 * 1000));
+
+              if (daysDiff >= 1 && record.orderType === 'loc') {
+                // LOC 주문이 하루 이상 지났으면 자동 취소 처리
+                await prisma.infiniteBuyRecord.update({
+                  where: { id: record.id },
+                  data: { orderStatus: 'cancelled' },
+                });
+
+                console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: LOC 주문 만료로 취소 처리 (주문번호: ${record.orderId}, ${daysDiff}일 경과)`);
+
+                await saveLog({
+                  type: 'order_check',
+                  status: 'completed',
+                  message: `${record.stock.ticker}: LOC 주문 만료 취소`,
+                  stockId: record.stockId,
+                  ticker: record.stock.ticker,
+                  details: {
+                    orderId: record.orderId,
+                    daysSinceOrder: daysDiff,
+                    reason: 'LOC 주문은 당일에만 유효',
+                  },
+                });
+              } else {
+                // 일반 주문이거나 당일 주문은 대기
+                await saveLog({
+                  type: 'order_check',
+                  status: 'skipped',
+                  message: `${record.stock.ticker}: KIS에서 주문을 찾지 못함`,
+                  stockId: record.stockId,
+                  ticker: record.stock.ticker,
+                  details: {
+                    orderId: record.orderId,
+                    kisOrderCount: kisOrders.length,
+                    daysSinceOrder: daysDiff,
+                  },
+                });
+              }
             }
           }
         } catch (error: any) {
