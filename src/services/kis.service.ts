@@ -150,8 +150,16 @@ export class KisService {
       // 토큰 만료 에러면 재발급 후 재시도
       if (this.isTokenExpiredError(error)) {
         console.log('[KIS] 토큰 만료 감지, 재발급 시도...');
-        await this.getAccessToken();
-        console.log('[KIS] 토큰 재발급 완료, API 재시도');
+        const tokenInfo = await this.getAccessToken();
+
+        // 콜백이 설정되어 있으면 호출 (DB 저장용)
+        if (this.onTokenRefresh) {
+          await this.onTokenRefresh(tokenInfo.accessToken, tokenInfo.tokenExpireAt);
+          console.log('[KIS] 토큰 재발급 완료 및 DB 저장, API 재시도');
+        } else {
+          console.log('[KIS] 토큰 재발급 완료, API 재시도 (DB 저장 콜백 미설정)');
+        }
+
         return await apiCall();
       }
       throw error;

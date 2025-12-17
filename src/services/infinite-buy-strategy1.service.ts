@@ -130,6 +130,22 @@ export class InfiniteBuyStrategy1Service {
       });
     }
 
+    // 토큰 재발급 콜백 설정 (withTokenRefresh에서 자동 재발급 시 DB 저장용)
+    kisService.setTokenRefreshCallback(async (newToken: string, newExpireAt: Date) => {
+      try {
+        await prisma.credential.update({
+          where: { id: credential.id },
+          data: {
+            accessToken: encrypt(newToken),
+            tokenExpireAt: newExpireAt,
+          },
+        });
+        console.log(`[Strategy1] 토큰 자동 갱신 및 DB 저장 완료 (userId: ${userId})`);
+      } catch (err: any) {
+        console.error(`[Strategy1] 토큰 DB 저장 실패:`, err.message);
+      }
+    });
+
     return kisService;
   }
 

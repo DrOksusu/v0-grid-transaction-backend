@@ -268,6 +268,23 @@ export class InfiniteBuySchedulerService {
         }
       }
 
+      // 토큰 재발급 콜백 설정 (withTokenRefresh에서 자동 재발급 시 DB 저장용)
+      kisService.setTokenRefreshCallback(async (newToken: string, newExpireAt: Date) => {
+        try {
+          const { encrypt } = await import('../utils/encryption');
+          await prisma.credential.update({
+            where: { id: credential.id },
+            data: {
+              accessToken: encrypt(newToken),
+              tokenExpireAt: newExpireAt,
+            },
+          });
+          console.log(`[InfiniteBuyScheduler] 토큰 자동 갱신 및 DB 저장 완료 (userId: ${userId})`);
+        } catch (err: any) {
+          console.error(`[InfiniteBuyScheduler] 토큰 DB 저장 실패:`, err.message);
+        }
+      });
+
       return kisService;
     } catch (error: any) {
       console.error(`[InfiniteBuyScheduler] KIS 서비스 생성 실패 (userId: ${userId}):`, error);
