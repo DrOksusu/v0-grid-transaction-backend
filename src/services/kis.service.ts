@@ -495,53 +495,70 @@ export class KisService {
 
         const allOrders: any[] = [];
 
-        for (const ordDt of datesToCheck) {
-          try {
-            const response = await axios.get(
-              `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-ccnl`,
-              {
-                headers: this.getHeaders(trId),
-                params: {
-                  CANO: this.accountNoPrefix,
-                  ACNT_PRDT_CD: this.accountNoSuffix,
-                  PDNO: '%',                              // 전 종목
-                  ORD_DT: ordDt,                           // 조회일자 (필수)
-                  ORD_GNO_BRNO: '',                        // 주문채번지점번호
-                  ODNO: '',                               // 주문번호
-                  SLL_BUY_DVSN_CD: '00',                   // 00: 전체
-                  CCLD_NCCS_DVSN: '00',                    // 00: 전체
-                  OVRS_EXCG_CD: 'NASD',
-                  SORT_SQN: 'DS',                          // DS: 내림차순
-                  CTX_AREA_FK200: '',
-                  CTX_AREA_NK200: '',
-                },
+        // 모든 거래소 조회 (NASD, NYSE, AMEX)
+        const exchanges = ['NASD', 'NYSE', 'AMEX'];
+
+        // 전체 날짜 범위 계산 (ORD_STRT_DT, ORD_END_DT용)
+        const sortedDates = [...datesToCheck].sort();
+        const startDate = sortedDates[0];
+        const endDate = sortedDates[sortedDates.length - 1];
+
+        for (const exchangeCode of exchanges) {
+          for (const ordDt of datesToCheck) {
+            try {
+              const response = await axios.get(
+                `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-ccnl`,
+                {
+                  headers: this.getHeaders(trId),
+                  params: {
+                    CANO: this.accountNoPrefix,
+                    ACNT_PRDT_CD: this.accountNoSuffix,
+                    PDNO: '%',                              // 전 종목
+                    ORD_DT: ordDt,                           // 조회일자 (필수 - 모의투자)
+                    ORD_STRT_DT: startDate,                  // 시작일자 (필수 - 실전투자)
+                    ORD_END_DT: endDate,                     // 종료일자 (필수 - 실전투자)
+                    ORD_GNO_BRNO: '',                        // 주문채번지점번호
+                    ODNO: '',                               // 주문번호
+                    SLL_BUY_DVSN: '00',                      // 00: 전체 (실전투자)
+                    SLL_BUY_DVSN_CD: '00',                   // 00: 전체 (모의투자)
+                    CCLD_NCCS_DVSN: '00',                    // 00: 전체
+                    OVRS_EXCG_CD: exchangeCode,
+                    SORT_SQN: 'DS',                          // DS: 내림차순
+                    CTX_AREA_FK200: '',
+                    CTX_AREA_NK200: '',
+                  },
+                }
+              );
+
+              const data = response.data;
+
+              if (data.rt_cd === '0' && data.output) {
+                const orders = data.output.map((item: any) => ({
+                  orderId: item.odno,                         // 주문번호
+                  ticker: item.pdno,                          // 종목코드
+                  orderType: item.sll_buy_dvsn_cd === '01' ? 'sell' : 'buy',  // 매수/매도
+                  orderQty: parseInt(item.ft_ord_qty) || 0,   // 주문수량
+                  filledQty: parseInt(item.ft_ccld_qty) || 0, // 체결수량
+                  orderPrice: parseFloat(item.ft_ord_unpr3) || 0,  // 주문가격
+                  filledPrice: parseFloat(item.ft_ccld_unpr3) || 0, // 체결가격
+                  orderDate: item.ord_dt,                     // 주문일자
+                  orderTime: item.ord_tmd,                    // 주문시간
+                  status: parseInt(item.ft_ccld_qty) > 0 ? 'filled' : 'pending',
+                  exchange: exchangeCode,                     // 거래소 코드
+                }));
+                allOrders.push(...orders);
+                if (orders.length > 0) {
+                  console.log(`[KIS] ${exchangeCode}/${ordDt}: ${orders.length}건 조회됨`);
+                }
               }
-            );
-
-            const data = response.data;
-
-            if (data.rt_cd === '0' && data.output) {
-              const orders = data.output.map((item: any) => ({
-                orderId: item.odno,                         // 주문번호
-                ticker: item.pdno,                          // 종목코드
-                orderType: item.sll_buy_dvsn_cd === '01' ? 'sell' : 'buy',  // 매수/매도
-                orderQty: parseInt(item.ft_ord_qty) || 0,   // 주문수량
-                filledQty: parseInt(item.ft_ccld_qty) || 0, // 체결수량
-                orderPrice: parseFloat(item.ft_ord_unpr3) || 0,  // 주문가격
-                filledPrice: parseFloat(item.ft_ccld_unpr3) || 0, // 체결가격
-                orderDate: item.ord_dt,                     // 주문일자
-                orderTime: item.ord_tmd,                    // 주문시간
-                status: parseInt(item.ft_ccld_qty) > 0 ? 'filled' : 'pending',
-              }));
-              allOrders.push(...orders);
-              console.log(`[KIS] ${ordDt}: ${orders.length}건 조회됨`);
+            } catch (error: any) {
+              // 특정 날짜/거래소 조회 실패 시 무시하고 계속
+              console.warn(`[KIS] ${exchangeCode}/${ordDt} 체결내역 조회 실패:`, error.message);
             }
-          } catch (error: any) {
-            // 특정 날짜 조회 실패 시 무시하고 계속
-            console.warn(`[KIS] ${ordDt} 체결내역 조회 실패:`, error.message);
           }
         }
 
+        console.log(`[KIS] 총 체결내역: ${allOrders.length}건`);
         return allOrders;
       });
     });
@@ -561,40 +578,55 @@ export class KisService {
         // tr_id: 모의투자 VTTS3018R, 실전투자 TTTS3018R
         const trId = this.isPaper ? 'VTTS3018R' : 'TTTS3018R';
 
-        const response = await axios.get(
-          `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-nccs`,
-          {
-            headers: this.getHeaders(trId),
-            params: {
-              CANO: this.accountNoPrefix,
-              ACNT_PRDT_CD: this.accountNoSuffix,
-              OVRS_EXCG_CD: 'NASD',
-              SORT_SQN: 'DS',                         // DS: 내림차순
-              CTX_AREA_FK200: '',
-              CTX_AREA_NK200: '',
-            },
+        const allOrders: any[] = [];
+
+        // 모든 거래소 조회 (NASD, NYSE, AMEX)
+        const exchanges = ['NASD', 'NYSE', 'AMEX'];
+
+        for (const exchangeCode of exchanges) {
+          try {
+            const response = await axios.get(
+              `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-nccs`,
+              {
+                headers: this.getHeaders(trId),
+                params: {
+                  CANO: this.accountNoPrefix,
+                  ACNT_PRDT_CD: this.accountNoSuffix,
+                  OVRS_EXCG_CD: exchangeCode,
+                  SORT_SQN: 'DS',                         // DS: 내림차순
+                  CTX_AREA_FK200: '',
+                  CTX_AREA_NK200: '',
+                },
+              }
+            );
+
+            const data = response.data;
+
+            if (data.rt_cd === '0' && data.output) {
+              const orders = data.output.map((item: any) => ({
+                orderId: item.odno,                         // 주문번호
+                ticker: item.pdno,                          // 종목코드
+                orderType: item.sll_buy_dvsn_cd === '01' ? 'sell' : 'buy',
+                orderQty: parseInt(item.ft_ord_qty) || 0,   // 주문수량
+                remainQty: parseInt(item.nccs_qty) || 0,    // 미체결수량
+                orderPrice: parseFloat(item.ft_ord_unpr3) || 0,
+                orderDate: item.ord_dt,
+                orderTime: item.ord_tmd,
+                exchange: exchangeCode,                     // 거래소 코드
+              }));
+              allOrders.push(...orders);
+              if (orders.length > 0) {
+                console.log(`[KIS] ${exchangeCode} 미체결: ${orders.length}건`);
+              }
+            }
+          } catch (error: any) {
+            // 특정 거래소 조회 실패 시 무시하고 계속
+            console.warn(`[KIS] ${exchangeCode} 미체결 조회 실패:`, error.message);
           }
-        );
-
-        const data = response.data;
-
-        if (data.rt_cd !== '0') {
-          throw new Error(data.msg1 || '미체결 내역 조회 실패');
         }
 
-        const orders = data.output?.map((item: any) => ({
-          orderId: item.odno,                         // 주문번호
-          ticker: item.pdno,                          // 종목코드
-          orderType: item.sll_buy_dvsn_cd === '01' ? 'sell' : 'buy',
-          orderQty: parseInt(item.ft_ord_qty) || 0,   // 주문수량
-          remainQty: parseInt(item.nccs_qty) || 0,    // 미체결수량
-          orderPrice: parseFloat(item.ft_ord_unpr3) || 0,
-          orderDate: item.ord_dt,
-          orderTime: item.ord_tmd,
-        })) || [];
-
-        console.log(`[KIS] 미체결 주문: ${orders.length}건`);
-        return orders;
+        console.log(`[KIS] 총 미체결 주문: ${allOrders.length}건`);
+        return allOrders;
       });
     });
   }
