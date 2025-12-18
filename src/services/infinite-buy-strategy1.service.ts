@@ -472,18 +472,29 @@ export class InfiniteBuyStrategy1Service {
       }
     }
 
-    // 다음 매수 가격 계산
-    let nextBuyPrices: { type: string; price: number }[] = [];
+    // 다음 매수 가격 및 예상 수량 계산
+    let nextBuyPrices: { type: string; price: number; amount: number; quantity: number; percent: string }[] = [];
 
     if (stock.currentRound < stock.totalRounds && basePrice > 0) {
       if (isFirstHalf) {
+        // 전반전: 50%씩 두 개의 LOC 주문
+        const halfAmount = stock.buyAmount / 2;
+        const priceA = basePrice - 0.01;
+        const priceB = basePrice * (1 + locPercent / 100);
+        const quantityA = Math.floor(halfAmount / priceA);
+        const quantityB = Math.floor(halfAmount / priceB);
+
         nextBuyPrices = [
-          { type: '전반전 A (평단 LOC)', price: basePrice - 0.01 },
-          { type: '전반전 B (평단+%)', price: basePrice * (1 + locPercent / 100) },
+          { type: '전반전 A (평단 LOC)', price: priceA, amount: halfAmount, quantity: quantityA, percent: '50%' },
+          { type: '전반전 B (평단+%)', price: priceB, amount: halfAmount, quantity: quantityB, percent: '50%' },
         ];
       } else {
+        // 후반전: 100% 한 개의 LOC 주문
+        const price = basePrice * (1 - locPercent / 100) - 0.01;
+        const quantity = Math.floor(stock.buyAmount / price);
+
         nextBuyPrices = [
-          { type: '후반전 (평단-% LOC)', price: basePrice * (1 - locPercent / 100) - 0.01 },
+          { type: '후반전 (평단-% LOC)', price, amount: stock.buyAmount, quantity, percent: '100%' },
         ];
       }
     }

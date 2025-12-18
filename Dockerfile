@@ -34,6 +34,7 @@ WORKDIR /app
 COPY package*.json ./
 COPY prisma ./prisma/
 
+
 # Install production dependencies only
 RUN npm ci --only=production
 
