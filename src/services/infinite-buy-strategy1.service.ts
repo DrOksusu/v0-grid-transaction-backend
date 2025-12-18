@@ -501,8 +501,8 @@ export class InfiniteBuyStrategy1Service {
 
     // 매도 가격 계산
     const sellPrices = stock.totalQuantity > 0 && stock.avgPrice > 0 ? [
-      { type: 'LOC 매도 (1/4)', price: stock.avgPrice * (1 + locPercent / 100), quantity: Math.floor(stock.totalQuantity / 4) },
-      { type: '지정가 매도 (3/4)', price: stock.avgPrice * 1.10, quantity: Math.floor(stock.totalQuantity * 3 / 4) },
+      { type: '1/4수량 평단×(1+조정비율)로 LOC매도', price: stock.avgPrice * (1 + locPercent / 100), quantity: Math.floor(stock.totalQuantity / 4) },
+      { type: '3/4수량 평단×1.1로 지정가매도', price: stock.avgPrice * 1.10, quantity: Math.floor(stock.totalQuantity * 3 / 4) },
     ] : [];
 
     // 다음 LOC 체결 예정 시간
