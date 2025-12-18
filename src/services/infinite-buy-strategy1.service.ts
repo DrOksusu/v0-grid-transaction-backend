@@ -485,8 +485,8 @@ export class InfiniteBuyStrategy1Service {
         const quantityB = Math.floor(halfAmount / priceB);
 
         nextBuyPrices = [
-          { type: '전반전 A (평단 LOC)', price: priceA, amount: halfAmount, quantity: quantityA, percent: '50%' },
-          { type: '전반전 B (평단+%)', price: priceB, amount: halfAmount, quantity: quantityB, percent: '50%' },
+          { type: '전반전(평단으로 LOC매매)', price: priceA, amount: halfAmount, quantity: quantityA, percent: '50%' },
+          { type: '전반전(평단×(1+조정비율)로 LOC매매)', price: priceB, amount: halfAmount, quantity: quantityB, percent: '50%' },
         ];
       } else {
         // 후반전: 100% 한 개의 LOC 주문
@@ -494,7 +494,7 @@ export class InfiniteBuyStrategy1Service {
         const quantity = Math.floor(stock.buyAmount / price);
 
         nextBuyPrices = [
-          { type: '후반전 (평단-% LOC)', price, amount: stock.buyAmount, quantity, percent: '100%' },
+          { type: '후반전(평단×(1-조정비율)로 LOC매매)', price, amount: stock.buyAmount, quantity, percent: '100%' },
         ];
       }
     }
