@@ -547,6 +547,58 @@ export class KisService {
     });
   }
 
+  /**
+   * 해외주식 미체결 내역 조회 (Rate Limiting 적용)
+   * 아직 체결되지 않은 주문 목록 조회
+   */
+  async getUSStockPendingOrders() {
+    return executeWithRateLimit(this.appKey, async () => {
+      return this.withTokenRefresh(async () => {
+        if (!this.isTokenValid()) {
+          await this.getAccessToken();
+        }
+
+        // tr_id: 모의투자 VTTS3018R, 실전투자 TTTS3018R
+        const trId = this.isPaper ? 'VTTS3018R' : 'TTTS3018R';
+
+        const response = await axios.get(
+          `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-nccs`,
+          {
+            headers: this.getHeaders(trId),
+            params: {
+              CANO: this.accountNoPrefix,
+              ACNT_PRDT_CD: this.accountNoSuffix,
+              OVRS_EXCG_CD: 'NASD',
+              SORT_SQN: 'DS',                         // DS: 내림차순
+              CTX_AREA_FK200: '',
+              CTX_AREA_NK200: '',
+            },
+          }
+        );
+
+        const data = response.data;
+
+        if (data.rt_cd !== '0') {
+          throw new Error(data.msg1 || '미체결 내역 조회 실패');
+        }
+
+        const orders = data.output?.map((item: any) => ({
+          orderId: item.odno,                         // 주문번호
+          ticker: item.pdno,                          // 종목코드
+          orderType: item.sll_buy_dvsn_cd === '01' ? 'sell' : 'buy',
+          orderQty: parseInt(item.ft_ord_qty) || 0,   // 주문수량
+          remainQty: parseInt(item.nccs_qty) || 0,    // 미체결수량
+          orderPrice: parseFloat(item.ft_ord_unpr3) || 0,
+          orderDate: item.ord_dt,
+          orderTime: item.ord_tmd,
+        })) || [];
+
+        console.log(`[KIS] 미체결 주문: ${orders.length}건`);
+        return orders;
+      });
+    });
+  }
+
   // ============ 환율 조회 ============
 
   /**

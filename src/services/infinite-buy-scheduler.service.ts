@@ -695,12 +695,13 @@ export class InfiniteBuySchedulerService {
           quantity,
           amount: actualInvestment,
           orderId,
-          orderStatus: 'pending', // 주문 접수 상태로 저장, 체결 확인 후 filled로 변경
+          // 모든 주문은 pending으로 저장, 체결 확인 스케줄러에서 실제 체결 여부 확인
+          orderStatus: 'pending',
         },
       }),
     ]);
 
-    console.log(`[InfiniteBuyScheduler] ${ticker}: 주문 접수 완료 - 회차: ${nextRound}, 체결 대기중...`);
+    console.log(`[InfiniteBuyScheduler] ${ticker}: 주문 완료 - 회차: ${nextRound}, ${quantity}주, $${currentPrice}, 체결 확인 대기중`);
 
     return {
       stockId,
@@ -956,12 +957,16 @@ export class InfiniteBuySchedulerService {
           console.log(`[InfiniteBuyScheduler] 주문 생성일 목록:`, orderDates.map(d => d.toISOString().slice(0, 10)));
 
           // KIS API에서 체결 내역 조회 (해당 날짜들만)
-          const kisOrders = await kisService.getUSStockOrders(orderDates);
-          console.log(`[InfiniteBuyScheduler] KIS 주문 내역: ${kisOrders.length}건 조회됨`);
+          const kisFilledOrders = await kisService.getUSStockOrders(orderDates);
+          console.log(`[InfiniteBuyScheduler] KIS 체결 내역: ${kisFilledOrders.length}건 조회됨`);
 
-          // 디버깅: KIS에서 반환된 주문번호 목록
-          if (kisOrders.length > 0) {
-            console.log(`[InfiniteBuyScheduler] KIS 주문번호 목록:`, kisOrders.map((o: any) => o.orderId));
+          // KIS API에서 미체결 내역 조회
+          let kisPendingOrders: any[] = [];
+          try {
+            kisPendingOrders = await kisService.getUSStockPendingOrders();
+            console.log(`[InfiniteBuyScheduler] KIS 미체결 내역: ${kisPendingOrders.length}건 조회됨`);
+          } catch (pendingError: any) {
+            console.warn(`[InfiniteBuyScheduler] 미체결 내역 조회 실패:`, pendingError.message);
           }
 
           // 디버깅: 매칭할 주문번호 목록
@@ -969,26 +974,24 @@ export class InfiniteBuySchedulerService {
 
           // orderId로 매칭하여 체결 확인
           for (const record of records) {
-            const kisOrder = kisOrders.find((o: any) => o.orderId === record.orderId);
+            const filledOrder = kisFilledOrders.find((o: any) => o.orderId === record.orderId);
+            const pendingOrder = kisPendingOrders.find((o: any) => o.orderId === record.orderId);
 
-            console.log(`[InfiniteBuyScheduler] ${record.stock.ticker} 주문번호 ${record.orderId}: ` +
-              (kisOrder ? `찾음 (체결수량: ${kisOrder.filledQty})` : '찾지 못함'));
-
-            if (kisOrder && kisOrder.filledQty > 0) {
+            if (filledOrder && filledOrder.filledQty > 0) {
               // 체결됨 - DB 업데이트
               await prisma.infiniteBuyRecord.update({
                 where: { id: record.id },
                 data: {
                   orderStatus: 'filled',
-                  price: kisOrder.filledPrice || record.price,
-                  quantity: kisOrder.filledQty,
-                  amount: kisOrder.filledPrice * kisOrder.filledQty,
+                  price: filledOrder.filledPrice || record.price,
+                  quantity: filledOrder.filledQty,
+                  amount: filledOrder.filledPrice * filledOrder.filledQty,
                   filledAt: new Date(),
                 },
               });
 
               filledCount++;
-              console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: 체결 확인 완료 (주문번호: ${record.orderId}, ${kisOrder.filledQty}주, $${kisOrder.filledPrice})`);
+              console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: 체결 확인 완료 (주문번호: ${record.orderId}, ${filledOrder.filledQty}주, $${filledOrder.filledPrice})`);
 
               await saveLog({
                 type: 'order_check',
@@ -998,19 +1001,34 @@ export class InfiniteBuySchedulerService {
                 ticker: record.stock.ticker,
                 details: {
                   orderId: record.orderId,
-                  filledQty: kisOrder.filledQty,
-                  filledPrice: kisOrder.filledPrice,
+                  filledQty: filledOrder.filledQty,
+                  filledPrice: filledOrder.filledPrice,
                 },
               });
-            } else if (!kisOrder) {
-              // KIS에서 주문을 찾지 못함
+            } else if (pendingOrder) {
+              // 미체결 상태 - 아직 대기중
+              console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: 미체결 대기중 (주문번호: ${record.orderId})`);
+
+              await saveLog({
+                type: 'order_check',
+                status: 'skipped',
+                message: `${record.stock.ticker}: 미체결 대기중`,
+                stockId: record.stockId,
+                ticker: record.stock.ticker,
+                details: {
+                  orderId: record.orderId,
+                  remainQty: pendingOrder.remainQty,
+                  orderPrice: pendingOrder.orderPrice,
+                },
+              });
+            } else {
+              // 체결/미체결 내역 둘 다 없음 - 만료/취소된 것으로 판단
               const orderDate = new Date(record.executedAt);
               const now = new Date();
               const daysDiff = Math.floor((now.getTime() - orderDate.getTime()) / (24 * 60 * 60 * 1000));
 
-              // 3일 이상 지난 주문은 KIS에서 만료/취소된 것으로 처리
-              // (LOC 주문은 당일만 유효, 일반 주문도 오래되면 조회 안 됨)
-              if (daysDiff >= 3) {
+              // 1일 이상 지난 주문은 만료/취소된 것으로 처리
+              if (daysDiff >= 1) {
                 await prisma.infiniteBuyRecord.update({
                   where: { id: record.id },
                   data: { orderStatus: 'cancelled' },
@@ -1028,20 +1046,19 @@ export class InfiniteBuySchedulerService {
                     orderId: record.orderId,
                     daysSinceOrder: daysDiff,
                     orderType: record.orderType,
-                    reason: 'KIS에서 조회 불가 - 만료/취소된 주문',
+                    reason: '체결/미체결 내역 없음 - 만료/취소된 주문',
                   },
                 });
               } else {
-                // 3일 미만은 아직 대기 중
+                // 당일 주문은 조금 더 대기
                 await saveLog({
                   type: 'order_check',
                   status: 'skipped',
-                  message: `${record.stock.ticker}: KIS에서 주문을 찾지 못함`,
+                  message: `${record.stock.ticker}: 체결 확인 대기 (당일 주문)`,
                   stockId: record.stockId,
                   ticker: record.stock.ticker,
                   details: {
                     orderId: record.orderId,
-                    kisOrderCount: kisOrders.length,
                     daysSinceOrder: daysDiff,
                   },
                 });
