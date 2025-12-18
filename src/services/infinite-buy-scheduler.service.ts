@@ -58,9 +58,9 @@ export class InfiniteBuySchedulerService {
     priceCheckInterval: 5, // 5분마다 가격 체크
   };
 
-  // 토큰 발급 제한 (1시간에 1회만)
+  // 토큰 발급 제한 (2시간에 1회만)
   private lastTokenIssueTime: Map<number, Date> = new Map();
-  private TOKEN_ISSUE_COOLDOWN = 60 * 60 * 1000; // 1시간
+  private TOKEN_ISSUE_COOLDOWN = 2 * 60 * 60 * 1000; // 2시간
 
   // 스케줄러 시작
   start() {
@@ -1172,6 +1172,49 @@ export class InfiniteBuySchedulerService {
           ? credential.tokenExpireAt.getTime() > now.getTime()
           : false;
 
+        // 토큰 상태 상세 정보
+        let tokenStatus = '';
+        let tokenExpireAtStr = '';
+        let tokenRemainingMinutes = 0;
+        if (!credential) {
+          tokenStatus = 'KIS 자격증명 없음';
+        } else if (!credential.accessToken) {
+          tokenStatus = '토큰 미발급';
+        } else if (!credential.tokenExpireAt) {
+          tokenStatus = '만료시간 없음';
+        } else {
+          const timeUntilExpiry = credential.tokenExpireAt.getTime() - now.getTime();
+          tokenRemainingMinutes = Math.round(timeUntilExpiry / 60000);
+          tokenExpireAtStr = credential.tokenExpireAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+          if (timeUntilExpiry <= 0) {
+            tokenStatus = '만료됨';
+          } else if (timeUntilExpiry < 10 * 60 * 1000) {
+            tokenStatus = `곧 만료 (${tokenRemainingMinutes}분 남음)`;
+          } else {
+            const hours = Math.floor(tokenRemainingMinutes / 60);
+            const mins = tokenRemainingMinutes % 60;
+            tokenStatus = `유효 (${hours}시간 ${mins}분 남음)`;
+          }
+        }
+
+        // 토큰 발급 쿨다운 상태
+        const lastIssue = this.lastTokenIssueTime.get(stock.userId);
+        let tokenCooldownStatus = '';
+        let canIssueNewToken = true;
+        if (lastIssue) {
+          const timeSinceLastIssue = now.getTime() - lastIssue.getTime();
+          const cooldownRemaining = this.TOKEN_ISSUE_COOLDOWN - timeSinceLastIssue;
+          if (cooldownRemaining > 0) {
+            canIssueNewToken = false;
+            const cooldownMinutes = Math.ceil(cooldownRemaining / 60000);
+            tokenCooldownStatus = `쿨다운 중 (${cooldownMinutes}분 후 재발급 가능)`;
+          } else {
+            tokenCooldownStatus = '재발급 가능';
+          }
+        } else {
+          tokenCooldownStatus = '재발급 가능 (발급 기록 없음)';
+        }
+
         // 매수 조건 설명
         let buyConditionDesc = '';
         switch (stock.buyCondition) {
@@ -1214,6 +1257,13 @@ export class InfiniteBuySchedulerService {
             hasKisCredential,
             hasValidToken,
           },
+          tokenInfo: {
+            status: tokenStatus,
+            expireAt: tokenExpireAtStr,
+            remainingMinutes: tokenRemainingMinutes,
+            cooldownStatus: tokenCooldownStatus,
+            canIssueNewToken,
+          },
           canBuy,
           skipReason: !canBuy
             ? maxRoundsReached
@@ -1222,7 +1272,9 @@ export class InfiniteBuySchedulerService {
                 ? '오늘 이미 매수함'
                 : !hasKisCredential
                   ? 'KIS 자격증명 없음'
-                  : '알 수 없음'
+                  : !hasValidToken
+                    ? '토큰 만료/미발급'
+                    : '알 수 없음'
             : null,
           userId: stock.userId,
           userEmail: (stock as any).user?.email,
@@ -1255,6 +1307,49 @@ export class InfiniteBuySchedulerService {
           ? credential.tokenExpireAt.getTime() > now.getTime()
           : false;
 
+        // 토큰 상태 상세 정보
+        let tokenStatus = '';
+        let tokenExpireAtStr = '';
+        let tokenRemainingMinutes = 0;
+        if (!credential) {
+          tokenStatus = 'KIS 자격증명 없음';
+        } else if (!credential.accessToken) {
+          tokenStatus = '토큰 미발급';
+        } else if (!credential.tokenExpireAt) {
+          tokenStatus = '만료시간 없음';
+        } else {
+          const timeUntilExpiry = credential.tokenExpireAt.getTime() - now.getTime();
+          tokenRemainingMinutes = Math.round(timeUntilExpiry / 60000);
+          tokenExpireAtStr = credential.tokenExpireAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+          if (timeUntilExpiry <= 0) {
+            tokenStatus = '만료됨';
+          } else if (timeUntilExpiry < 10 * 60 * 1000) {
+            tokenStatus = `곧 만료 (${tokenRemainingMinutes}분 남음)`;
+          } else {
+            const hours = Math.floor(tokenRemainingMinutes / 60);
+            const mins = tokenRemainingMinutes % 60;
+            tokenStatus = `유효 (${hours}시간 ${mins}분 남음)`;
+          }
+        }
+
+        // 토큰 발급 쿨다운 상태
+        const lastIssue = this.lastTokenIssueTime.get(stock.userId);
+        let tokenCooldownStatus = '';
+        let canIssueNewToken = true;
+        if (lastIssue) {
+          const timeSinceLastIssue = now.getTime() - lastIssue.getTime();
+          const cooldownRemaining = this.TOKEN_ISSUE_COOLDOWN - timeSinceLastIssue;
+          if (cooldownRemaining > 0) {
+            canIssueNewToken = false;
+            const cooldownMinutes = Math.ceil(cooldownRemaining / 60000);
+            tokenCooldownStatus = `쿨다운 중 (${cooldownMinutes}분 후 재발급 가능)`;
+          } else {
+            tokenCooldownStatus = '재발급 가능';
+          }
+        } else {
+          tokenCooldownStatus = '재발급 가능 (발급 기록 없음)';
+        }
+
         // 매수 가능 여부 판단
         const canBuy = isMarketDay && !maxRoundsReached && todayBuyCount === 0 && hasKisCredential;
 
@@ -1277,6 +1372,13 @@ export class InfiniteBuySchedulerService {
             hasKisCredential,
             hasValidToken,
           },
+          tokenInfo: {
+            status: tokenStatus,
+            expireAt: tokenExpireAtStr,
+            remainingMinutes: tokenRemainingMinutes,
+            cooldownStatus: tokenCooldownStatus,
+            canIssueNewToken,
+          },
           canBuy,
           skipReason: !canBuy
             ? !isMarketDay
@@ -1287,7 +1389,9 @@ export class InfiniteBuySchedulerService {
                   ? '오늘 이미 매수함'
                   : !hasKisCredential
                     ? 'KIS 자격증명 없음'
-                    : '알 수 없음'
+                    : !hasValidToken
+                      ? '토큰 만료/미발급'
+                      : '알 수 없음'
             : null,
           userId: stock.userId,
           userEmail: (stock as any).user?.email,
@@ -1298,6 +1402,7 @@ export class InfiniteBuySchedulerService {
     return {
       timestamp: now.toISOString(),
       schedulerStatus: this.getStatus(),
+      tokenCooldownHours: this.TOKEN_ISSUE_COOLDOWN / (60 * 60 * 1000),
       marketInfo: {
         isMarketDay,
         currentTime: now.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }),
