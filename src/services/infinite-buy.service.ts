@@ -509,8 +509,9 @@ export class InfiniteBuyService {
       throw new Error(`매수 주문 실패: ${error.message}`);
     }
 
-    // 새 평균단가 계산
-    const newTotalInvested = stock.totalInvested + buyAmount;
+    // 새 평균단가 계산 (실제 매수 금액 사용)
+    const actualBuyAmount = quantity * currentPrice;  // 실제 매수 금액 (정수 수량 * 현재가)
+    const newTotalInvested = stock.totalInvested + actualBuyAmount;
     const newTotalQuantity = stock.totalQuantity + quantity;
     const newAvgPrice = newTotalQuantity > 0 ? newTotalInvested / newTotalQuantity : 0;
 
@@ -534,7 +535,7 @@ export class InfiniteBuyService {
             round: nextRound,
             price: currentPrice,
             quantity,
-            amount: buyAmount,
+            amount: actualBuyAmount,  // 실제 매수 금액 저장
             orderId,
             orderStatus: orderId ? 'filled' : 'pending',
           },
@@ -552,7 +553,7 @@ export class InfiniteBuyService {
           round: nextRound,
           quantity,
           price: currentPrice,
-          amount: buyAmount,
+          amount: actualBuyAmount,  // 실제 매수 금액 기록
           orderId,
         },
       });

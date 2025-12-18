@@ -198,6 +198,7 @@ export class InfiniteBuyStrategy1Service {
       // a. 평단가 LOC 매수 (평단보다 아래에서만 매수)
       const priceA = avgPrice - 0.01; // 매수/매도 동시 방지
       const quantityA = Math.floor(halfAmount / priceA);
+      const actualAmountA = quantityA * priceA;  // 실제 매수 금액
 
       if (quantityA >= 1) {
         try {
@@ -212,11 +213,11 @@ export class InfiniteBuyStrategy1Service {
             orderType: 'loc',
             targetPrice: priceA,
             quantity: quantityA,
-            amount: halfAmount,
+            amount: actualAmountA,  // 실제 매수 금액
             subType: 'first_half_a',
           });
           totalQuantity += quantityA;
-          totalAmount += halfAmount;
+          totalAmount += actualAmountA;
         } catch (error: any) {
           console.error('[Strategy1] 전반전 매수 A 실패:', error.message);
         }
@@ -225,6 +226,7 @@ export class InfiniteBuyStrategy1Service {
       // b. 평단가 + (10-T/2)% LOC 매수 (평단보다 조금 위에서도 매수)
       const priceB = avgPrice * (1 + locPercent / 100);
       const quantityB = Math.floor(halfAmount / priceB);
+      const actualAmountB = quantityB * priceB;  // 실제 매수 금액
 
       if (quantityB >= 1) {
         try {
@@ -239,11 +241,11 @@ export class InfiniteBuyStrategy1Service {
             orderType: 'loc',
             targetPrice: priceB,
             quantity: quantityB,
-            amount: halfAmount,
+            amount: actualAmountB,  // 실제 매수 금액
             subType: 'first_half_b',
           });
           totalQuantity += quantityB;
-          totalAmount += halfAmount;
+          totalAmount += actualAmountB;
         } catch (error: any) {
           console.error('[Strategy1] 전반전 매수 B 실패:', error.message);
         }
@@ -252,6 +254,7 @@ export class InfiniteBuyStrategy1Service {
       // 후반전 매수: 평단가 - (10-T/2)% LOC 매수
       const price = avgPrice * (1 - locPercent / 100) - 0.01;
       const quantity = Math.floor(stock.buyAmount / price);
+      const actualAmount = quantity * price;  // 실제 매수 금액
 
       if (quantity >= 1) {
         try {
@@ -266,11 +269,11 @@ export class InfiniteBuyStrategy1Service {
             orderType: 'loc',
             targetPrice: price,
             quantity,
-            amount: stock.buyAmount,
+            amount: actualAmount,  // 실제 매수 금액
             subType: 'second_half',
           });
           totalQuantity += quantity;
-          totalAmount += stock.buyAmount;
+          totalAmount += actualAmount;
         } catch (error: any) {
           console.error('[Strategy1] 후반전 매수 실패:', error.message);
         }
