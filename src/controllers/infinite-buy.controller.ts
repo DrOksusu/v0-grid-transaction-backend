@@ -6,6 +6,8 @@ import { infiniteBuyScheduler } from '../services/infinite-buy-scheduler.service
 import { infiniteBuyStrategy1Service } from '../services/infinite-buy-strategy1.service';
 import { InfiniteBuyStatus } from '@prisma/client';
 import prisma from '../config/database';
+import { KisService } from '../services/kis.service';
+import { decrypt } from '../utils/encryption';
 
 // 종목 생성
 export const createStock = async (
@@ -774,6 +776,86 @@ export const getSchedulerLogs = async (
 
     return successResponse(res, result);
   } catch (error) {
+    next(error);
+  }
+};
+
+// =====================
+// 계좌 잔고 API
+// =====================
+
+// 계좌 잔고 조회
+export const getAccountBalance = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+
+    // KIS credential 조회
+    const credential = await prisma.credential.findFirst({
+      where: { userId, exchange: 'kis' },
+    });
+
+    if (!credential) {
+      return errorResponse(
+        res,
+        'KIS_NOT_CONNECTED',
+        '한국투자증권 API가 연결되지 않았습니다',
+        400
+      );
+    }
+
+    const appKey = decrypt(credential.apiKey);
+    const appSecret = decrypt(credential.secretKey);
+
+    const kisService = new KisService({
+      appKey,
+      appSecret,
+      accountNo: credential.accountNo || '',
+      isPaper: credential.isPaper,
+    });
+
+    // 기존 토큰 설정
+    if (credential.accessToken && credential.tokenExpireAt) {
+      const now = new Date();
+      const bufferTime = 10 * 60 * 1000; // 10분 여유
+      if (credential.tokenExpireAt.getTime() - bufferTime > now.getTime()) {
+        const decryptedToken = decrypt(credential.accessToken);
+        kisService.setAccessToken(decryptedToken, credential.tokenExpireAt);
+      }
+    }
+
+    // 토큰 재발급 콜백 설정
+    kisService.setTokenRefreshCallback(async (newToken: string, newExpireAt: Date) => {
+      try {
+        const { encrypt } = await import('../utils/encryption');
+        await prisma.credential.update({
+          where: { id: credential.id },
+          data: {
+            accessToken: encrypt(newToken),
+            tokenExpireAt: newExpireAt,
+          },
+        });
+      } catch (err: any) {
+        console.error('[Balance] 토큰 DB 저장 실패:', err.message);
+      }
+    });
+
+    // 잔고 조회
+    const balance = await kisService.getUSStockBalance();
+
+    return successResponse(res, {
+      holdings: balance.holdings,
+      summary: balance.summary,
+      accountNo: credential.accountNo,
+      isPaper: credential.isPaper,
+    });
+  } catch (error: any) {
+    if (error.message.includes('한국투자증권') || error.message.includes('KIS')) {
+      return errorResponse(res, 'KIS_API_ERROR', error.message, 500);
+    }
     next(error);
   }
 };

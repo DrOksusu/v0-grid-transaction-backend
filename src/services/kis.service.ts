@@ -280,6 +280,7 @@ export class KisService {
 
   /**
    * 해외주식 잔고 조회 (Rate Limiting 적용)
+   * 모든 거래소(NASD, NYSE, AMEX) 조회
    */
   async getUSStockBalance() {
     return executeWithRateLimit(this.appKey, async () => {
@@ -291,48 +292,66 @@ export class KisService {
         // tr_id: 모의투자 VTTS3012R, 실전투자 TTTS3012R
         const trId = this.isPaper ? 'VTTS3012R' : 'TTTS3012R';
 
-        const response = await axios.get(
-          `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-balance`,
-          {
-            headers: this.getHeaders(trId),
-            params: {
-              CANO: this.accountNoPrefix,           // 계좌번호 앞 8자리
-              ACNT_PRDT_CD: this.accountNoSuffix,   // 계좌번호 뒤 2자리
-              OVRS_EXCG_CD: 'NASD',                 // 해외거래소코드 (NASD: 나스닥)
-              TR_CRCY_CD: 'USD',                    // 거래통화코드
-              CTX_AREA_FK200: '',
-              CTX_AREA_NK200: '',
-            },
+        const allHoldings: any[] = [];
+
+        // 모든 거래소 조회 (NASD, NYSE, AMEX)
+        const exchanges = ['NASD', 'NYSE', 'AMEX'];
+
+        for (const exchangeCode of exchanges) {
+          try {
+            const response = await axios.get(
+              `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-balance`,
+              {
+                headers: this.getHeaders(trId),
+                params: {
+                  CANO: this.accountNoPrefix,           // 계좌번호 앞 8자리
+                  ACNT_PRDT_CD: this.accountNoSuffix,   // 계좌번호 뒤 2자리
+                  OVRS_EXCG_CD: exchangeCode,           // 해외거래소코드
+                  TR_CRCY_CD: 'USD',                    // 거래통화코드
+                  CTX_AREA_FK200: '',
+                  CTX_AREA_NK200: '',
+                },
+              }
+            );
+
+            const data = response.data;
+
+            if (data.rt_cd === '0' && data.output1) {
+              // 보유 종목 목록
+              const holdings = data.output1.map((item: any) => ({
+                ticker: item.ovrs_pdno,                          // 종목코드
+                name: item.ovrs_item_name,                       // 종목명
+                quantity: parseInt(item.ovrs_cblc_qty) || 0,     // 보유수량
+                avgPrice: parseFloat(item.pchs_avg_pric) || 0,   // 평균매수가
+                currentPrice: parseFloat(item.now_pric2) || 0,   // 현재가
+                evalAmount: parseFloat(item.ovrs_stck_evlu_amt) || 0,  // 평가금액
+                profitLoss: parseFloat(item.frcr_evlu_pfls_amt) || 0,  // 평가손익
+                profitLossRate: parseFloat(item.evlu_pfls_rt) || 0,    // 수익률
+                exchange: exchangeCode,                          // 거래소 코드
+              }));
+              allHoldings.push(...holdings);
+
+              if (holdings.length > 0) {
+                console.log(`[KIS] ${exchangeCode} 잔고: ${holdings.length}종목`);
+              }
+            }
+          } catch (error: any) {
+            console.warn(`[KIS] ${exchangeCode} 잔고 조회 실패:`, error.message);
           }
-        );
-
-        const data = response.data;
-
-        if (data.rt_cd !== '0') {
-          throw new Error(data.msg1 || '잔고 조회 실패');
         }
 
-        // 보유 종목 목록
-        const holdings = data.output1?.map((item: any) => ({
-          ticker: item.ovrs_pdno,                          // 종목코드
-          name: item.ovrs_item_name,                       // 종목명
-          quantity: parseInt(item.ovrs_cblc_qty) || 0,     // 보유수량
-          avgPrice: parseFloat(item.pchs_avg_pric) || 0,   // 평균매수가
-          currentPrice: parseFloat(item.now_pric2) || 0,   // 현재가
-          evalAmount: parseFloat(item.ovrs_stck_evlu_amt) || 0,  // 평가금액
-          profitLoss: parseFloat(item.frcr_evlu_pfls_amt) || 0,  // 평가손익
-          profitLossRate: parseFloat(item.evlu_pfls_rt) || 0,    // 수익률
-        })) || [];
+        console.log(`[KIS] 총 잔고: ${allHoldings.length}종목`);
 
-        // 계좌 요약
-        const summary = data.output2 ? {
-          totalEvalAmount: parseFloat(data.output2.tot_evlu_pfls_amt) || 0,  // 총 평가손익
-          totalPurchaseAmount: parseFloat(data.output2.frcr_pchs_amt1) || 0, // 총 매수금액
-        } : null;
+        // 보유 종목에서 직접 합계 계산 (output2는 거래소별로 중복되므로 사용하지 않음)
+        const totalPurchaseAmount = allHoldings.reduce((sum, h) => sum + (h.avgPrice * h.quantity), 0);
+        const totalEvalAmount = allHoldings.reduce((sum, h) => sum + h.profitLoss, 0);
 
         return {
-          holdings,
-          summary,
+          holdings: allHoldings,
+          summary: {
+            totalEvalAmount,      // 총 평가손익 (보유종목 합산)
+            totalPurchaseAmount,  // 총 매수금액 (보유종목 합산)
+          },
         };
       });
     });

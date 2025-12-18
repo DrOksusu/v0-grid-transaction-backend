@@ -26,6 +26,8 @@ import {
   executeStrategy1Sell,
   getStrategy1Status,
   updateStockStrategy,
+  // 계좌 잔고 API
+  getAccountBalance,
 } from '../controllers/infinite-buy.controller';
 
 const router = Router();
@@ -81,5 +83,10 @@ router.post('/stocks/:id/strategy1/buy', executeStrategy1Buy);
 
 // 전략1 매도 실행 (LOC + 지정가)
 router.post('/stocks/:id/strategy1/sell', executeStrategy1Sell);
+
+// =====================
+// 계좌 잔고 API
+// =====================
+router.get('/balance', getAccountBalance);
 
 export default router;
