@@ -357,6 +357,56 @@ export class KisService {
     });
   }
 
+  /**
+   * 해외주식 매수가능금액 조회 (Rate Limiting 적용)
+   */
+  async getUSStockBuyingPower() {
+    return executeWithRateLimit(this.appKey, async () => {
+      return this.withTokenRefresh(async () => {
+        if (!this.isTokenValid()) {
+          await this.getAccessToken();
+        }
+
+        // tr_id: 모의투자 VTTS3007R, 실전투자 TTTS3007R
+        const trId = this.isPaper ? 'VTTS3007R' : 'TTTS3007R';
+
+        try {
+          const response = await axios.get(
+            `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-psamount`,
+            {
+              headers: this.getHeaders(trId),
+              params: {
+                CANO: this.accountNoPrefix,
+                ACNT_PRDT_CD: this.accountNoSuffix,
+                OVRS_EXCG_CD: 'NASD',
+                OVRS_ORD_UNPR: '1',  // 임의의 주문가격 (조회용)
+                ITEM_CD: 'AAPL',     // 임의의 종목 (조회용)
+              },
+            }
+          );
+
+          const data = response.data;
+
+          if (data.rt_cd !== '0') {
+            console.warn('[KIS] 매수가능금액 조회 실패:', data.msg1);
+            return null;
+          }
+
+          const output = data.output;
+          return {
+            currency: output.tr_crcy_cd || 'USD',                           // 거래통화
+            availableAmount: parseFloat(output.ord_psbl_frcr_amt) || 0,     // 주문가능 외화금액
+            overseasAvailableAmount: parseFloat(output.ovrs_ord_psbl_amt) || 0, // 해외주문가능금액
+            exchangeRate: parseFloat(output.exrt) || 0,                     // 환율
+          };
+        } catch (error: any) {
+          console.warn('[KIS] 매수가능금액 조회 실패:', error.message);
+          return null;
+        }
+      });
+    });
+  }
+
   // ============ 해외주식 주문 ============
 
   /**

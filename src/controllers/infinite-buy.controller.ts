@@ -843,12 +843,16 @@ export const getAccountBalance = async (
       }
     });
 
-    // 잔고 조회
-    const balance = await kisService.getUSStockBalance();
+    // 잔고 조회 및 매수가능금액 조회 (병렬)
+    const [balance, buyingPower] = await Promise.all([
+      kisService.getUSStockBalance(),
+      kisService.getUSStockBuyingPower(),
+    ]);
 
     return successResponse(res, {
       holdings: balance.holdings,
       summary: balance.summary,
+      buyingPower: buyingPower,  // 주문가능금액 (null일 수 있음)
       accountNo: credential.accountNo,
       isPaper: credential.isPaper,
     });
