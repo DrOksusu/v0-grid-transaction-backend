@@ -51,6 +51,7 @@ export class InfiniteBuySchedulerService {
   private strategy1BuyJob: ScheduledTask | null = null;  // strategy1 전용
   private priceCheckJob: ScheduledTask | null = null;
   private orderCheckJob: ScheduledTask | null = null;
+  private locOrderCheckJob: ScheduledTask | null = null;  // LOC 주문 체결 확인 전용
   private isRunning: boolean = false;
   private config: SchedulerConfig = {
     autoBuyEnabled: true,
@@ -97,9 +98,18 @@ export class InfiniteBuySchedulerService {
       timezone: 'Asia/Seoul'
     });
 
-    // 체결 확인 (매 10분마다, 미국 장 시간)
+    // 기본 전략 체결 확인 (매 10분마다, 미국 장 시간) - LOC 주문 제외
     this.orderCheckJob = cron.schedule('*/10 22,23,0,1,2,3,4,5 * * 1-6', async () => {
-      await this.checkPendingOrders();
+      await this.checkPendingOrders('basic');
+    }, {
+      timezone: 'Asia/Seoul'
+    });
+
+    // LOC 주문 체결 확인 (장 마감 후 1회, 06:10 KST 동절기)
+    // LOC 주문은 장 마감가(6:00 AM KST)에만 체결되므로 장 마감 후 한 번만 확인
+    this.locOrderCheckJob = cron.schedule('10 6 * * 2-6', async () => {
+      console.log('[InfiniteBuyScheduler] LOC 주문 체결 확인 실행');
+      await this.checkPendingOrders('strategy1');
     }, {
       timezone: 'Asia/Seoul'
     });
@@ -109,7 +119,8 @@ export class InfiniteBuySchedulerService {
     console.log('  - 기본 전략 매수: 매일 23:35 (KST, 동절기)');
     console.log('  - Strategy1 LOC 매수: 매일 04:30 (KST, 동절기) - 장 마감 1.5시간 전');
     console.log(`  - 가격 체크: 장중 매 ${this.config.priceCheckInterval}분`);
-    console.log('  - 체결 확인: 장중 매 10분');
+    console.log('  - 기본 전략 체결 확인: 장중 매 10분');
+    console.log('  - LOC 체결 확인: 장 마감 후 06:10 (KST) 1회');
   }
 
   // 스케줄러 중지
@@ -129,6 +140,10 @@ export class InfiniteBuySchedulerService {
     if (this.orderCheckJob) {
       this.orderCheckJob.stop();
       this.orderCheckJob = null;
+    }
+    if (this.locOrderCheckJob) {
+      this.locOrderCheckJob.stop();
+      this.locOrderCheckJob = null;
     }
     this.isRunning = false;
     console.log('[InfiniteBuyScheduler] 스케줄러 중지됨');
@@ -510,8 +525,9 @@ export class InfiniteBuySchedulerService {
     reason?: string;
     orders?: number;
     totalQuantity?: number;
+    sellOrders?: number;
   }> {
-    const { id: stockId, userId, ticker, currentRound, totalRounds } = stock;
+    const { id: stockId, userId, ticker, currentRound, totalRounds, totalQuantity } = stock;
 
     // 최대 회차 도달 체크
     if (currentRound >= totalRounds) {
@@ -542,22 +558,68 @@ export class InfiniteBuySchedulerService {
 
     console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: LOC 매수 실행 중...`);
 
+    let buyResult: any = null;
+    let sellResult: any = null;
+
+    // 1. 매수 주문 실행
     try {
-      // infiniteBuyStrategy1Service의 executeBuy 호출
-      const result = await infiniteBuyStrategy1Service.executeBuy(userId, stockId);
-      console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: LOC 주문 완료 - ${result.orders.length}개 주문, 총 ${result.totalQuantity}주`);
-      return {
-        stockId,
-        ticker,
-        success: true,
-        orders: result.orders.length,
-        totalQuantity: result.totalQuantity,
-      };
+      buyResult = await infiniteBuyStrategy1Service.executeBuy(userId, stockId);
+      console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: LOC 매수 주문 완료 - ${buyResult.orders.length}개 주문, 총 ${buyResult.totalQuantity}주`);
     } catch (error: any) {
-      const reason = `LOC 주문 실패 - ${error.message}`;
+      const reason = `LOC 매수 주문 실패 - ${error.message}`;
       console.error(`[InfiniteBuyScheduler] Strategy1 ${ticker}: ${reason}`);
       return { stockId, ticker, success: false, reason };
     }
+
+    // 2. 매도 주문 실행 (보유 수량이 있을 때만)
+    // 매수 주문 후 DB가 업데이트되었으므로 최신 종목 정보로 매도
+    try {
+      const updatedStock = await prisma.infiniteBuyStock.findUnique({
+        where: { id: stockId },
+      });
+
+      if (updatedStock && updatedStock.totalQuantity > 0) {
+        console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: LOC 매도 실행 중... (보유: ${updatedStock.totalQuantity}주)`);
+        sellResult = await infiniteBuyStrategy1Service.executeSell(userId, stockId);
+        console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: 매도 주문 완료 - ${sellResult.orders.length}개 주문, 총 ${sellResult.totalQuantity}주`);
+
+        // 매도 주문 로그 저장
+        await saveLog({
+          type: 'strategy1_buy',
+          status: 'completed',
+          stockId,
+          ticker,
+          message: `Strategy1 ${ticker} 매도 주문 완료`,
+          details: {
+            orders: sellResult.orders.length,
+            totalQuantity: sellResult.totalQuantity,
+            orderDetails: sellResult.orders,
+          },
+        });
+      } else {
+        console.log(`[InfiniteBuyScheduler] Strategy1 ${ticker}: 보유 수량 없음 - 매도 주문 스킵`);
+      }
+    } catch (error: any) {
+      console.error(`[InfiniteBuyScheduler] Strategy1 ${ticker}: 매도 주문 실패 - ${error.message}`);
+      // 매도 실패해도 매수는 성공으로 처리
+      await saveLog({
+        type: 'strategy1_buy',
+        status: 'error',
+        stockId,
+        ticker,
+        message: `Strategy1 ${ticker} 매도 주문 실패`,
+        errorMessage: error.message,
+      });
+    }
+
+    return {
+      stockId,
+      ticker,
+      success: true,
+      orders: buyResult.orders.length,
+      totalQuantity: buyResult.totalQuantity,
+      sellOrders: sellResult?.orders?.length || 0,
+    };
   }
 
   // 개별 종목 매수 처리 (결과 반환)
@@ -897,25 +959,37 @@ export class InfiniteBuySchedulerService {
   }
 
   // 체결 대기중인 주문 확인
-  private async checkPendingOrders() {
+  // strategyFilter: 'basic' = 기본전략만, 'strategy1' = LOC주문만, undefined = 전체
+  private async checkPendingOrders(strategyFilter?: 'basic' | 'strategy1') {
     try {
       // pending 상태인 주문 조회
+      const whereClause: any = {
+        orderStatus: 'pending',
+        orderId: { not: null },
+      };
+
+      // 전략 필터링
+      if (strategyFilter) {
+        whereClause.stock = {
+          strategy: strategyFilter,
+        };
+      }
+
       const pendingRecords = await prisma.infiniteBuyRecord.findMany({
-        where: {
-          orderStatus: 'pending',
-          orderId: { not: null },
-        },
+        where: whereClause,
         include: {
           stock: true,
         },
       });
 
+      const strategyLabel = strategyFilter === 'strategy1' ? 'LOC' : strategyFilter === 'basic' ? '기본전략' : '전체';
+
       if (pendingRecords.length === 0) {
-        console.log('[InfiniteBuyScheduler] 체결 대기 주문 없음');
+        console.log(`[InfiniteBuyScheduler] ${strategyLabel} 체결 대기 주문 없음`);
         return;
       }
 
-      console.log(`[InfiniteBuyScheduler] 체결 대기 주문 확인: ${pendingRecords.length}건`);
+      console.log(`[InfiniteBuyScheduler] ${strategyLabel} 체결 대기 주문 확인: ${pendingRecords.length}건`);
 
       await saveLog({
         type: 'order_check',

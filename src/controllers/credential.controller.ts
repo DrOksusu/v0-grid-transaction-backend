@@ -4,6 +4,7 @@ import { successResponse, errorResponse } from '../utils/response';
 import { encrypt, decrypt, maskApiKey } from '../utils/encryption';
 import { AuthRequest } from '../types';
 import { getUpbitApiKeyInfo } from '../utils/upbit';
+import { UpbitService } from '../services/upbit.service';
 
 export const createCredential = async (
   req: AuthRequest,
@@ -275,6 +276,72 @@ export const testUpbitApiKey = async (
       res,
       'UPBIT_API_ERROR',
       error.message || '업비트 API 호출 실패',
+      500
+    );
+  }
+};
+
+// 업비트 계좌 잔고 조회
+export const getUpbitBalance = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+
+    const credential = await prisma.credential.findFirst({
+      where: { userId, exchange: 'upbit' },
+    });
+
+    if (!credential) {
+      return errorResponse(
+        res,
+        'CREDENTIAL_NOT_FOUND',
+        '업비트 인증 정보를 찾을 수 없습니다',
+        404
+      );
+    }
+
+    const decryptedApiKey = decrypt(credential.apiKey);
+    const decryptedSecretKey = decrypt(credential.secretKey);
+
+    const upbitService = new UpbitService({
+      accessKey: decryptedApiKey,
+      secretKey: decryptedSecretKey,
+    });
+
+    const accounts = await upbitService.getAccounts();
+
+    // KRW 잔고 찾기
+    const krwAccount = accounts.find((acc: any) => acc.currency === 'KRW');
+    const availableBalance = krwAccount ? parseFloat(krwAccount.balance) : 0;
+    const lockedBalance = krwAccount ? parseFloat(krwAccount.locked) : 0;
+
+    // 보유 코인 목록 (KRW 제외)
+    const holdings = accounts
+      .filter((acc: any) => acc.currency !== 'KRW' && parseFloat(acc.balance) > 0)
+      .map((acc: any) => ({
+        currency: acc.currency,
+        balance: parseFloat(acc.balance),
+        locked: parseFloat(acc.locked),
+        avgBuyPrice: parseFloat(acc.avg_buy_price),
+        unitCurrency: acc.unit_currency,
+      }));
+
+    return successResponse(res, {
+      availableBalance,       // 주문가능금액 (KRW)
+      lockedBalance,          // 주문중금액 (KRW)
+      totalBalance: availableBalance + lockedBalance,  // 총 KRW
+      holdings,               // 보유 코인 목록
+      holdingsCount: holdings.length,
+    }, '업비트 잔고 조회 성공');
+  } catch (error: any) {
+    console.error('Upbit balance error:', error);
+    return errorResponse(
+      res,
+      'UPBIT_API_ERROR',
+      error.message || '업비트 잔고 조회 실패',
       500
     );
   }
