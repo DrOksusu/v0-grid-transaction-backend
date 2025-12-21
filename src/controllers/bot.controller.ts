@@ -438,8 +438,10 @@ export const deleteBot = async (
     }
 
     // 대기 중인 주문 취소
-    let cancelledOrders = 0;
-    let failedCancellations = 0;
+    let cancelledBuyOrders = 0;
+    let cancelledSellOrders = 0;
+    let failedBuyOrders = 0;
+    let failedSellOrders = 0;
 
     if (cancelType !== 'none' && bot.gridLevels.length > 0 && bot.user.credentials[0]) {
       const credential = bot.user.credentials[0];
@@ -459,10 +461,18 @@ export const deleteBot = async (
         if (grid.orderId) {
           try {
             await upbit.cancelOrder(grid.orderId);
-            cancelledOrders++;
+            if (grid.type === 'buy') {
+              cancelledBuyOrders++;
+            } else {
+              cancelledSellOrders++;
+            }
             console.log(`[DeleteBot] Cancelled ${grid.type} order ${grid.orderId}`);
           } catch (error: any) {
-            failedCancellations++;
+            if (grid.type === 'buy') {
+              failedBuyOrders++;
+            } else {
+              failedSellOrders++;
+            }
             console.error(`[DeleteBot] Failed to cancel order ${grid.orderId}:`, error.message);
           }
           // 업비트 API Rate Limit 방지를 위한 딜레이 (100ms)
@@ -498,8 +508,16 @@ export const deleteBot = async (
     return successResponse(
       res,
       {
-        cancelledOrders,
-        failedCancellations,
+        cancelledOrders: {
+          buy: cancelledBuyOrders,
+          sell: cancelledSellOrders,
+          total: cancelledBuyOrders + cancelledSellOrders,
+        },
+        failedOrders: {
+          buy: failedBuyOrders,
+          sell: failedSellOrders,
+          total: failedBuyOrders + failedSellOrders,
+        },
         snapshot: {
           profit: bot.currentProfit,
           trades: bot.totalTrades,
