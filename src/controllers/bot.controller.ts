@@ -454,7 +454,8 @@ export const deleteBot = async (
       const cancelTypeLabel = cancelType === 'buy' ? '매수' : '모든';
       console.log(`[DeleteBot] Cancelling ${bot.gridLevels.length} ${cancelTypeLabel} pending orders for bot ${botId}...`);
 
-      for (const grid of bot.gridLevels) {
+      for (let i = 0; i < bot.gridLevels.length; i++) {
+        const grid = bot.gridLevels[i];
         if (grid.orderId) {
           try {
             await upbit.cancelOrder(grid.orderId);
@@ -463,6 +464,10 @@ export const deleteBot = async (
           } catch (error: any) {
             failedCancellations++;
             console.error(`[DeleteBot] Failed to cancel order ${grid.orderId}:`, error.message);
+          }
+          // 업비트 API Rate Limit 방지를 위한 딜레이 (100ms)
+          if (i < bot.gridLevels.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 100));
           }
         }
       }
