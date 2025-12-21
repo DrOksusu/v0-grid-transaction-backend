@@ -406,6 +406,16 @@ export const deleteBot = async (
   try {
     const userId = req.userId!;
     const botId = parseInt(req.params.id);
+    // cancelType: 'all' = 매수+매도 모두 취소, 'buy' = 매수만 취소, 'none' = 취소 안함
+    const cancelType = (req.query.cancelType as string) || 'all';
+
+    // cancelType에 따라 다른 필터 적용
+    let gridLevelFilter: any = { status: 'pending' };
+    if (cancelType === 'buy') {
+      gridLevelFilter = { status: 'pending', type: 'buy' };
+    } else if (cancelType === 'none') {
+      gridLevelFilter = { id: -1 }; // 아무것도 선택 안함
+    }
 
     const bot = await prisma.bot.findFirst({
       where: { id: botId, userId },
@@ -418,7 +428,7 @@ export const deleteBot = async (
           },
         },
         gridLevels: {
-          where: { status: 'pending' },
+          where: gridLevelFilter,
         },
       },
     });
@@ -431,7 +441,7 @@ export const deleteBot = async (
     let cancelledOrders = 0;
     let failedCancellations = 0;
 
-    if (bot.gridLevels.length > 0 && bot.user.credentials[0]) {
+    if (cancelType !== 'none' && bot.gridLevels.length > 0 && bot.user.credentials[0]) {
       const credential = bot.user.credentials[0];
       const apiKey = decrypt(credential.apiKey);
       const secretKey = decrypt(credential.secretKey);
@@ -441,14 +451,15 @@ export const deleteBot = async (
         secretKey: secretKey,
       });
 
-      console.log(`[DeleteBot] Cancelling ${bot.gridLevels.length} pending orders for bot ${botId}...`);
+      const cancelTypeLabel = cancelType === 'buy' ? '매수' : '모든';
+      console.log(`[DeleteBot] Cancelling ${bot.gridLevels.length} ${cancelTypeLabel} pending orders for bot ${botId}...`);
 
       for (const grid of bot.gridLevels) {
         if (grid.orderId) {
           try {
             await upbit.cancelOrder(grid.orderId);
             cancelledOrders++;
-            console.log(`[DeleteBot] Cancelled order ${grid.orderId}`);
+            console.log(`[DeleteBot] Cancelled ${grid.type} order ${grid.orderId}`);
           } catch (error: any) {
             failedCancellations++;
             console.error(`[DeleteBot] Failed to cancel order ${grid.orderId}:`, error.message);
