@@ -72,6 +72,9 @@ jobs:
               -e JWT_REFRESH_EXPIRY=7d \
               -e "CORS_ORIGIN=${{ secrets.CORS_ORIGIN }}" \
               -e "ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}" \
+              -e "VAPID_PUBLIC_KEY=${{ secrets.VAPID_PUBLIC_KEY }}" \
+              -e "VAPID_PRIVATE_KEY=${{ secrets.VAPID_PRIVATE_KEY }}" \
+              -e "VAPID_SUBJECT=${{ secrets.VAPID_SUBJECT }}" \
               827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest
 
             # 상태 확인
