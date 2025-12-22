@@ -1,13 +1,32 @@
-import webPush from 'web-push';
 import prisma from '../config/database';
+
+// web-push 동적 import (CJS 호환성)
+let webPush: any = null;
+let vapidConfigured = false;
 
 // VAPID 키 설정 (환경변수에서 로드)
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || '';
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || '';
 const vapidSubject = process.env.VAPID_SUBJECT || 'mailto:admin@example.com';
 
-if (vapidPublicKey && vapidPrivateKey) {
-  webPush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+// 초기화 함수 (지연 로딩)
+async function initWebPush() {
+  if (webPush) return true;
+
+  try {
+    webPush = require('web-push');
+    if (vapidPublicKey && vapidPrivateKey) {
+      webPush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+      vapidConfigured = true;
+      console.log('[PushService] VAPID 설정 완료');
+    } else {
+      console.warn('[PushService] VAPID 키가 설정되지 않음');
+    }
+    return true;
+  } catch (error) {
+    console.error('[PushService] web-push 초기화 실패:', error);
+    return false;
+  }
 }
 
 export interface PushPayload {
@@ -21,8 +40,15 @@ export interface PushPayload {
 
 export class PushService {
   // VAPID 공개키 반환 (프론트엔드에서 구독 시 사용)
-  static getVapidPublicKey(): string {
+  static async getVapidPublicKey(): Promise<string> {
+    await initWebPush();
     return vapidPublicKey;
+  }
+
+  // VAPID 설정 여부 확인
+  static async isConfigured(): Promise<boolean> {
+    await initWebPush();
+    return vapidConfigured;
   }
 
   // 푸시 구독 저장
@@ -80,6 +106,12 @@ export class PushService {
 
   // 특정 사용자에게 푸시 전송
   static async sendToUser(userId: number, payload: PushPayload) {
+    const initialized = await initWebPush();
+    if (!initialized || !vapidConfigured) {
+      console.warn('[PushService] 푸시 전송 스킵 - VAPID 미설정');
+      return [];
+    }
+
     const subscriptions = await prisma.pushSubscription.findMany({
       where: { userId },
     });
@@ -87,7 +119,7 @@ export class PushService {
     const results = await Promise.allSettled(
       subscriptions.map(async (sub) => {
         try {
-          await webPush.sendNotification(
+          await webPush!.sendNotification(
             {
               endpoint: sub.endpoint,
               keys: {
@@ -113,12 +145,18 @@ export class PushService {
 
   // 모든 사용자에게 푸시 전송
   static async sendToAll(payload: PushPayload) {
+    const initialized = await initWebPush();
+    if (!initialized || !vapidConfigured) {
+      console.warn('[PushService] 푸시 전송 스킵 - VAPID 미설정');
+      return [];
+    }
+
     const subscriptions = await prisma.pushSubscription.findMany();
 
     const results = await Promise.allSettled(
       subscriptions.map(async (sub) => {
         try {
-          await webPush.sendNotification(
+          await webPush!.sendNotification(
             {
               endpoint: sub.endpoint,
               keys: {

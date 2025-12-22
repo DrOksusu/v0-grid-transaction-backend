@@ -7,12 +7,14 @@ export class PushController {
   // VAPID 공개키 반환
   static async getVapidPublicKey(req: AuthRequest, res: Response) {
     try {
-      const publicKey = PushService.getVapidPublicKey();
-      if (!publicKey) {
+      const publicKey = await PushService.getVapidPublicKey();
+      const isConfigured = await PushService.isConfigured();
+      if (!publicKey || !isConfigured) {
         return errorResponse(res, 'VAPID_NOT_SET', 'VAPID 키가 설정되지 않았습니다', 500);
       }
       return successResponse(res, { publicKey });
     } catch (err: any) {
+      console.error('[PushController] getVapidPublicKey 에러:', err);
       return errorResponse(res, 'SERVER_ERROR', err.message, 500);
     }
   }
