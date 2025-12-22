@@ -1,0 +1,197 @@
+import webPush from 'web-push';
+import prisma from '../config/database';
+
+// VAPID 키 설정 (환경변수에서 로드)
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || '';
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || '';
+const vapidSubject = process.env.VAPID_SUBJECT || 'mailto:admin@example.com';
+
+if (vapidPublicKey && vapidPrivateKey) {
+  webPush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+}
+
+export interface PushPayload {
+  title: string;
+  body: string;
+  icon?: string;
+  badge?: string;
+  tag?: string;
+  data?: Record<string, unknown>;
+}
+
+export class PushService {
+  // VAPID 공개키 반환 (프론트엔드에서 구독 시 사용)
+  static getVapidPublicKey(): string {
+    return vapidPublicKey;
+  }
+
+  // 푸시 구독 저장
+  static async subscribe(
+    userId: number,
+    subscription: {
+      endpoint: string;
+      keys: {
+        p256dh: string;
+        auth: string;
+      };
+    },
+    userAgent?: string
+  ) {
+    // 기존 구독이 있으면 업데이트, 없으면 생성
+    const existing = await prisma.pushSubscription.findFirst({
+      where: {
+        userId,
+        endpoint: subscription.endpoint,
+      },
+    });
+
+    if (existing) {
+      return prisma.pushSubscription.update({
+        where: { id: existing.id },
+        data: {
+          p256dh: subscription.keys.p256dh,
+          auth: subscription.keys.auth,
+          userAgent,
+          updatedAt: new Date(),
+        },
+      });
+    }
+
+    return prisma.pushSubscription.create({
+      data: {
+        userId,
+        endpoint: subscription.endpoint,
+        p256dh: subscription.keys.p256dh,
+        auth: subscription.keys.auth,
+        userAgent,
+      },
+    });
+  }
+
+  // 푸시 구독 해제
+  static async unsubscribe(userId: number, endpoint: string) {
+    return prisma.pushSubscription.deleteMany({
+      where: {
+        userId,
+        endpoint,
+      },
+    });
+  }
+
+  // 특정 사용자에게 푸시 전송
+  static async sendToUser(userId: number, payload: PushPayload) {
+    const subscriptions = await prisma.pushSubscription.findMany({
+      where: { userId },
+    });
+
+    const results = await Promise.allSettled(
+      subscriptions.map(async (sub) => {
+        try {
+          await webPush.sendNotification(
+            {
+              endpoint: sub.endpoint,
+              keys: {
+                p256dh: sub.p256dh,
+                auth: sub.auth,
+              },
+            },
+            JSON.stringify(payload)
+          );
+          return { success: true, endpoint: sub.endpoint };
+        } catch (error: any) {
+          // 구독이 만료되었거나 유효하지 않은 경우 삭제
+          if (error.statusCode === 404 || error.statusCode === 410) {
+            await prisma.pushSubscription.delete({ where: { id: sub.id } });
+          }
+          return { success: false, endpoint: sub.endpoint, error: error.message };
+        }
+      })
+    );
+
+    return results;
+  }
+
+  // 모든 사용자에게 푸시 전송
+  static async sendToAll(payload: PushPayload) {
+    const subscriptions = await prisma.pushSubscription.findMany();
+
+    const results = await Promise.allSettled(
+      subscriptions.map(async (sub) => {
+        try {
+          await webPush.sendNotification(
+            {
+              endpoint: sub.endpoint,
+              keys: {
+                p256dh: sub.p256dh,
+                auth: sub.auth,
+              },
+            },
+            JSON.stringify(payload)
+          );
+          return { success: true };
+        } catch (error: any) {
+          if (error.statusCode === 404 || error.statusCode === 410) {
+            await prisma.pushSubscription.delete({ where: { id: sub.id } });
+          }
+          return { success: false, error: error.message };
+        }
+      })
+    );
+
+    return results;
+  }
+
+  // 주문 체결 알림 전송
+  static async sendOrderFilledNotification(
+    userId: number,
+    ticker: string,
+    type: 'buy' | 'sell',
+    price: number,
+    quantity: number
+  ) {
+    const action = type === 'buy' ? '매수' : '매도';
+    const payload: PushPayload = {
+      title: `${ticker} ${action} 체결`,
+      body: `${quantity}주 @ $${price.toFixed(2)}`,
+      icon: '/icon-192x192.svg',
+      badge: '/icon-192x192.svg',
+      tag: `order-${ticker}-${Date.now()}`,
+      data: {
+        type: 'order_filled',
+        ticker,
+        tradeType: type,
+        price,
+        quantity,
+      },
+    };
+
+    return this.sendToUser(userId, payload);
+  }
+
+  // 가격 알림 전송
+  static async sendPriceAlertNotification(
+    userId: number,
+    ticker: string,
+    currentPrice: number,
+    targetPrice: number,
+    direction: 'above' | 'below'
+  ) {
+    const directionText = direction === 'above' ? '도달' : '하락';
+    const payload: PushPayload = {
+      title: `${ticker} 가격 ${directionText}`,
+      body: `현재가: $${currentPrice.toFixed(2)} (목표: $${targetPrice.toFixed(2)})`,
+      icon: '/icon-192x192.svg',
+      badge: '/icon-192x192.svg',
+      tag: `price-${ticker}`,
+      data: {
+        type: 'price_alert',
+        ticker,
+        currentPrice,
+        targetPrice,
+        direction,
+      },
+    };
+
+    return this.sendToUser(userId, payload);
+  }
+}

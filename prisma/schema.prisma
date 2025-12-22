@@ -25,6 +25,7 @@ model User {
   infiniteBuyStocks InfiniteBuyStock[]
   monthlyProfits    MonthlyProfit[]
   profitSnapshots   ProfitSnapshot[]
+  pushSubscriptions PushSubscription[]
 
   @@map("users")
 }
@@ -326,4 +327,30 @@ model SchedulerLog {
   @@index([executedAt])
   @@index([stockId])
   @@map("scheduler_logs")
+}
+
+// ============ 푸시 알림 (Push Notifications) ============
+
+model PushSubscription {
+  id              Int       @id @default(autoincrement())
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Web Push 구독 정보
+  endpoint        String    @db.Text
+  p256dh          String    @db.Text  // 암호화 키
+  auth            String    @db.Text  // 인증 토큰
+
+  // 알림 설정
+  orderFilled     Boolean   @default(true)  // 주문 체결 알림
+  priceAlert      Boolean   @default(true)  // 가격 알림
+  dailyReport     Boolean   @default(false) // 일일 리포트
+
+  // 메타 정보
+  userAgent       String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("push_subscriptions")
 }

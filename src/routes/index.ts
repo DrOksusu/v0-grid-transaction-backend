@@ -6,6 +6,7 @@ import credentialRoutes from './credentials';
 import kisRoutes from './kis';
 import infiniteBuyRoutes from './infinite-buy';
 import profitRoutes from './profits';
+import pushRoutes from './push';
 
 const router = Router();
 
@@ -24,5 +25,6 @@ router.use('/credentials', credentialRoutes);
 router.use('/kis', kisRoutes);
 router.use('/infinite-buy', infiniteBuyRoutes);
 router.use('/profits', profitRoutes);
+router.use('/push', pushRoutes);
 
 export default router;
