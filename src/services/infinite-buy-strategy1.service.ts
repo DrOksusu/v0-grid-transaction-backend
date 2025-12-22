@@ -2,6 +2,7 @@ import prisma from '../config/database';
 import { KisService } from './kis.service';
 import { decrypt, encrypt } from '../utils/encryption';
 import { getNextLOCExecutionTime } from '../utils/us-market-holidays';
+import { PushService } from './push.service';
 
 /**
  * 무한매수전략1 서비스
@@ -325,6 +326,19 @@ export class InfiniteBuyStrategy1Service {
       }
     });
 
+    // 푸시 알림 전송 (LOC 주문 접수 완료)
+    try {
+      await PushService.sendToUser(userId, {
+        title: `${stock.ticker} LOC 매수 주문`,
+        body: `${totalQuantity}주 주문 접수 (장 마감 시 체결 예정)`,
+        icon: '/icon-192x192.svg',
+        tag: `loc-buy-${stock.ticker}`,
+        data: { type: 'order_placed', ticker: stock.ticker },
+      });
+    } catch (pushError) {
+      console.error('[Strategy1] 푸시 알림 전송 실패:', pushError);
+    }
+
     return { orders, totalAmount, totalQuantity };
   }
 
@@ -434,6 +448,19 @@ export class InfiniteBuyStrategy1Service {
         });
       }
     });
+
+    // 푸시 알림 전송 (매도 주문 접수 완료)
+    try {
+      await PushService.sendToUser(userId, {
+        title: `${stock.ticker} 매도 주문`,
+        body: `${totalQuantity}주 매도 주문 접수`,
+        icon: '/icon-192x192.svg',
+        tag: `sell-${stock.ticker}`,
+        data: { type: 'order_placed', ticker: stock.ticker },
+      });
+    } catch (pushError) {
+      console.error('[Strategy1] 푸시 알림 전송 실패:', pushError);
+    }
 
     return { orders, totalQuantity };
   }

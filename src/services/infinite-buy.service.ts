@@ -3,6 +3,7 @@ import { KisService } from './kis.service';
 import { decrypt, encrypt } from '../utils/encryption';
 import { InfiniteBuyStatus, InfiniteBuyStrategy, SchedulerLogType, SchedulerLogStatus } from '@prisma/client';
 import { getNextLOCExecutionTime } from '../utils/us-market-holidays';
+import { PushService } from './push.service';
 
 // 로그 저장 헬퍼 함수
 async function saveLog(params: {
@@ -558,6 +559,19 @@ export class InfiniteBuyService {
         },
       });
 
+      // 푸시 알림 전송
+      try {
+        await PushService.sendOrderFilledNotification(
+          userId,
+          stock.ticker,
+          'buy',
+          currentPrice,
+          quantity
+        );
+      } catch (pushError) {
+        console.error('[InfiniteBuy] 푸시 알림 전송 실패:', pushError);
+      }
+
       return {
         record: {
           id: record.id.toString(),
@@ -743,6 +757,19 @@ export class InfiniteBuyService {
           orderId,
         },
       });
+
+      // 푸시 알림 전송
+      try {
+        await PushService.sendOrderFilledNotification(
+          userId,
+          stock.ticker,
+          'sell',
+          currentPrice,
+          sellQuantity
+        );
+      } catch (pushError) {
+        console.error('[InfiniteBuy] 푸시 알림 전송 실패:', pushError);
+      }
 
       return {
         record: {
