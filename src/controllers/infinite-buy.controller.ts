@@ -843,11 +843,13 @@ export const getAccountBalance = async (
     const appKey = decrypt(credential.apiKey);
     const appSecret = decrypt(credential.secretKey);
 
+    console.log('[Balance] 계좌정보:', credential.accountNo, '모의투자:', credential.isPaper);
+
     const kisService = new KisService({
       appKey,
       appSecret,
       accountNo: credential.accountNo || '',
-      isPaper: credential.isPaper,
+      isPaper: credential.isPaper ?? true,  // null이면 모의투자로 기본값
     });
 
     // 토큰 재발급 콜백 설정
