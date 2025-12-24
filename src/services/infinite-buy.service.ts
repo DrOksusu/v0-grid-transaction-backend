@@ -34,6 +34,7 @@ async function saveLog(params: {
 
 interface CreateStockParams {
   userId: number;
+  accountNo: string;  // 계좌번호 (필수)
   ticker: string;
   name: string;
   exchange?: string;
@@ -139,6 +140,7 @@ export class InfiniteBuyService {
   async createStock(params: CreateStockParams) {
     const {
       userId,
+      accountNo,  // 계좌번호 (필수)
       ticker,
       name,
       exchange = 'NAS',
@@ -152,10 +154,11 @@ export class InfiniteBuyService {
       strategy = 'basic',  // 기본값: basic 전략
     } = params;
 
-    // 종목 생성 (중복 허용)
+    // 종목 생성 (중복 허용, 계좌별로 분리)
     const stock = await prisma.infiniteBuyStock.create({
       data: {
         userId,
+        accountNo,  // 계좌번호 저장
         ticker: ticker.toUpperCase(),
         name,
         exchange,
@@ -173,9 +176,12 @@ export class InfiniteBuyService {
     return stock;
   }
 
-  // 전체 종목 조회 (현재가 포함)
-  async getStocks(userId: number, status?: InfiniteBuyStatus) {
+  // 전체 종목 조회 (현재가 포함) - 계좌별 필터링 지원
+  async getStocks(userId: number, accountNo?: string, status?: InfiniteBuyStatus) {
     const whereClause: any = { userId };
+    if (accountNo) {
+      whereClause.accountNo = accountNo;  // 계좌별 필터링
+    }
     if (status) {
       whereClause.status = status;
     }
@@ -225,6 +231,7 @@ export class InfiniteBuyService {
           ticker: stock.ticker,
           name: stock.name,
           exchange: stock.exchange,
+          accountNo: stock.accountNo,  // 계좌번호 추가
           status: stock.status,
           strategy: stock.strategy,  // 전략 추가
           buyAmount: stock.buyAmount,
@@ -322,6 +329,7 @@ export class InfiniteBuyService {
       ticker: stock.ticker,
       name: stock.name,
       exchange: stock.exchange,
+      accountNo: stock.accountNo,  // 계좌번호 추가
       status: stock.status,
       strategy: stock.strategy,  // 전략 추가
       buyAmount: stock.buyAmount,
@@ -912,10 +920,11 @@ export class InfiniteBuyService {
     };
   }
 
-  // 전체 히스토리 조회
+  // 전체 히스토리 조회 - 계좌별 필터링 지원
   async getHistory(
     userId: number,
     params: {
+      accountNo?: string;  // 계좌번호 필터
       ticker?: string;
       type?: string;
       startDate?: string;
@@ -924,11 +933,19 @@ export class InfiniteBuyService {
       offset?: number;
     }
   ) {
-    const { ticker, type, startDate, endDate, limit = 100, offset = 0 } = params;
+    const { accountNo, ticker, type, startDate, endDate, limit = 100, offset = 0 } = params;
 
-    // 사용자의 종목 ID 목록
+    // 사용자의 종목 ID 목록 (계좌별 필터링)
+    const stockWhereClause: any = { userId };
+    if (accountNo) {
+      stockWhereClause.accountNo = accountNo;
+    }
+    if (ticker) {
+      stockWhereClause.ticker = ticker.toUpperCase();
+    }
+
     const userStocks = await prisma.infiniteBuyStock.findMany({
-      where: { userId, ...(ticker && { ticker: ticker.toUpperCase() }) },
+      where: stockWhereClause,
       select: { id: true, ticker: true, name: true },
     });
 
@@ -1003,15 +1020,20 @@ export class InfiniteBuyService {
     return { records: recordsWithStock, total, summary };
   }
 
-  // 오늘의 매수 예정 조회
-  async getTodaySchedule(userId: number) {
+  // 오늘의 매수 예정 조회 - 계좌별 필터링 지원
+  async getTodaySchedule(userId: number, accountNo?: string) {
     // 자동매수가 활성화되고 buying 상태인 종목들
+    const whereClause: any = {
+      userId,
+      status: 'buying',
+      autoEnabled: true,
+    };
+    if (accountNo) {
+      whereClause.accountNo = accountNo;
+    }
+
     const stocks = await prisma.infiniteBuyStock.findMany({
-      where: {
-        userId,
-        status: 'buying',
-        autoEnabled: true,
-      },
+      where: whereClause,
     });
 
     const scheduledBuys = stocks
@@ -1031,14 +1053,19 @@ export class InfiniteBuyService {
     return { scheduledBuys, totalAmount };
   }
 
-  // 대시보드 요약 정보
-  async getSummary(userId: number) {
-    const stocksData = await this.getStocks(userId);
-    const todayData = await this.getTodaySchedule(userId);
+  // 대시보드 요약 정보 - 계좌별 필터링 지원
+  async getSummary(userId: number, accountNo?: string) {
+    const stocksData = await this.getStocks(userId, accountNo);
+    const todayData = await this.getTodaySchedule(userId, accountNo);
 
     // 실현 수익 계산
+    const stockWhereClause: any = { userId };
+    if (accountNo) {
+      stockWhereClause.accountNo = accountNo;
+    }
+
     const userStocks = await prisma.infiniteBuyStock.findMany({
-      where: { userId },
+      where: stockWhereClause,
       select: { id: true },
     });
 

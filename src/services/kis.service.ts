@@ -393,11 +393,27 @@ export class KisService {
           }
 
           const output = data.output;
+          console.log('[KIS] 매수가능금액 API 응답:', JSON.stringify(output, null, 2));
+
+          // 외화 주문가능금액 (이미 환전된 달러)
+          const foreignCurrencyAmount = parseFloat(output.ord_psbl_frcr_amt) || 0;
+          // 원화 예수금으로 주문 가능한 외화 금액
+          const krwToForeignAmount = parseFloat(output.frcr_ord_psbl_amt1) || 0;
+          // 해외주문가능금액 (외화 + 원화환산 합계)
+          const totalOverseasAmount = parseFloat(output.ovrs_ord_psbl_amt) || 0;
+          // 환율
+          const exchangeRate = parseFloat(output.exrt) || 0;
+          // 원화 예수금 (KRW)
+          const krwAmount = parseFloat(output.ord_psbl_krw_amt) || (krwToForeignAmount * exchangeRate);
+
+          console.log(`[KIS] 외화잔고: $${foreignCurrencyAmount}, 원화환산가능: $${krwToForeignAmount}, 총가능: $${totalOverseasAmount}, 환율: ${exchangeRate}`);
+
           return {
-            currency: output.tr_crcy_cd || 'USD',                           // 거래통화
-            availableAmount: parseFloat(output.ord_psbl_frcr_amt) || 0,     // 주문가능 외화금액
-            overseasAvailableAmount: parseFloat(output.ovrs_ord_psbl_amt) || 0, // 해외주문가능금액
-            exchangeRate: parseFloat(output.exrt) || 0,                     // 환율
+            currency: output.tr_crcy_cd || 'USD',
+            availableAmount: totalOverseasAmount > 0 ? totalOverseasAmount : (foreignCurrencyAmount + krwToForeignAmount),  // 총 주문가능금액 (USD)
+            foreignCurrencyAmount,    // 외화 잔고 (USD)
+            krwAvailableAmount: krwAmount,  // 원화 예수금 (KRW)
+            exchangeRate,
           };
         } catch (error: any) {
           console.warn('[KIS] 매수가능금액 조회 실패:', error.message);
@@ -405,6 +421,83 @@ export class KisService {
         }
       });
     });
+  }
+
+  /**
+   * 원화 예수금 조회 (국내주식 예수금 API 사용)
+   * 참고: 해외주식 전용 계좌에서는 이 API가 작동하지 않을 수 있음
+   */
+  async getKRWDeposit() {
+    try {
+      return await executeWithRateLimit(this.appKey, async () => {
+        return this.withTokenRefresh(async () => {
+          if (!this.isTokenValid()) {
+            await this.getAccessToken();
+          }
+
+          // tr_id: 모의투자 VTTC8434R, 실전투자 TTTC8434R (예수금상세조회)
+          const trId = this.isPaper ? 'VTTC8434R' : 'TTTC8434R';
+
+          const response = await axios.get(
+            `${this.baseUrl}/uapi/domestic-stock/v1/trading/inquire-psbl-order`,
+            {
+              headers: this.getHeaders(trId),
+              params: {
+                CANO: this.accountNoPrefix,
+                ACNT_PRDT_CD: this.accountNoSuffix,
+                PDNO: '005930',      // 임의 종목코드 (조회용)
+                ORD_UNPR: '10000',   // 임의 가격
+                ORD_DVSN: '00',      // 지정가
+                CMA_EVLU_AMT_ICLD_YN: 'N',
+                OVRS_ICLD_YN: 'N',
+                AFHR_FLPR_YN: 'N',   // 시간외단일가여부
+                OFL_YN: '',          // 오프라인여부 (빈값)
+                INQR_DVSN: '00',     // 조회구분
+                UNPR_DVSN: '01',     // 단가구분
+                FUND_STTL_ICLD_YN: 'N', // 펀드결제분포함여부
+                FNCG_AMT_AUTO_RDPT_YN: 'N', // 융자금액자동상환여부
+                PRCS_DVSN: '00',     // 처리구분
+                CTX_AREA_FK100: '',  // 연속조회검색조건100
+                CTX_AREA_NK100: '',  // 연속조회키100
+              },
+            }
+          );
+
+          const data = response.data;
+          console.log('[KIS] 원화 예수금 API 응답:', JSON.stringify(data, null, 2));
+
+          if (data.rt_cd !== '0') {
+            console.warn('[KIS] 원화 예수금 조회 실패:', data.msg1);
+            return null;
+          }
+
+          // output2에서 예수금 정보 추출
+          const output2 = data.output2?.[0];
+          if (!output2) {
+            console.warn('[KIS] 원화 예수금 응답에 output2 없음');
+            return null;
+          }
+
+          const result = {
+            // 예수금총액 (원화)
+            totalDeposit: parseFloat(output2.dnca_tot_amt) || 0,
+            // D+2 예수금
+            depositD2: parseFloat(output2.prvs_rcdl_excc_amt) || 0,
+            // 총평가금액
+            totalEvalAmount: parseFloat(output2.tot_evlu_amt) || 0,
+            // 순자산금액
+            netAssetAmount: parseFloat(output2.nass_amt) || 0,
+          };
+
+          console.log(`[KIS] 원화 예수금: ₩${result.totalDeposit.toLocaleString()}`);
+          return result;
+        });
+      });
+    } catch (error: any) {
+      // 403 에러 등 권한 문제 시 조용히 null 반환
+      console.warn('[KIS] 원화 예수금 조회 불가 (해외주식 전용 계좌일 수 있음):', error.message);
+      return null;
+    }
   }
 
   // ============ 해외주식 주문 ============

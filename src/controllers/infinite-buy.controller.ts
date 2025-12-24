@@ -7,7 +7,7 @@ import { infiniteBuyStrategy1Service } from '../services/infinite-buy-strategy1.
 import { InfiniteBuyStatus } from '@prisma/client';
 import prisma from '../config/database';
 import { KisService } from '../services/kis.service';
-import { decrypt } from '../utils/encryption';
+import { decrypt, encrypt } from '../utils/encryption';
 
 // 종목 생성
 export const createStock = async (
@@ -29,6 +29,7 @@ export const createStock = async (
       buyCondition,
       autoStart,
       strategy,  // 전략 선택 (basic | strategy1)
+      accountNo,  // 계좌번호
     } = req.body;
 
     if (!ticker || !name || !buyAmount) {
@@ -59,8 +60,27 @@ export const createStock = async (
       );
     }
 
+    // 계좌번호 확인: accountNo가 없으면 현재 연결된 KIS 계좌에서 가져옴
+    let finalAccountNo = accountNo;
+    if (!finalAccountNo) {
+      const credential = await prisma.credential.findFirst({
+        where: { userId, exchange: 'kis' },
+      });
+      if (credential?.accountNo) {
+        finalAccountNo = credential.accountNo;
+      } else {
+        return errorResponse(
+          res,
+          'ACCOUNT_REQUIRED',
+          '계좌번호가 필요합니다. KIS API를 먼저 연결해주세요.',
+          400
+        );
+      }
+    }
+
     const stock = await infiniteBuyService.createStock({
       userId,
+      accountNo: finalAccountNo,  // 계좌번호 전달
       ticker,
       name,
       exchange,
@@ -108,7 +128,7 @@ export const createStock = async (
   }
 };
 
-// 전체 종목 조회
+// 전체 종목 조회 (계좌별 필터링 지원)
 export const getStocks = async (
   req: AuthRequest,
   res: Response,
@@ -116,14 +136,18 @@ export const getStocks = async (
 ) => {
   try {
     const userId = req.userId!;
-    const { status } = req.query;
+    const { status, accountNo } = req.query;
 
     let statusFilter: InfiniteBuyStatus | undefined;
     if (status && ['buying', 'completed', 'stopped'].includes(status as string)) {
       statusFilter = status as InfiniteBuyStatus;
     }
 
-    const data = await infiniteBuyService.getStocks(userId, statusFilter);
+    const data = await infiniteBuyService.getStocks(
+      userId,
+      accountNo as string | undefined,  // 계좌번호 필터
+      statusFilter
+    );
 
     return successResponse(res, data);
   } catch (error) {
@@ -384,7 +408,7 @@ export const getRecords = async (
   }
 };
 
-// 전체 히스토리 조회
+// 전체 히스토리 조회 (계좌별 필터링 지원)
 export const getHistory = async (
   req: AuthRequest,
   res: Response,
@@ -392,9 +416,10 @@ export const getHistory = async (
 ) => {
   try {
     const userId = req.userId!;
-    const { ticker, type, startDate, endDate, limit, offset } = req.query;
+    const { ticker, type, startDate, endDate, limit, offset, accountNo } = req.query;
 
     const data = await infiniteBuyService.getHistory(userId, {
+      accountNo: accountNo as string | undefined,  // 계좌번호 필터
       ticker: ticker as string | undefined,
       type: type as string | undefined,
       startDate: startDate as string | undefined,
@@ -409,7 +434,7 @@ export const getHistory = async (
   }
 };
 
-// 오늘의 매수 예정 조회
+// 오늘의 매수 예정 조회 (계좌별 필터링 지원)
 export const getTodaySchedule = async (
   req: AuthRequest,
   res: Response,
@@ -417,8 +442,12 @@ export const getTodaySchedule = async (
 ) => {
   try {
     const userId = req.userId!;
+    const { accountNo } = req.query;
 
-    const data = await infiniteBuyService.getTodaySchedule(userId);
+    const data = await infiniteBuyService.getTodaySchedule(
+      userId,
+      accountNo as string | undefined
+    );
 
     return successResponse(res, data);
   } catch (error) {
@@ -426,7 +455,7 @@ export const getTodaySchedule = async (
   }
 };
 
-// 대시보드 요약 정보
+// 대시보드 요약 정보 (계좌별 필터링 지원)
 export const getSummary = async (
   req: AuthRequest,
   res: Response,
@@ -434,8 +463,12 @@ export const getSummary = async (
 ) => {
   try {
     const userId = req.userId!;
+    const { accountNo } = req.query;
 
-    const data = await infiniteBuyService.getSummary(userId);
+    const data = await infiniteBuyService.getSummary(
+      userId,
+      accountNo as string | undefined
+    );
 
     return successResponse(res, data);
   } catch (error) {
@@ -817,16 +850,6 @@ export const getAccountBalance = async (
       isPaper: credential.isPaper,
     });
 
-    // 기존 토큰 설정
-    if (credential.accessToken && credential.tokenExpireAt) {
-      const now = new Date();
-      const bufferTime = 10 * 60 * 1000; // 10분 여유
-      if (credential.tokenExpireAt.getTime() - bufferTime > now.getTime()) {
-        const decryptedToken = decrypt(credential.accessToken);
-        kisService.setAccessToken(decryptedToken, credential.tokenExpireAt);
-      }
-    }
-
     // 토큰 재발급 콜백 설정
     kisService.setTokenRefreshCallback(async (newToken: string, newExpireAt: Date) => {
       try {
@@ -838,21 +861,67 @@ export const getAccountBalance = async (
             tokenExpireAt: newExpireAt,
           },
         });
+        console.log('[Balance] 토큰 DB 저장 완료');
       } catch (err: any) {
         console.error('[Balance] 토큰 DB 저장 실패:', err.message);
       }
     });
 
-    // 잔고 조회 및 매수가능금액 조회 (병렬)
-    const [balance, buyingPower] = await Promise.all([
+    // 기존 토큰 설정 및 유효성 확인
+    let tokenValid = false;
+    if (credential.accessToken && credential.tokenExpireAt) {
+      const now = new Date();
+      const bufferTime = 10 * 60 * 1000; // 10분 여유
+      if (credential.tokenExpireAt.getTime() - bufferTime > now.getTime()) {
+        const decryptedToken = decrypt(credential.accessToken);
+        kisService.setAccessToken(decryptedToken, credential.tokenExpireAt);
+        tokenValid = true;
+        console.log('[Balance] DB에서 유효한 토큰 로드됨, 만료:', credential.tokenExpireAt);
+      } else {
+        console.log('[Balance] DB 토큰 만료됨, 재발급 필요');
+      }
+    }
+
+    // 토큰이 없거나 만료된 경우 먼저 발급 (병렬 API 호출 전에)
+    if (!tokenValid) {
+      console.log('[Balance] 토큰 신규 발급 중...');
+      const tokenInfo = await kisService.getAccessToken();
+      // 직접 DB에 저장
+      await prisma.credential.update({
+        where: { id: credential.id },
+        data: {
+          accessToken: encrypt(tokenInfo.accessToken),
+          tokenExpireAt: tokenInfo.tokenExpireAt,
+        },
+      });
+      console.log('[Balance] 토큰 DB 저장 완료, 만료:', tokenInfo.tokenExpireAt);
+    }
+
+    // 잔고 조회, 매수가능금액 조회, 원화예수금 조회 (병렬)
+    const [balance, buyingPower, krwDeposit] = await Promise.all([
       kisService.getUSStockBalance(),
       kisService.getUSStockBuyingPower(),
+      kisService.getKRWDeposit(),
     ]);
+
+    // buyingPower에 원화 예수금 정보 병합
+    const enrichedBuyingPower = buyingPower ? {
+      ...buyingPower,
+      krwAvailableAmount: krwDeposit?.totalDeposit || buyingPower.krwAvailableAmount || 0,
+      krwTotalDeposit: krwDeposit?.totalDeposit || 0,
+    } : (krwDeposit ? {
+      currency: 'USD',
+      availableAmount: 0,
+      foreignCurrencyAmount: 0,
+      krwAvailableAmount: krwDeposit.totalDeposit,
+      krwTotalDeposit: krwDeposit.totalDeposit,
+      exchangeRate: 0,
+    } : null);
 
     return successResponse(res, {
       holdings: balance.holdings,
       summary: balance.summary,
-      buyingPower: buyingPower,  // 주문가능금액 (null일 수 있음)
+      buyingPower: enrichedBuyingPower,
       accountNo: credential.accountNo,
       isPaper: credential.isPaper,
     });

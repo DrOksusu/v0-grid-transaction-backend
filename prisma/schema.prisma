@@ -166,6 +166,7 @@ model InfiniteBuyStock {
   id              Int       @id @default(autoincrement())
   userId          Int
   user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountNo       String    @default("")  // 계좌번호 (계좌별 분리)
 
   // 종목 정보
   ticker          String                // 티커 (예: AAPL, TSLA)
@@ -199,7 +200,8 @@ model InfiniteBuyStock {
   buyRecords      InfiniteBuyRecord[]
 
   @@index([userId])
-  @@index([userId, ticker])  // 중복 허용, 인덱스만 유지
+  @@index([userId, accountNo])  // 계좌별 조회용
+  @@index([userId, accountNo, ticker])  // 계좌+종목 조회용
   @@index([status])
   @@map("infinite_buy_stocks")
 }

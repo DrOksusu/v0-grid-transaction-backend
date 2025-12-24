@@ -191,8 +191,8 @@ export class PushService {
     const payload: PushPayload = {
       title: `${ticker} ${action} 체결`,
       body: `${quantity}주 @ $${price.toFixed(2)}`,
-      icon: '/icon-192x192.svg',
-      badge: '/icon-192x192.svg',
+      icon: '/apple-icon.png',
+      badge: '/apple-icon.png',
       tag: `order-${ticker}-${Date.now()}`,
       data: {
         type: 'order_filled',
@@ -218,8 +218,8 @@ export class PushService {
     const payload: PushPayload = {
       title: `${ticker} 가격 ${directionText}`,
       body: `현재가: $${currentPrice.toFixed(2)} (목표: $${targetPrice.toFixed(2)})`,
-      icon: '/icon-192x192.svg',
-      badge: '/icon-192x192.svg',
+      icon: '/apple-icon.png',
+      badge: '/apple-icon.png',
       tag: `price-${ticker}`,
       data: {
         type: 'price_alert',
