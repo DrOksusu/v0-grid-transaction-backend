@@ -44,10 +44,14 @@ export const createBot = async (
       );
     }
 
-    const gridCount = Math.floor(
-      Math.log(upperPrice / lowerPrice) /
-      Math.log(1 + priceChangePercent / 100)
-    );
+    // 실제 매수 레벨 수 계산 (등비수열로 upperPrice 이하까지)
+    const changeRatio = 1 + priceChangePercent / 100;
+    let gridCount = 0;
+    let tempPrice = lowerPrice;
+    while (tempPrice <= upperPrice) {
+      gridCount++;
+      tempPrice = tempPrice * changeRatio;
+    }
 
     const investmentAmount = gridCount * orderAmount;
 
