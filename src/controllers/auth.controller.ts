@@ -136,3 +136,97 @@ export const logout = async (
     next(error);
   }
 };
+
+/**
+ * 프로필 조회
+ * GET /api/auth/profile
+ */
+export const getProfile = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        nickname: true,
+        createdAt: true,
+      },
+    });
+
+    if (!user) {
+      return errorResponse(res, 'USER_NOT_FOUND', '사용자를 찾을 수 없습니다', 404);
+    }
+
+    return successResponse(res, user);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 닉네임 수정
+ * PUT /api/auth/nickname
+ */
+export const updateNickname = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const { nickname } = req.body;
+
+    // 닉네임 유효성 검사
+    if (nickname !== undefined && nickname !== null) {
+      const trimmedNickname = nickname.trim();
+
+      // 빈 문자열이면 null로 처리
+      if (trimmedNickname === '') {
+        await prisma.user.update({
+          where: { id: userId },
+          data: { nickname: null },
+        });
+        return successResponse(res, { nickname: null }, '닉네임이 삭제되었습니다');
+      }
+
+      // 길이 검사 (2~20자)
+      if (trimmedNickname.length < 2 || trimmedNickname.length > 20) {
+        return errorResponse(
+          res,
+          'VALIDATION_ERROR',
+          '닉네임은 2~20자 사이여야 합니다',
+          400
+        );
+      }
+
+      // 특수문자 검사 (한글, 영문, 숫자만 허용)
+      if (!/^[가-힣a-zA-Z0-9]+$/.test(trimmedNickname)) {
+        return errorResponse(
+          res,
+          'VALIDATION_ERROR',
+          '닉네임은 한글, 영문, 숫자만 사용할 수 있습니다',
+          400
+        );
+      }
+
+      const user = await prisma.user.update({
+        where: { id: userId },
+        data: { nickname: trimmedNickname },
+        select: { nickname: true },
+      });
+
+      return successResponse(res, user, '닉네임이 수정되었습니다');
+    }
+
+    return errorResponse(res, 'VALIDATION_ERROR', '닉네임을 입력해주세요', 400);
+  } catch (error) {
+    next(error);
+  }
+};

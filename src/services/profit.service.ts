@@ -405,4 +405,87 @@ export class ProfitService {
       deletedAt: s.deletedAt,
     }));
   }
+
+  /**
+   * 당월 수익 랭킹 조회 (전체 사용자 Top N)
+   */
+  static async getMonthlyRanking(limit: number = 5) {
+    const currentMonth = getCurrentMonth();
+
+    // 해당 월의 시작/끝 날짜 계산
+    const [year, monthNum] = currentMonth.split('-').map(Number);
+    const startDate = new Date(year, monthNum - 1, 1);
+    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+
+    // 모든 사용자의 활성 봇에서 당월 수익 계산
+    const trades = await prisma.trade.findMany({
+      where: {
+        type: 'sell',
+        status: 'filled',
+        profit: { not: null },
+        filledAt: {
+          gte: startDate,
+          lte: endDate,
+        },
+      },
+      select: {
+        profit: true,
+        bot: {
+          select: {
+            userId: true,
+          },
+        },
+      },
+    });
+
+    // 사용자별로 수익 집계
+    const userProfitMap = new Map<number, number>();
+    for (const trade of trades) {
+      if (trade.profit === null || !trade.bot) continue;
+      const userId = trade.bot.userId;
+      const existing = userProfitMap.get(userId) || 0;
+      userProfitMap.set(userId, existing + trade.profit);
+    }
+
+    // 사용자 정보 조회
+    const userIds = Array.from(userProfitMap.keys());
+    const users = await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, name: true, nickname: true, email: true },
+    });
+
+    const userMap = new Map(users.map(u => [u.id, u]));
+
+    // 수익 기준 정렬 후 Top N
+    const ranking = Array.from(userProfitMap.entries())
+      .map(([userId, profit]) => {
+        const user = userMap.get(userId);
+        // 닉네임이 있으면 닉네임 사용, 없으면 이름 마스킹
+        let displayName: string;
+        if (user?.nickname) {
+          displayName = user.nickname;
+        } else {
+          const name = user?.name || '익명';
+          displayName = name.length > 1
+            ? name[0] + '*'.repeat(name.length - 1)
+            : name;
+        }
+        return {
+          rank: 0,
+          name: displayName,
+          profit: Math.round(profit),
+        };
+      })
+      .sort((a, b) => b.profit - a.profit)
+      .slice(0, limit)
+      .map((item, index) => ({
+        ...item,
+        rank: index + 1,
+      }));
+
+    return {
+      month: currentMonth,
+      ranking,
+    };
+  }
 }

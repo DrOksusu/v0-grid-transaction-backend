@@ -111,3 +111,25 @@ export const getDeletedBots = async (
     next(error);
   }
 };
+
+/**
+ * 당월 수익 랭킹 조회
+ * GET /api/profits/ranking
+ */
+export const getMonthlyRanking = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { limit } = req.query;
+
+    const ranking = await ProfitService.getMonthlyRanking(
+      limit ? parseInt(limit as string) : 5
+    );
+
+    return successResponse(res, ranking);
+  } catch (error) {
+    next(error);
+  }
+};
