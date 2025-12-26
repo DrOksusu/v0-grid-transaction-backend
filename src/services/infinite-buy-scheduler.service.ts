@@ -319,6 +319,18 @@ export class InfiniteBuySchedulerService {
       return;
     }
 
+    // 오늘이 거래일인지 확인 (미국 휴일 체크)
+    const today = new Date();
+    if (!isUSMarketOpen(today)) {
+      console.log('[InfiniteBuyScheduler] 기본 전략: 오늘은 미국 장 휴일입니다');
+      await saveLog({
+        type: 'auto_buy',
+        status: 'skipped',
+        message: '오늘은 미국 장 휴일 - 기본 전략 스케줄 스킵',
+      });
+      return;
+    }
+
     // 스케줄 시작 로그
     await saveLog({
       type: 'auto_buy',
