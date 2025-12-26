@@ -270,7 +270,7 @@ export class UpbitService {
     }
   }
 
-  // 주문 조회
+  // 주문 조회 (단건)
   async getOrder(uuid: string) {
     try {
       await throttleOrderApi();  // Rate limiting 추가
@@ -286,6 +286,32 @@ export class UpbitService {
       return response.data;
     } catch (error: any) {
       throw new Error(`주문 조회 실패: ${error.response?.data?.error?.message || error.message}`);
+    }
+  }
+
+  // 주문 목록 조회 (배치) - 429 에러 방지용
+  // uuids: 조회할 주문 UUID 배열 (최대 100개)
+  async getOrdersByUuids(uuids: string[]): Promise<any[]> {
+    if (uuids.length === 0) return [];
+
+    try {
+      await throttleOrderApi();
+
+      // Upbit API는 uuids[] 파라미터로 여러 주문을 한번에 조회 가능
+      const params = new URLSearchParams();
+      uuids.forEach(uuid => params.append('uuids[]', uuid));
+      const queryString = params.toString();
+
+      const response = await axios.get(
+        `${UPBIT_API_URL}/orders/uuids?${queryString}`,
+        {
+          headers: this.getHeaders(queryString),
+        }
+      );
+
+      return response.data;
+    } catch (error: any) {
+      throw new Error(`주문 목록 조회 실패: ${error.response?.data?.error?.message || error.message}`);
     }
   }
 

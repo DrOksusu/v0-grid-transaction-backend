@@ -262,7 +262,7 @@ export class TradingService {
     }
   }
 
-  // 체결된 주문 확인 및 즉시 반대 주문 실행
+  // 체결된 주문 확인 및 즉시 반대 주문 실행 (배치 조회로 429 에러 방지)
   static async checkFilledOrders(botId: number) {
     try {
       // pending 상태의 그리드 레벨 조회
@@ -272,6 +272,9 @@ export class TradingService {
           status: 'pending',
         },
       });
+
+      // pending 그리드가 없으면 조기 리턴
+      if (pendingGrids.length === 0) return;
 
       const bot = await prisma.bot.findUnique({
         where: { id: botId },
@@ -297,31 +300,38 @@ export class TradingService {
         secretKey: secretKey,
       });
 
-      for (const grid of pendingGrids) {
-        if (!grid.orderId) continue;
+      // orderId가 있는 그리드들만 필터링
+      const gridsWithOrderId = pendingGrids.filter(g => g.orderId);
+      if (gridsWithOrderId.length === 0) return;
 
-        try {
-          // 업비트 API Rate Limit 방지를 위한 딜레이 (200ms - 초당 최대 5회)
-          await new Promise(resolve => setTimeout(resolve, 200));
+      // 배치 조회로 모든 주문 상태를 한 번에 가져옴 (API 호출 1회)
+      const orderIds = gridsWithOrderId.map(g => g.orderId as string);
+      let orders: any[] = [];
 
-          // 주문 상태 확인 (429 에러 시 재시도)
-          let order;
-          let retryCount = 0;
-          while (retryCount < 3) {
-            try {
-              order = await upbit.getOrder(grid.orderId);
-              break;
-            } catch (err: any) {
-              if (err.response?.status === 429 && retryCount < 2) {
-                retryCount++;
-                console.log(`[Trading] Rate limit hit, retry ${retryCount}/3 after 1s delay...`);
-                await new Promise(resolve => setTimeout(resolve, 1000));
-              } else {
-                throw err;
-              }
-            }
+      try {
+        orders = await upbit.getOrdersByUuids(orderIds);
+        console.log(`[Trading] Bot ${botId}: 배치 조회 성공 - ${orders.length}개 주문`);
+      } catch (err: any) {
+        // 배치 조회 실패 시 개별 조회로 폴백 (호환성)
+        console.log(`[Trading] Bot ${botId}: 배치 조회 실패, 개별 조회로 폴백 - ${err.message}`);
+        for (const grid of gridsWithOrderId) {
+          try {
+            await new Promise(resolve => setTimeout(resolve, 200));
+            const order = await upbit.getOrder(grid.orderId as string);
+            if (order) orders.push(order);
+          } catch (e: any) {
+            console.error(`주문 확인 실패 (Grid ${grid.id}):`, e.message);
           }
+        }
+      }
 
+      // orderId로 빠른 조회를 위한 Map 생성
+      const orderMap = new Map(orders.map(o => [o.uuid, o]));
+
+      // 각 그리드에 대해 체결 상태 확인
+      for (const grid of gridsWithOrderId) {
+        try {
+          const order = orderMap.get(grid.orderId);
           if (!order) continue;
 
           // 체결 완료 확인
@@ -340,7 +350,7 @@ export class TradingService {
             await GridService.updateGridLevel(
               grid.id,
               'filled',
-              grid.orderId,
+              grid.orderId!,  // orderId는 위에서 필터링됨
               actualFilledAt
             );
 
@@ -383,7 +393,7 @@ export class TradingService {
 
             // 거래 기록에 수익 업데이트
             const trade = await prisma.trade.findFirst({
-              where: { orderId: grid.orderId },
+              where: { orderId: grid.orderId! },  // orderId는 위에서 필터링됨
             });
 
             if (trade) {
@@ -430,7 +440,7 @@ export class TradingService {
             }
           }
         } catch (error: any) {
-          console.error(`주문 확인 실패 (Grid ${grid.id}):`, error.message);
+          console.error(`주문 처리 실패 (Grid ${grid.id}):`, error.message);
         }
       }
     } catch (error: any) {
