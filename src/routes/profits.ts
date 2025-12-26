@@ -7,6 +7,7 @@ import {
   getMonthlyRanking,
   getInfiniteBuyRanking,
   getRankingUserDetail,
+  getInfiniteBuyRankingUserDetail,
 } from '../controllers/profit.controller';
 import { authenticate } from '../middlewares/auth';
 
@@ -26,6 +27,9 @@ router.get('/ranking/user', getRankingUserDetail);
 
 // 무한매수 수익 랭킹
 router.get('/ranking/infinite-buy', getInfiniteBuyRanking);
+
+// 무한매수 랭킹 사용자 상세 조회 (종목별 수익)
+router.get('/ranking/infinite-buy/user', getInfiniteBuyRankingUserDetail);
 
 // 월별 수익 목록
 router.get('/monthly', getMonthlyProfits);

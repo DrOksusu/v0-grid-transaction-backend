@@ -698,4 +698,108 @@ export class ProfitService {
       ranking,
     };
   }
+
+  /**
+   * 무한매수 랭킹 사용자 상세 조회 (종목별 수익)
+   * @param displayName 표시 이름 (닉네임 또는 마스킹된 이름)
+   * @param month 조회할 월 (YYYY-MM 형식)
+   */
+  static async getInfiniteBuyRankingUserDetail(displayName: string, month: string) {
+    // 해당 월의 시작/끝 날짜 계산
+    const [year, monthNum] = month.split('-').map(Number);
+    const startDate = new Date(year, monthNum - 1, 1);
+    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+
+    // displayName으로 사용자 찾기
+    const users = await prisma.user.findMany({
+      select: { id: true, name: true, nickname: true },
+    });
+
+    let targetUserId: number | null = null;
+    for (const user of users) {
+      // 닉네임이 일치하면
+      if (user.nickname === displayName) {
+        targetUserId = user.id;
+        break;
+      }
+      // 마스킹된 이름이 일치하면
+      const maskedName = user.name && user.name.length > 1
+        ? user.name[0] + '*'.repeat(user.name.length - 1)
+        : user.name || '익명';
+      if (maskedName === displayName) {
+        targetUserId = user.id;
+        break;
+      }
+    }
+
+    if (!targetUserId) {
+      return null;
+    }
+
+    // 해당 사용자의 무한매수 종목 조회
+    const stocks = await prisma.infiniteBuyStock.findMany({
+      where: { userId: targetUserId },
+      select: {
+        id: true,
+        ticker: true,
+      },
+    });
+
+    const stockIds = stocks.map(s => s.id);
+
+    // 해당 월의 매도 기록 조회
+    const records = await prisma.infiniteBuyRecord.findMany({
+      where: {
+        stockId: { in: stockIds },
+        type: 'sell',
+        orderStatus: 'filled',
+        profit: { not: null },
+        filledAt: {
+          gte: startDate,
+          lte: endDate,
+        },
+      },
+      select: {
+        stockId: true,
+        profit: true,
+        filledAt: true,
+      },
+    });
+
+    // 종목별로 수익 집계
+    const tickerProfitMap = new Map<string, { profit: number; trades: number }>();
+    for (const record of records) {
+      if (record.profit === null) continue;
+      const stock = stocks.find(s => s.id === record.stockId);
+      if (!stock) continue;
+
+      const key = stock.ticker;
+      const existing = tickerProfitMap.get(key) || { profit: 0, trades: 0 };
+      tickerProfitMap.set(key, {
+        profit: existing.profit + record.profit,
+        trades: existing.trades + 1,
+      });
+    }
+
+    // 결과 정렬 (수익 높은 순)
+    const details = Array.from(tickerProfitMap.entries())
+      .map(([ticker, data]) => ({
+        ticker,
+        profit: Math.round(data.profit * 100) / 100, // 달러 단위이므로 소수점 2자리
+        trades: data.trades,
+      }))
+      .sort((a, b) => b.profit - a.profit);
+
+    const totalProfit = details.reduce((sum, d) => sum + d.profit, 0);
+    const totalTrades = details.reduce((sum, d) => sum + d.trades, 0);
+
+    return {
+      name: displayName,
+      month,
+      totalProfit: Math.round(totalProfit * 100) / 100,
+      totalTrades,
+      tickerCount: details.length,
+      details,
+    };
+  }
 }

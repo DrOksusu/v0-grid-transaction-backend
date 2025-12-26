@@ -224,3 +224,50 @@ export const getInfiniteBuyRanking = async (
     next(error);
   }
 };
+
+/**
+ * 무한매수 랭킹 사용자 상세 조회 (종목별 수익)
+ * GET /api/profits/ranking/infinite-buy/user
+ * @query name - 사용자 표시 이름 (닉네임 또는 마스킹된 이름)
+ * @query month - 조회할 월 (YYYY-MM 형식)
+ */
+export const getInfiniteBuyRankingUserDetail = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { name, month } = req.query;
+
+    if (!name || !month) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'name과 month 파라미터가 필요합니다',
+      });
+    }
+
+    // 월 형식 검증 (YYYY-MM)
+    if (!/^\d{4}-\d{2}$/.test(month as string)) {
+      return res.status(400).json({
+        status: 'error',
+        message: '올바른 월 형식이 아닙니다 (YYYY-MM)',
+      });
+    }
+
+    const detail = await ProfitService.getInfiniteBuyRankingUserDetail(
+      name as string,
+      month as string
+    );
+
+    if (!detail) {
+      return res.status(404).json({
+        status: 'error',
+        message: '사용자를 찾을 수 없습니다',
+      });
+    }
+
+    return successResponse(res, detail);
+  } catch (error) {
+    next(error);
+  }
+};
