@@ -144,3 +144,36 @@ export const getMonthlyRanking = async (
     next(error);
   }
 };
+
+/**
+ * 무한매수 수익 랭킹 조회
+ * GET /api/profits/ranking/infinite-buy
+ * @query month - 조회할 월 (YYYY-MM 형식, 미지정 시 현재 월)
+ * @query limit - 조회 개수 (기본 5)
+ */
+export const getInfiniteBuyRanking = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { limit, month } = req.query;
+
+    // 월 형식 검증 (YYYY-MM)
+    if (month && !/^\d{4}-\d{2}$/.test(month as string)) {
+      return res.status(400).json({
+        status: 'error',
+        message: '올바른 월 형식이 아닙니다 (YYYY-MM)',
+      });
+    }
+
+    const ranking = await ProfitService.getInfiniteBuyRanking(
+      limit ? parseInt(limit as string) : 5,
+      month as string | undefined
+    );
+
+    return successResponse(res, ranking);
+  } catch (error) {
+    next(error);
+  }
+};

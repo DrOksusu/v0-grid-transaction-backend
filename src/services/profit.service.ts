@@ -490,4 +490,104 @@ export class ProfitService {
       ranking,
     };
   }
+
+  /**
+   * 무한매수 수익 랭킹 조회 (전체 사용자 Top N)
+   * @param month 조회할 월 (YYYY-MM 형식, 미지정 시 현재 월)
+   * @param limit 조회 개수 (기본 5)
+   */
+  static async getInfiniteBuyRanking(limit: number = 5, month?: string) {
+    const targetMonth = month || getCurrentMonth();
+
+    // 해당 월의 시작/끝 날짜 계산
+    const [year, monthNum] = targetMonth.split('-').map(Number);
+    const startDate = new Date(year, monthNum - 1, 1);
+    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+
+    // 무한매수 종목을 보유한 모든 사용자 조회
+    const stockUsers = await prisma.infiniteBuyStock.findMany({
+      select: {
+        userId: true,
+      },
+      distinct: ['userId'],
+    });
+
+    const allUserIds = stockUsers.map(s => s.userId);
+
+    // 해당 월의 매도 수익 기록 조회
+    const records = await prisma.infiniteBuyRecord.findMany({
+      where: {
+        type: 'sell',
+        orderStatus: 'filled',
+        profit: { not: null },
+        filledAt: {
+          gte: startDate,
+          lte: endDate,
+        },
+        stock: {
+          userId: { in: allUserIds },
+        },
+      },
+      select: {
+        profit: true,
+        stock: {
+          select: {
+            userId: true,
+          },
+        },
+      },
+    });
+
+    // 사용자별로 수익 집계 (기본값 0)
+    const userProfitMap = new Map<number, number>();
+    for (const userId of allUserIds) {
+      userProfitMap.set(userId, 0);
+    }
+    for (const record of records) {
+      if (record.profit === null || !record.stock) continue;
+      const userId = record.stock.userId;
+      const existing = userProfitMap.get(userId) || 0;
+      userProfitMap.set(userId, existing + record.profit);
+    }
+
+    // 사용자 정보 조회
+    const users = await prisma.user.findMany({
+      where: { id: { in: allUserIds } },
+      select: { id: true, name: true, nickname: true, email: true },
+    });
+
+    const userMap = new Map(users.map(u => [u.id, u]));
+
+    // 수익 기준 정렬 후 Top N
+    const ranking = Array.from(userProfitMap.entries())
+      .map(([userId, profit]) => {
+        const user = userMap.get(userId);
+        // 닉네임이 있으면 닉네임 사용, 없으면 이름 마스킹
+        let displayName: string;
+        if (user?.nickname) {
+          displayName = user.nickname;
+        } else {
+          const name = user?.name || '익명';
+          displayName = name.length > 1
+            ? name[0] + '*'.repeat(name.length - 1)
+            : name;
+        }
+        return {
+          rank: 0,
+          name: displayName,
+          profit: Math.round(profit),
+        };
+      })
+      .sort((a, b) => b.profit - a.profit)
+      .slice(0, limit)
+      .map((item, index) => ({
+        ...item,
+        rank: index + 1,
+      }));
+
+    return {
+      month: targetMonth,
+      ranking,
+    };
+  }
 }
