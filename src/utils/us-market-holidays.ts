@@ -232,7 +232,7 @@ function isUSEasternDST(date: Date): boolean {
 }
 
 // 스킵된 날짜 정보
-interface SkippedDay {
+export interface SkippedDay {
   date: string;      // MM/DD 형식
   dayOfWeek: string;
   reason: string;    // 휴일명 또는 '주말', '조기마감'
@@ -253,17 +253,19 @@ export function getNextLOCExecutionTime(fromDate: Date = new Date()): {
   skippedDays: SkippedDay[]; // 스킵된 날짜들 (휴일, 주말, 조기마감)
 } {
   const now = new Date();
-  const koreaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
-  const usEasternTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
 
-  // 현재 미국 동부 시간 기준으로 장 마감 전인지 확인
+  // 미국 동부 시간 기준으로 현재 날짜와 시간 확인
+  const usEasternTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const usHour = usEasternTime.getHours();
   const usMinutes = usEasternTime.getMinutes();
 
-  let checkDate = new Date(fromDate);
-  checkDate.setHours(0, 0, 0, 0);
+  // 미국 날짜 기준으로 체크 (중요: 한국 날짜가 아닌 미국 날짜!)
+  const usYear = usEasternTime.getFullYear();
+  const usMonth = usEasternTime.getMonth();
+  const usDay = usEasternTime.getDate();
+  let checkDate = new Date(usYear, usMonth, usDay, 0, 0, 0, 0);
 
-  // 오늘이 거래일이고 장 마감 전(오후 4시 전)이면 오늘 체결
+  // 오늘(미국 날짜)이 거래일이고 장 마감 전(오후 4시 전)이면 오늘 체결
   const todayIsTradingDay = isUSMarketOpen(checkDate);
   const todayIsEarlyClose = isUSMarketEarlyCloseDay(checkDate);
   // 조기 마감일은 1:00 PM ET 마감이므로 beforeMarketClose 기준이 다름
