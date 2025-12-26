@@ -407,13 +407,15 @@ export class ProfitService {
   }
 
   /**
-   * 당월 수익 랭킹 조회 (전체 사용자 Top N)
+   * 수익 랭킹 조회 (전체 사용자 Top N)
+   * @param month 조회할 월 (YYYY-MM 형식, 미지정 시 현재 월)
+   * @param limit 조회 개수 (기본 5)
    */
-  static async getMonthlyRanking(limit: number = 5) {
-    const currentMonth = getCurrentMonth();
+  static async getMonthlyRanking(limit: number = 5, month?: string) {
+    const targetMonth = month || getCurrentMonth();
 
     // 해당 월의 시작/끝 날짜 계산
-    const [year, monthNum] = currentMonth.split('-').map(Number);
+    const [year, monthNum] = targetMonth.split('-').map(Number);
     const startDate = new Date(year, monthNum - 1, 1);
     const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
 
@@ -484,7 +486,7 @@ export class ProfitService {
       }));
 
     return {
-      month: currentMonth,
+      month: targetMonth,
       ranking,
     };
   }

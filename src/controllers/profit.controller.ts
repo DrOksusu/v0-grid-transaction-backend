@@ -113,8 +113,10 @@ export const getDeletedBots = async (
 };
 
 /**
- * 당월 수익 랭킹 조회
+ * 수익 랭킹 조회
  * GET /api/profits/ranking
+ * @query month - 조회할 월 (YYYY-MM 형식, 미지정 시 현재 월)
+ * @query limit - 조회 개수 (기본 5)
  */
 export const getMonthlyRanking = async (
   req: AuthRequest,
@@ -122,10 +124,19 @@ export const getMonthlyRanking = async (
   next: NextFunction
 ) => {
   try {
-    const { limit } = req.query;
+    const { limit, month } = req.query;
+
+    // 월 형식 검증 (YYYY-MM)
+    if (month && !/^\d{4}-\d{2}$/.test(month as string)) {
+      return res.status(400).json({
+        status: 'error',
+        message: '올바른 월 형식이 아닙니다 (YYYY-MM)',
+      });
+    }
 
     const ranking = await ProfitService.getMonthlyRanking(
-      limit ? parseInt(limit as string) : 5
+      limit ? parseInt(limit as string) : 5,
+      month as string | undefined
     );
 
     return successResponse(res, ranking);
