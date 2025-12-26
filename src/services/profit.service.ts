@@ -504,26 +504,34 @@ export class ProfitService {
     const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
 
     // displayName으로 사용자 찾기
-    // 1. 닉네임이 일치하는 사용자
-    // 2. 마스킹된 이름이 일치하는 사용자
+    // 랭킹 표시 로직과 동일하게:
+    // - 닉네임이 있는 사용자 → 닉네임으로 표시됨
+    // - 닉네임이 없는 사용자 → 마스킹된 이름으로 표시됨
     const users = await prisma.user.findMany({
       select: { id: true, name: true, nickname: true },
     });
 
     let targetUserId: number | null = null;
+    const isMaskedName = displayName.includes('*');
+
     for (const user of users) {
-      // 닉네임이 일치하면
-      if (user.nickname === displayName) {
-        targetUserId = user.id;
-        break;
-      }
-      // 마스킹된 이름이 일치하면
-      const maskedName = user.name && user.name.length > 1
-        ? user.name[0] + '*'.repeat(user.name.length - 1)
-        : user.name || '익명';
-      if (maskedName === displayName) {
-        targetUserId = user.id;
-        break;
+      if (isMaskedName) {
+        // 마스킹된 이름으로 검색하는 경우: 닉네임이 없는 사용자만 매칭
+        if (!user.nickname) {
+          const maskedName = user.name && user.name.length > 1
+            ? user.name[0] + '*'.repeat(user.name.length - 1)
+            : user.name || '익명';
+          if (maskedName === displayName) {
+            targetUserId = user.id;
+            break;
+          }
+        }
+      } else {
+        // 일반 이름으로 검색하는 경우: 닉네임으로 매칭
+        if (user.nickname === displayName) {
+          targetUserId = user.id;
+          break;
+        }
       }
     }
 
@@ -711,24 +719,34 @@ export class ProfitService {
     const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
 
     // displayName으로 사용자 찾기
+    // 랭킹 표시 로직과 동일하게:
+    // - 닉네임이 있는 사용자 → 닉네임으로 표시됨
+    // - 닉네임이 없는 사용자 → 마스킹된 이름으로 표시됨
     const users = await prisma.user.findMany({
       select: { id: true, name: true, nickname: true },
     });
 
     let targetUserId: number | null = null;
+    const isMaskedName = displayName.includes('*');
+
     for (const user of users) {
-      // 닉네임이 일치하면
-      if (user.nickname === displayName) {
-        targetUserId = user.id;
-        break;
-      }
-      // 마스킹된 이름이 일치하면
-      const maskedName = user.name && user.name.length > 1
-        ? user.name[0] + '*'.repeat(user.name.length - 1)
-        : user.name || '익명';
-      if (maskedName === displayName) {
-        targetUserId = user.id;
-        break;
+      if (isMaskedName) {
+        // 마스킹된 이름으로 검색하는 경우: 닉네임이 없는 사용자만 매칭
+        if (!user.nickname) {
+          const maskedName = user.name && user.name.length > 1
+            ? user.name[0] + '*'.repeat(user.name.length - 1)
+            : user.name || '익명';
+          if (maskedName === displayName) {
+            targetUserId = user.id;
+            break;
+          }
+        }
+      } else {
+        // 일반 이름으로 검색하는 경우: 닉네임으로 매칭
+        if (user.nickname === displayName) {
+          targetUserId = user.id;
+          break;
+        }
       }
     }
 
