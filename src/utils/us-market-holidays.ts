@@ -12,6 +12,11 @@
  * - Labor Day (9월 첫째 월요일)
  * - Thanksgiving Day (11월 넷째 목요일)
  * - Christmas Day (12월 25일)
+ *
+ * 조기 마감일 (Early Close - 1:00 PM ET):
+ * - 7월 3일 (독립기념일 전날, 평일인 경우)
+ * - 추수감사절 다음날 (11월 넷째 금요일)
+ * - 12월 24일 (크리스마스 이브, 평일인 경우)
  */
 
 // 특정 월의 n번째 특정 요일 계산
@@ -114,6 +119,68 @@ export function isUSMarketHoliday(date: Date): boolean {
 
   const dateStr = date.toISOString().split('T')[0];
   return holidays.some(h => h.toISOString().split('T')[0] === dateStr);
+}
+
+// 특정 연도의 조기 마감일 반환 (1:00 PM ET 마감)
+export function getUSMarketEarlyCloseDays(year: number): Date[] {
+  const earlyCloseDays: Date[] = [];
+
+  // 7월 3일 (독립기념일 전날) - 평일인 경우만
+  const july3 = new Date(year, 6, 3);
+  const july3Day = july3.getDay();
+  if (july3Day >= 1 && july3Day <= 5) {
+    earlyCloseDays.push(july3);
+  }
+
+  // 추수감사절 다음날 (11월 넷째 금요일)
+  const thanksgiving = getNthDayOfMonth(year, 10, 4, 4); // 넷째 목요일
+  const blackFriday = new Date(thanksgiving.getTime() + 24 * 60 * 60 * 1000);
+  earlyCloseDays.push(blackFriday);
+
+  // 12월 24일 (크리스마스 이브) - 평일인 경우만
+  const dec24 = new Date(year, 11, 24);
+  const dec24Day = dec24.getDay();
+  if (dec24Day >= 1 && dec24Day <= 5) {
+    earlyCloseDays.push(dec24);
+  }
+
+  return earlyCloseDays;
+}
+
+// 날짜가 조기 마감일인지 확인
+export function isUSMarketEarlyCloseDay(date: Date): boolean {
+  const year = date.getFullYear();
+  const earlyCloseDays = getUSMarketEarlyCloseDays(year);
+
+  const dateStr = date.toISOString().split('T')[0];
+  return earlyCloseDays.some(d => d.toISOString().split('T')[0] === dateStr);
+}
+
+// 조기 마감일 이름 반환
+export function getEarlyCloseDayName(date: Date): string | null {
+  const year = date.getFullYear();
+  const dateStr = date.toISOString().split('T')[0];
+
+  // 7월 3일
+  const july3 = new Date(year, 6, 3);
+  if (july3.toISOString().split('T')[0] === dateStr) {
+    return '독립기념일 전날';
+  }
+
+  // 추수감사절 다음날
+  const thanksgiving = getNthDayOfMonth(year, 10, 4, 4);
+  const blackFriday = new Date(thanksgiving.getTime() + 24 * 60 * 60 * 1000);
+  if (blackFriday.toISOString().split('T')[0] === dateStr) {
+    return '블랙 프라이데이';
+  }
+
+  // 12월 24일
+  const dec24 = new Date(year, 11, 24);
+  if (dec24.toISOString().split('T')[0] === dateStr) {
+    return '크리스마스 이브';
+  }
+
+  return null;
 }
 
 // 날짜가 거래일인지 확인 (주말 + 휴일 제외)

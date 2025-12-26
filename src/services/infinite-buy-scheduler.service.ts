@@ -4,7 +4,7 @@ import { KisService } from './kis.service';
 import { decrypt } from '../utils/encryption';
 import { InfiniteBuyStatus, SchedulerLogType, SchedulerLogStatus } from '@prisma/client';
 import { infiniteBuyStrategy1Service } from './infinite-buy-strategy1.service';
-import { isUSMarketOpen } from '../utils/us-market-holidays';
+import { isUSMarketOpen, isUSMarketEarlyCloseDay, getEarlyCloseDayName } from '../utils/us-market-holidays';
 
 // 로그 저장 헬퍼
 interface LogParams {
@@ -439,6 +439,19 @@ export class InfiniteBuySchedulerService {
         type: 'strategy1_buy',
         status: 'skipped',
         message: '오늘은 미국 장 휴일 - Strategy1 스케줄 스킵',
+      });
+      return;
+    }
+
+    // 조기 마감일 체크 (1:00 PM ET 마감 - LOC 주문 시간에 이미 장 마감)
+    if (isUSMarketEarlyCloseDay(today)) {
+      const dayName = getEarlyCloseDayName(today) || '조기 마감일';
+      console.log(`[InfiniteBuyScheduler] Strategy1: 오늘은 ${dayName}로 조기 마감입니다 (1:00 PM ET). LOC 주문 스킵`);
+      await saveLog({
+        type: 'strategy1_buy',
+        status: 'skipped',
+        message: `${dayName} - 조기 마감(1:00 PM ET)으로 LOC 주문 스킵`,
+        details: { reason: 'early_close', dayName },
       });
       return;
     }
