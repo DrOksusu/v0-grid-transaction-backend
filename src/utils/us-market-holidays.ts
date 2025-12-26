@@ -112,13 +112,21 @@ export function getUSMarketHolidays(year: number): Date[] {
   return holidays;
 }
 
+// 로컬 날짜를 YYYY-MM-DD 형식으로 변환 (타임존 변환 없이)
+function toLocalDateString(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 // 날짜가 휴일인지 확인
 export function isUSMarketHoliday(date: Date): boolean {
   const year = date.getFullYear();
   const holidays = getUSMarketHolidays(year);
 
-  const dateStr = date.toISOString().split('T')[0];
-  return holidays.some(h => h.toISOString().split('T')[0] === dateStr);
+  const dateStr = toLocalDateString(date);
+  return holidays.some(h => toLocalDateString(h) === dateStr);
 }
 
 // 특정 연도의 조기 마감일 반환 (1:00 PM ET 마감)
@@ -152,31 +160,31 @@ export function isUSMarketEarlyCloseDay(date: Date): boolean {
   const year = date.getFullYear();
   const earlyCloseDays = getUSMarketEarlyCloseDays(year);
 
-  const dateStr = date.toISOString().split('T')[0];
-  return earlyCloseDays.some(d => d.toISOString().split('T')[0] === dateStr);
+  const dateStr = toLocalDateString(date);
+  return earlyCloseDays.some(d => toLocalDateString(d) === dateStr);
 }
 
 // 조기 마감일 이름 반환
 export function getEarlyCloseDayName(date: Date): string | null {
   const year = date.getFullYear();
-  const dateStr = date.toISOString().split('T')[0];
+  const dateStr = toLocalDateString(date);
 
   // 7월 3일
   const july3 = new Date(year, 6, 3);
-  if (july3.toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(july3) === dateStr) {
     return '독립기념일 전날';
   }
 
   // 추수감사절 다음날
   const thanksgiving = getNthDayOfMonth(year, 10, 4, 4);
   const blackFriday = new Date(thanksgiving.getTime() + 24 * 60 * 60 * 1000);
-  if (blackFriday.toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(blackFriday) === dateStr) {
     return '블랙 프라이데이';
   }
 
   // 12월 24일
   const dec24 = new Date(year, 11, 24);
-  if (dec24.toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(dec24) === dateStr) {
     return '크리스마스 이브';
   }
 
@@ -378,39 +386,37 @@ export function getNextLOCExecutionTime(fromDate: Date = new Date()): {
 // 휴일 이름 반환
 export function getHolidayName(date: Date): string | null {
   const year = date.getFullYear();
-  const month = date.getMonth();
-  const day = date.getDate();
-  const dateStr = date.toISOString().split('T')[0];
+  const dateStr = toLocalDateString(date);
 
   // 각 휴일 체크
-  if (observedHoliday(new Date(year, 0, 1)).toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(observedHoliday(new Date(year, 0, 1))) === dateStr) {
     return '새해 첫날';
   }
-  if (getNthDayOfMonth(year, 0, 1, 3).toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(getNthDayOfMonth(year, 0, 1, 3)) === dateStr) {
     return '마틴 루터 킹 주니어의 날';
   }
-  if (getNthDayOfMonth(year, 1, 1, 3).toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(getNthDayOfMonth(year, 1, 1, 3)) === dateStr) {
     return '대통령의 날';
   }
-  if (getGoodFriday(year).toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(getGoodFriday(year)) === dateStr) {
     return '성금요일';
   }
-  if (getLastDayOfMonth(year, 4, 1).toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(getLastDayOfMonth(year, 4, 1)) === dateStr) {
     return '현충일';
   }
-  if (observedHoliday(new Date(year, 5, 19)).toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(observedHoliday(new Date(year, 5, 19))) === dateStr) {
     return '준틴스 독립기념일';
   }
-  if (observedHoliday(new Date(year, 6, 4)).toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(observedHoliday(new Date(year, 6, 4))) === dateStr) {
     return '독립기념일';
   }
-  if (getNthDayOfMonth(year, 8, 1, 1).toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(getNthDayOfMonth(year, 8, 1, 1)) === dateStr) {
     return '노동절';
   }
-  if (getNthDayOfMonth(year, 10, 4, 4).toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(getNthDayOfMonth(year, 10, 4, 4)) === dateStr) {
     return '추수감사절';
   }
-  if (observedHoliday(new Date(year, 11, 25)).toISOString().split('T')[0] === dateStr) {
+  if (toLocalDateString(observedHoliday(new Date(year, 11, 25))) === dateStr) {
     return '크리스마스';
   }
 
