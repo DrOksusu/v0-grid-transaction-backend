@@ -359,6 +359,9 @@ export class InfiniteBuyService {
         daysUntil: nextExecution.daysUntil,
         executionTimeKST: nextExecution.executionTimeKST,
         executionTimeET: nextExecution.executionTimeET,
+        isEarlyClose: nextExecution.isEarlyClose,
+        earlyCloseName: nextExecution.earlyCloseName,
+        skippedDays: nextExecution.skippedDays,
       },
     };
   }

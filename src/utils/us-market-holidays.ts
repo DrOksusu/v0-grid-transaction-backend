@@ -223,6 +223,14 @@ function isUSEasternDST(date: Date): boolean {
   return date >= marchSecondSunday && date < novFirstSunday;
 }
 
+// 스킵된 날짜 정보
+interface SkippedDay {
+  date: string;      // MM/DD 형식
+  dayOfWeek: string;
+  reason: string;    // 휴일명 또는 '주말', '조기마감'
+  type: 'holiday' | 'weekend' | 'early_close';
+}
+
 // LOC 주문 체결 예정 시간 (미국 동부 기준 오후 4시)
 export function getNextLOCExecutionTime(fromDate: Date = new Date()): {
   date: Date;
@@ -232,6 +240,9 @@ export function getNextLOCExecutionTime(fromDate: Date = new Date()): {
   daysUntil: number;
   executionTimeKST: string;  // 한국시간 체결 예정 시간
   executionTimeET: string;   // 미국 동부시간 체결 예정 시간
+  isEarlyClose: boolean;     // 조기 마감일 여부
+  earlyCloseName: string | null;  // 조기 마감일 이름
+  skippedDays: SkippedDay[]; // 스킵된 날짜들 (휴일, 주말, 조기마감)
 } {
   const now = new Date();
   const koreaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
@@ -246,19 +257,76 @@ export function getNextLOCExecutionTime(fromDate: Date = new Date()): {
 
   // 오늘이 거래일이고 장 마감 전(오후 4시 전)이면 오늘 체결
   const todayIsTradingDay = isUSMarketOpen(checkDate);
-  const beforeMarketClose = usHour < 16 || (usHour === 16 && usMinutes === 0);
+  const todayIsEarlyClose = isUSMarketEarlyCloseDay(checkDate);
+  // 조기 마감일은 1:00 PM ET 마감이므로 beforeMarketClose 기준이 다름
+  const beforeMarketClose = todayIsEarlyClose
+    ? (usHour < 13 || (usHour === 13 && usMinutes === 0))
+    : (usHour < 16 || (usHour === 16 && usMinutes === 0));
 
   let targetDate: Date;
   let isToday = false;
+  const skippedDays: SkippedDay[] = [];
+  const days = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
 
-  if (todayIsTradingDay && beforeMarketClose) {
+  // 스킵되는 날짜들 수집 (오늘부터 다음 거래일까지)
+  const collectSkippedDays = (start: Date, end: Date) => {
+    const current = new Date(start);
+    current.setDate(current.getDate() + 1); // 시작일 다음날부터
+
+    while (current < end) {
+      const dayOfWeekNum = current.getDay();
+      const dateStr = `${current.getMonth() + 1}/${current.getDate()}`;
+
+      if (dayOfWeekNum === 0 || dayOfWeekNum === 6) {
+        skippedDays.push({
+          date: dateStr,
+          dayOfWeek: days[dayOfWeekNum],
+          reason: '주말',
+          type: 'weekend',
+        });
+      } else if (isUSMarketHoliday(current)) {
+        skippedDays.push({
+          date: dateStr,
+          dayOfWeek: days[dayOfWeekNum],
+          reason: getHolidayName(current) || '미국 휴일',
+          type: 'holiday',
+        });
+      }
+      current.setDate(current.getDate() + 1);
+    }
+  };
+
+  if (todayIsTradingDay && beforeMarketClose && !todayIsEarlyClose) {
     targetDate = checkDate;
     isToday = true;
   } else {
+    // 오늘이 조기 마감일이고 이미 장이 마감된 경우
+    if (todayIsEarlyClose && !beforeMarketClose) {
+      const earlyName = getEarlyCloseDayName(checkDate);
+      skippedDays.push({
+        date: `${checkDate.getMonth() + 1}/${checkDate.getDate()}`,
+        dayOfWeek: days[checkDate.getDay()],
+        reason: earlyName ? `${earlyName} (조기마감)` : '조기마감',
+        type: 'early_close',
+      });
+    }
+    // 오늘이 휴일인 경우
+    if (!todayIsTradingDay && checkDate.getDay() !== 0 && checkDate.getDay() !== 6) {
+      const holidayName = getHolidayName(checkDate);
+      if (holidayName) {
+        skippedDays.push({
+          date: `${checkDate.getMonth() + 1}/${checkDate.getDate()}`,
+          dayOfWeek: days[checkDate.getDay()],
+          reason: holidayName,
+          type: 'holiday',
+        });
+      }
+    }
+
     targetDate = getNextTradingDay(checkDate);
+    collectSkippedDays(checkDate, targetDate);
   }
 
-  const days = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
   const dayOfWeek = days[targetDate.getDay()];
 
   // 오늘부터 며칠 후인지
@@ -274,10 +342,24 @@ export function getNextLOCExecutionTime(fromDate: Date = new Date()): {
   // - DST (3월~11월): ET = UTC-4, KST = UTC+9 → 차이 13시간
   // - 표준시 (11월~3월): ET = UTC-5, KST = UTC+9 → 차이 14시간
   const isDST = isUSEasternDST(targetDate);
-  const kstHour = isDST ? 5 : 6; // 다음날 새벽 5시 또는 6시
 
-  const executionTimeET = '16:00 ET';
-  const executionTimeKST = `${kstHour}:00 (다음날 새벽)`;
+  // 대상 날짜가 조기 마감일인지 확인
+  const targetIsEarlyClose = isUSMarketEarlyCloseDay(targetDate);
+  const earlyCloseName = targetIsEarlyClose ? getEarlyCloseDayName(targetDate) : null;
+
+  // 조기 마감일은 1:00 PM ET 마감
+  let executionTimeET: string;
+  let executionTimeKST: string;
+
+  if (targetIsEarlyClose) {
+    executionTimeET = '13:00 ET (조기마감)';
+    const kstHour = isDST ? 2 : 3; // 다음날 새벽 2시 또는 3시
+    executionTimeKST = `${kstHour}:00 (다음날 새벽)`;
+  } else {
+    executionTimeET = '16:00 ET';
+    const kstHour = isDST ? 5 : 6; // 다음날 새벽 5시 또는 6시
+    executionTimeKST = `${kstHour}:00 (다음날 새벽)`;
+  }
 
   return {
     date: targetDate,
@@ -287,6 +369,9 @@ export function getNextLOCExecutionTime(fromDate: Date = new Date()): {
     daysUntil,
     executionTimeKST,
     executionTimeET,
+    isEarlyClose: targetIsEarlyClose,
+    earlyCloseName,
+    skippedDays,
   };
 }
 
