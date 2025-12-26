@@ -49,9 +49,11 @@ interface StockWithCredential {
 export class InfiniteBuySchedulerService {
   private autoBuyJob: ScheduledTask | null = null;
   private strategy1BuyJob: ScheduledTask | null = null;  // strategy1 전용
+  private strategy1EarlyCloseJob: ScheduledTask | null = null;  // 조기마감일 LOC 전용
   private priceCheckJob: ScheduledTask | null = null;
   private orderCheckJob: ScheduledTask | null = null;
   private locOrderCheckJob: ScheduledTask | null = null;  // LOC 주문 체결 확인 전용
+  private locEarlyCloseOrderCheckJob: ScheduledTask | null = null;  // 조기마감일 LOC 체결 확인
   private isRunning: boolean = false;
   private config: SchedulerConfig = {
     autoBuyEnabled: true,
@@ -86,7 +88,16 @@ export class InfiniteBuySchedulerService {
     // 장 마감 가까운 시간에 LOC 주문을 넣어야 종가 예측이 가능
     this.strategy1BuyJob = cron.schedule('30 4 * * 2-6', async () => {
       console.log('[InfiniteBuyScheduler] Strategy1 LOC 자동 매수 스케줄 실행');
-      await this.executeStrategy1AutoBuy();
+      await this.executeStrategy1AutoBuy(false);  // 조기마감일은 스킵
+    }, {
+      timezone: 'Asia/Seoul'
+    });
+
+    // Strategy1 조기마감일 LOC 주문 (02:00 KST - 조기마감 1시간 전)
+    // 조기마감일(7/3, 블랙프라이데이, 12/24)은 1:00 PM ET 마감이므로 02:00 KST에 주문
+    this.strategy1EarlyCloseJob = cron.schedule('0 2 * * 2-6', async () => {
+      console.log('[InfiniteBuyScheduler] Strategy1 조기마감일 LOC 자동 매수 스케줄 실행');
+      await this.executeStrategy1AutoBuy(true);  // 조기마감일 전용
     }, {
       timezone: 'Asia/Seoul'
     });
@@ -114,13 +125,28 @@ export class InfiniteBuySchedulerService {
       timezone: 'Asia/Seoul'
     });
 
+    // 조기마감일 LOC 주문 체결 확인 (03:10 KST - 조기마감 후)
+    // 조기마감일은 1:00 PM ET = 약 03:00 KST 마감이므로 03:10에 체결 확인
+    this.locEarlyCloseOrderCheckJob = cron.schedule('10 3 * * 2-6', async () => {
+      // 조기마감일에만 실행
+      const today = new Date();
+      if (isUSMarketEarlyCloseDay(today)) {
+        console.log('[InfiniteBuyScheduler] 조기마감일 LOC 주문 체결 확인 실행');
+        await this.checkPendingOrders('strategy1');
+      }
+    }, {
+      timezone: 'Asia/Seoul'
+    });
+
     this.isRunning = true;
     console.log('[InfiniteBuyScheduler] 스케줄 등록 완료');
     console.log('  - 기본 전략 매수: 매일 23:35 (KST, 동절기)');
     console.log('  - Strategy1 LOC 매수: 매일 04:30 (KST, 동절기) - 장 마감 1.5시간 전');
+    console.log('  - Strategy1 조기마감일 LOC: 매일 02:00 (KST) - 조기마감 1시간 전');
     console.log(`  - 가격 체크: 장중 매 ${this.config.priceCheckInterval}분`);
     console.log('  - 기본 전략 체결 확인: 장중 매 10분');
     console.log('  - LOC 체결 확인: 장 마감 후 06:10 (KST) 1회');
+    console.log('  - 조기마감일 LOC 체결 확인: 03:10 (KST) - 조기마감 후');
   }
 
   // 스케줄러 중지
@@ -133,6 +159,10 @@ export class InfiniteBuySchedulerService {
       this.strategy1BuyJob.stop();
       this.strategy1BuyJob = null;
     }
+    if (this.strategy1EarlyCloseJob) {
+      this.strategy1EarlyCloseJob.stop();
+      this.strategy1EarlyCloseJob = null;
+    }
     if (this.priceCheckJob) {
       this.priceCheckJob.stop();
       this.priceCheckJob = null;
@@ -144,6 +174,10 @@ export class InfiniteBuySchedulerService {
     if (this.locOrderCheckJob) {
       this.locOrderCheckJob.stop();
       this.locOrderCheckJob = null;
+    }
+    if (this.locEarlyCloseOrderCheckJob) {
+      this.locEarlyCloseOrderCheckJob.stop();
+      this.locEarlyCloseOrderCheckJob = null;
     }
     this.isRunning = false;
     console.log('[InfiniteBuyScheduler] 스케줄러 중지됨');
@@ -420,7 +454,9 @@ export class InfiniteBuySchedulerService {
   }
 
   // Strategy1 자동 매수 실행 (LOC 주문)
-  private async executeStrategy1AutoBuy() {
+  // forEarlyCloseDay: true면 조기마감일 전용 스케줄에서 호출 (02:00 KST)
+  //                   false면 일반 스케줄에서 호출 (04:30 KST)
+  private async executeStrategy1AutoBuy(forEarlyCloseDay: boolean = false) {
     if (!this.config.autoBuyEnabled) {
       console.log('[InfiniteBuyScheduler] 자동 매수 비활성화됨');
       await saveLog({
@@ -443,24 +479,38 @@ export class InfiniteBuySchedulerService {
       return;
     }
 
-    // 조기 마감일 체크 (1:00 PM ET 마감 - LOC 주문 시간에 이미 장 마감)
-    if (isUSMarketEarlyCloseDay(today)) {
-      const dayName = getEarlyCloseDayName(today) || '조기 마감일';
-      console.log(`[InfiniteBuyScheduler] Strategy1: 오늘은 ${dayName}로 조기 마감입니다 (1:00 PM ET). LOC 주문 스킵`);
-      await saveLog({
-        type: 'strategy1_buy',
-        status: 'skipped',
-        message: `${dayName} - 조기 마감(1:00 PM ET)으로 LOC 주문 스킵`,
-        details: { reason: 'early_close', dayName },
-      });
-      return;
+    const isEarlyCloseToday = isUSMarketEarlyCloseDay(today);
+    const dayName = isEarlyCloseToday ? (getEarlyCloseDayName(today) || '조기 마감일') : null;
+
+    // 조기마감일 처리 로직
+    if (forEarlyCloseDay) {
+      // 02:00 KST 스케줄: 조기마감일에만 실행
+      if (!isEarlyCloseToday) {
+        console.log('[InfiniteBuyScheduler] Strategy1: 조기마감일 아님 - 02:00 스케줄 스킵');
+        return;  // 로그 없이 조용히 스킵
+      }
+      console.log(`[InfiniteBuyScheduler] Strategy1: ${dayName} - 조기마감일 LOC 주문 실행`);
+    } else {
+      // 04:30 KST 스케줄: 조기마감일에는 스킵 (02:00에 이미 실행됨)
+      if (isEarlyCloseToday) {
+        console.log(`[InfiniteBuyScheduler] Strategy1: ${dayName}로 조기 마감 - 04:30 스케줄 스킵 (02:00에 실행됨)`);
+        await saveLog({
+          type: 'strategy1_buy',
+          status: 'skipped',
+          message: `${dayName} - 04:30 스케줄 스킵 (02:00에 실행됨)`,
+          details: { reason: 'early_close_already_executed', dayName },
+        });
+        return;
+      }
     }
 
     // 스케줄 시작 로그
     await saveLog({
       type: 'strategy1_buy',
       status: 'started',
-      message: 'Strategy1 LOC 자동 매수 스케줄 시작',
+      message: forEarlyCloseDay
+        ? `Strategy1 LOC 자동 매수 스케줄 시작 (${dayName} - 02:00 스케줄)`
+        : 'Strategy1 LOC 자동 매수 스케줄 시작 (04:30 스케줄)',
     });
 
     let processedCount = 0;
