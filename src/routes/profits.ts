@@ -6,6 +6,7 @@ import {
   getDeletedBots,
   getMonthlyRanking,
   getInfiniteBuyRanking,
+  getRankingUserDetail,
 } from '../controllers/profit.controller';
 import { authenticate } from '../middlewares/auth';
 
@@ -19,6 +20,9 @@ router.get('/summary', getProfitSummary);
 
 // 그리드 매매 수익 랭킹
 router.get('/ranking', getMonthlyRanking);
+
+// 랭킹 사용자 상세 조회 (종목별 수익)
+router.get('/ranking/user', getRankingUserDetail);
 
 // 무한매수 수익 랭킹
 router.get('/ranking/infinite-buy', getInfiniteBuyRanking);

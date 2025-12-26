@@ -492,6 +492,114 @@ export class ProfitService {
   }
 
   /**
+   * 특정 사용자의 월별 수익 상세 조회 (랭킹에서 클릭 시)
+   * @param userId 사용자 ID (닉네임/이름으로 조회)
+   * @param month 조회할 월 (YYYY-MM 형식)
+   * @param displayName 표시 이름 (닉네임 또는 마스킹된 이름)
+   */
+  static async getRankingUserDetail(displayName: string, month: string) {
+    // 해당 월의 시작/끝 날짜 계산
+    const [year, monthNum] = month.split('-').map(Number);
+    const startDate = new Date(year, monthNum - 1, 1);
+    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+
+    // displayName으로 사용자 찾기
+    // 1. 닉네임이 일치하는 사용자
+    // 2. 마스킹된 이름이 일치하는 사용자
+    const users = await prisma.user.findMany({
+      select: { id: true, name: true, nickname: true },
+    });
+
+    let targetUserId: number | null = null;
+    for (const user of users) {
+      // 닉네임이 일치하면
+      if (user.nickname === displayName) {
+        targetUserId = user.id;
+        break;
+      }
+      // 마스킹된 이름이 일치하면
+      const maskedName = user.name && user.name.length > 1
+        ? user.name[0] + '*'.repeat(user.name.length - 1)
+        : user.name || '익명';
+      if (maskedName === displayName) {
+        targetUserId = user.id;
+        break;
+      }
+    }
+
+    if (!targetUserId) {
+      return null;
+    }
+
+    // 해당 사용자의 봇 조회
+    const bots = await prisma.bot.findMany({
+      where: { userId: targetUserId },
+      select: {
+        id: true,
+        ticker: true,
+        exchange: true,
+      },
+    });
+
+    const botIds = bots.map(b => b.id);
+
+    // 해당 월의 매도 거래 조회
+    const trades = await prisma.trade.findMany({
+      where: {
+        botId: { in: botIds },
+        type: 'sell',
+        status: 'filled',
+        profit: { not: null },
+        filledAt: {
+          gte: startDate,
+          lte: endDate,
+        },
+      },
+      select: {
+        botId: true,
+        profit: true,
+        filledAt: true,
+      },
+    });
+
+    // 봇(종목)별로 수익 집계
+    const tickerProfitMap = new Map<string, { profit: number; trades: number }>();
+    for (const trade of trades) {
+      if (trade.profit === null) continue;
+      const bot = bots.find(b => b.id === trade.botId);
+      if (!bot) continue;
+
+      const key = bot.ticker;
+      const existing = tickerProfitMap.get(key) || { profit: 0, trades: 0 };
+      tickerProfitMap.set(key, {
+        profit: existing.profit + trade.profit,
+        trades: existing.trades + 1,
+      });
+    }
+
+    // 결과 정렬 (수익 높은 순)
+    const details = Array.from(tickerProfitMap.entries())
+      .map(([ticker, data]) => ({
+        ticker,
+        profit: Math.round(data.profit),
+        trades: data.trades,
+      }))
+      .sort((a, b) => b.profit - a.profit);
+
+    const totalProfit = details.reduce((sum, d) => sum + d.profit, 0);
+    const totalTrades = details.reduce((sum, d) => sum + d.trades, 0);
+
+    return {
+      name: displayName,
+      month,
+      totalProfit,
+      totalTrades,
+      tickerCount: details.length,
+      details,
+    };
+  }
+
+  /**
    * 무한매수 수익 랭킹 조회 (전체 사용자 Top N)
    * @param month 조회할 월 (YYYY-MM 형식, 미지정 시 현재 월)
    * @param limit 조회 개수 (기본 5)
