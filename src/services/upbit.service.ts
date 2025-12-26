@@ -298,9 +298,8 @@ export class UpbitService {
       await throttleOrderApi();
 
       // Upbit API는 uuids[] 파라미터로 여러 주문을 한번에 조회 가능
-      const params = new URLSearchParams();
-      uuids.forEach(uuid => params.append('uuids[]', uuid));
-      const queryString = params.toString();
+      // URLSearchParams는 []를 %5B%5D로 인코딩하므로 수동으로 query string 생성
+      const queryString = uuids.map(uuid => `uuids[]=${uuid}`).join('&');
 
       const response = await axios.get(
         `${UPBIT_API_URL}/orders/uuids?${queryString}`,
