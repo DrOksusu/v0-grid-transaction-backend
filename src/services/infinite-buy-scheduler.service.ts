@@ -1175,40 +1175,51 @@ export class InfiniteBuySchedulerService {
               const orderDate = new Date(record.executedAt);
               const now = new Date();
               const daysDiff = Math.floor((now.getTime() - orderDate.getTime()) / (24 * 60 * 60 * 1000));
+              const hoursDiff = Math.floor((now.getTime() - orderDate.getTime()) / (60 * 60 * 1000));
 
-              // 1일 이상 지난 주문은 만료/취소된 것으로 처리
-              if (daysDiff >= 1) {
+              // LOC 주문 (strategy1)은 장 마감 후 체결 안 됐으면 즉시 만료 처리
+              // 기본 전략은 1일 이상 지난 주문만 만료 처리
+              const isLOCOrder = record.orderType === 'loc' || strategyFilter === 'strategy1';
+              const shouldExpire = isLOCOrder ? hoursDiff >= 2 : daysDiff >= 1;  // LOC는 2시간, 기본은 1일
+
+              if (shouldExpire) {
                 await prisma.infiniteBuyRecord.update({
                   where: { id: record.id },
-                  data: { orderStatus: 'cancelled' },
+                  data: { orderStatus: 'expired' },
                 });
 
-                console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: 주문 만료로 취소 처리 (주문번호: ${record.orderId}, ${daysDiff}일 경과)`);
+                const expireReason = isLOCOrder
+                  ? `LOC 주문 미체결 만료 (${hoursDiff}시간 경과)`
+                  : `주문 만료 취소 (${daysDiff}일 경과)`;
+
+                console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: ${expireReason} (주문번호: ${record.orderId})`);
 
                 await saveLog({
                   type: 'order_check',
                   status: 'completed',
-                  message: `${record.stock.ticker}: 주문 만료 취소 (${daysDiff}일 경과)`,
+                  message: `${record.stock.ticker}: ${expireReason}`,
                   stockId: record.stockId,
                   ticker: record.stock.ticker,
                   details: {
                     orderId: record.orderId,
                     daysSinceOrder: daysDiff,
+                    hoursSinceOrder: hoursDiff,
                     orderType: record.orderType,
-                    reason: '체결/미체결 내역 없음 - 만료/취소된 주문',
+                    reason: isLOCOrder ? '장 마감 후 LOC 미체결 만료' : '체결/미체결 내역 없음 - 만료/취소된 주문',
                   },
                 });
               } else {
-                // 당일 주문은 조금 더 대기
+                // 아직 대기
                 await saveLog({
                   type: 'order_check',
                   status: 'skipped',
-                  message: `${record.stock.ticker}: 체결 확인 대기 (당일 주문)`,
+                  message: `${record.stock.ticker}: 체결 확인 대기 (${isLOCOrder ? hoursDiff + '시간' : daysDiff + '일'} 경과)`,
                   stockId: record.stockId,
                   ticker: record.stock.ticker,
                   details: {
                     orderId: record.orderId,
                     daysSinceOrder: daysDiff,
+                    hoursSinceOrder: hoursDiff,
                   },
                 });
               }
