@@ -1128,30 +1128,64 @@ export class InfiniteBuySchedulerService {
 
             if (filledOrder && filledOrder.filledQty > 0) {
               // 체결됨 - DB 업데이트
-              await prisma.infiniteBuyRecord.update({
-                where: { id: record.id },
-                data: {
-                  orderStatus: 'filled',
-                  price: filledOrder.filledPrice || record.price,
-                  quantity: filledOrder.filledQty,
-                  amount: filledOrder.filledPrice * filledOrder.filledQty,
-                  filledAt: new Date(),
-                },
-              });
+              const filledPrice = filledOrder.filledPrice || record.price;
+              const filledQty = filledOrder.filledQty;
+              const filledAmount = filledPrice * filledQty;
+
+              // 기존 record의 주문 시점 값
+              const oldAmount = record.amount;
+              const oldQuantity = record.quantity;
+
+              // stock의 totalInvested, totalQuantity, avgPrice 재계산
+              // 주문 시점 값을 빼고 실제 체결 값을 더함
+              const newTotalInvested = record.stock.totalInvested - oldAmount + filledAmount;
+              const newTotalQuantity = record.stock.totalQuantity - oldQuantity + filledQty;
+              const newAvgPrice = newTotalQuantity > 0 ? newTotalInvested / newTotalQuantity : 0;
+
+              // Record와 Stock 동시 업데이트
+              await prisma.$transaction([
+                prisma.infiniteBuyRecord.update({
+                  where: { id: record.id },
+                  data: {
+                    orderStatus: 'filled',
+                    price: filledPrice,
+                    quantity: filledQty,
+                    amount: filledAmount,
+                    filledAt: new Date(),
+                  },
+                }),
+                prisma.infiniteBuyStock.update({
+                  where: { id: record.stockId },
+                  data: {
+                    totalInvested: newTotalInvested,
+                    totalQuantity: newTotalQuantity,
+                    avgPrice: newAvgPrice,
+                  },
+                }),
+              ]);
+
+              // 메모리 상의 record.stock도 업데이트 (같은 stock의 다른 record 처리 시 사용)
+              record.stock.totalInvested = newTotalInvested;
+              record.stock.totalQuantity = newTotalQuantity;
+              record.stock.avgPrice = newAvgPrice;
 
               filledCount++;
-              console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: 체결 확인 완료 (주문번호: ${record.orderId}, ${filledOrder.filledQty}주, $${filledOrder.filledPrice})`);
+              console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: 체결 확인 완료 (주문번호: ${record.orderId}, ${filledQty}주, $${filledPrice}, 새 평단: $${newAvgPrice.toFixed(2)})`);
 
               await saveLog({
                 type: 'order_check',
                 status: 'completed',
-                message: `${record.stock.ticker}: 체결 확인 완료`,
+                message: `${record.stock.ticker}: 체결 확인 완료 - 평균단가 재계산`,
                 stockId: record.stockId,
                 ticker: record.stock.ticker,
                 details: {
                   orderId: record.orderId,
-                  filledQty: filledOrder.filledQty,
-                  filledPrice: filledOrder.filledPrice,
+                  filledQty,
+                  filledPrice,
+                  oldAmount,
+                  newAmount: filledAmount,
+                  newAvgPrice,
+                  newTotalInvested,
                 },
               });
             } else if (pendingOrder) {
