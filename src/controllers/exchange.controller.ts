@@ -222,6 +222,89 @@ export const getPrice = async (
   }
 };
 
+// 환율 캐시 (1시간 유효)
+let exchangeRateCache: { rate: number; timestamp: number } | null = null;
+const EXCHANGE_RATE_CACHE_TTL = 60 * 60 * 1000; // 1시간
+
+export const getExchangeRate = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const now = Date.now();
+
+    // 캐시 확인
+    if (exchangeRateCache && (now - exchangeRateCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
+      return successResponse(res, {
+        rate: exchangeRateCache.rate,
+        currency: 'USD/KRW',
+        timestamp: new Date(exchangeRateCache.timestamp).toISOString(),
+        cached: true,
+      });
+    }
+
+    // 환율 API 호출 (exchangerate.host 무료 API)
+    const response = await axios.get('https://api.exchangerate.host/latest', {
+      params: {
+        base: 'USD',
+        symbols: 'KRW',
+      },
+    });
+
+    if (response.data && response.data.rates && response.data.rates.KRW) {
+      const rate = response.data.rates.KRW;
+      exchangeRateCache = { rate, timestamp: now };
+
+      return successResponse(res, {
+        rate,
+        currency: 'USD/KRW',
+        timestamp: new Date().toISOString(),
+        cached: false,
+      });
+    }
+
+    // API 실패 시 백업: 업비트/바이낸스 BTC 가격 비교로 추정
+    const [upbitRes, binanceRes] = await Promise.all([
+      axios.get('https://api.upbit.com/v1/ticker?markets=KRW-BTC'),
+      axios.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'),
+    ]);
+
+    const upbitBtc = upbitRes.data[0].trade_price;
+    const binanceBtc = parseFloat(binanceRes.data.price);
+    const estimatedRate = upbitBtc / binanceBtc;
+
+    exchangeRateCache = { rate: estimatedRate, timestamp: now };
+
+    return successResponse(res, {
+      rate: estimatedRate,
+      currency: 'USD/KRW',
+      timestamp: new Date().toISOString(),
+      estimated: true,
+    });
+  } catch (error: any) {
+    console.error('[Exchange] Exchange rate fetch error:', error.message);
+
+    // 캐시가 있으면 만료되었더라도 반환
+    if (exchangeRateCache) {
+      return successResponse(res, {
+        rate: exchangeRateCache.rate,
+        currency: 'USD/KRW',
+        timestamp: new Date(exchangeRateCache.timestamp).toISOString(),
+        cached: true,
+        stale: true,
+      });
+    }
+
+    return errorResponse(
+      res,
+      'EXCHANGE_RATE_ERROR',
+      '환율 정보를 가져올 수 없습니다',
+      500
+    );
+  }
+};
+
 export const validateCredentials = async (
   req: AuthRequest,
   res: Response,
