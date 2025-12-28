@@ -318,15 +318,48 @@ async function fetchNaverExchangeRate(): Promise<{ rate: number; change: number 
 
     const $ = cheerio.load(response.data);
 
-    // 현재 환율 추출 (예: 1,450.50)
-    const rateText = $('.no_today .blind').first().text().trim();
+    // 현재 환율 추출 - 개별 span 숫자들을 조합 (no0~no9, shim=쉼표, jum=소수점)
+    // 구조: <p class="no_today"><em><em><span class="no1">1</span><span class="shim">,</span>...
+    let rateText = '';
+    $('.no_today em em span').each((_, el) => {
+      const className = $(el).attr('class') || '';
+      if (className.startsWith('no')) {
+        // no0, no1, ..., no9 -> 해당 숫자 추출
+        const digit = className.replace('no', '');
+        if (/^\d$/.test(digit)) {
+          rateText += digit;
+        }
+      } else if (className === 'shim') {
+        // 쉼표는 무시 (숫자만 조합)
+      } else if (className === 'jum') {
+        // 소수점
+        rateText += '.';
+      }
+    });
+
     // 전일 대비 변동 추출
-    const changeText = $('.no_exday .blind').first().text().trim();
+    let changeText = '';
+    $('.no_exday em span').each((_, el) => {
+      const className = $(el).attr('class') || '';
+      if (className.startsWith('no')) {
+        const digit = className.replace('no', '');
+        if (/^\d$/.test(digit)) {
+          changeText += digit;
+        }
+      } else if (className === 'jum') {
+        changeText += '.';
+      }
+    });
+
+    // 상승/하락 여부 확인
+    const isDown = $('.no_exday').hasClass('no_down') || $('.no_today em').first().hasClass('no_down');
 
     if (rateText) {
-      // 쉼표 제거 후 숫자로 변환
-      const rate = parseFloat(rateText.replace(/,/g, ''));
-      const change = changeText ? parseFloat(changeText.replace(/,/g, '')) : 0;
+      const rate = parseFloat(rateText);
+      let change = changeText ? parseFloat(changeText) : 0;
+      if (isDown) {
+        change = -Math.abs(change);
+      }
 
       if (!isNaN(rate) && rate > 0) {
         console.log(`[Exchange] 네이버 환율 조회 성공: ${rate}원 (${change >= 0 ? '+' : ''}${change})`);
@@ -334,7 +367,7 @@ async function fetchNaverExchangeRate(): Promise<{ rate: number; change: number 
       }
     }
 
-    console.log('[Exchange] 네이버 환율 파싱 실패');
+    console.log('[Exchange] 네이버 환율 파싱 실패, rateText:', rateText);
     return null;
   } catch (error: any) {
     console.error('[Exchange] 네이버 금융 스크래핑 에러:', error.message);
