@@ -540,7 +540,7 @@ export const getExchangeRateFrankfurter = async (
   }
 };
 
-// 한국수출입은행 + 네이버 금융 두 가지 환율 반환
+// 네이버 금융 + 공개 API 두 가지 환율 반환
 export const getDualExchangeRates = async (
   req: AuthRequest,
   res: Response,
@@ -548,25 +548,11 @@ export const getDualExchangeRates = async (
 ) => {
   try {
     const now = Date.now();
-    let koreaEximRate: number | null = null;
     let naverRate: number | null = null;
     let naverChange: number | undefined;
-    let koreaEximDate: string | undefined;
+    let currencyApiRate: number | null = null;
 
-    // 1. 한국수출입은행 조회
-    if (koreaEximCache && (now - koreaEximCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
-      koreaEximRate = koreaEximCache.rate;
-      koreaEximDate = koreaEximCache.date;
-    } else {
-      const eximResult = await fetchKoreaEximRate();
-      if (eximResult) {
-        koreaEximCache = { rate: eximResult.rate, timestamp: now, date: eximResult.date };
-        koreaEximRate = eximResult.rate;
-        koreaEximDate = eximResult.date;
-      }
-    }
-
-    // 2. 네이버 금융 조회 (1분 캐시)
+    // 1. 네이버 금융 조회 (1분 캐시)
     if (naverCache && (now - naverCache.timestamp) < NAVER_CACHE_TTL) {
       naverRate = naverCache.rate;
       naverChange = naverCache.change;
@@ -579,12 +565,30 @@ export const getDualExchangeRates = async (
       }
     }
 
+    // 2. 공개 API (Currency API) 조회
+    if (exchangeRateCache && (now - exchangeRateCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
+      currencyApiRate = exchangeRateCache.rate;
+    } else {
+      try {
+        const currencyRes = await axios.get(
+          'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json',
+          { timeout: 5000 }
+        );
+        if (currencyRes.data?.usd?.krw) {
+          currencyApiRate = currencyRes.data.usd.krw;
+          exchangeRateCache = { rate: currencyApiRate, timestamp: now };
+        }
+      } catch (e) {
+        console.log('[Exchange] Currency API 조회 실패');
+      }
+    }
+
     return successResponse(res, {
-      koreaExim: koreaEximRate
-        ? { rate: koreaEximRate, date: koreaEximDate }
-        : null,
       naver: naverRate
         ? { rate: naverRate, change: naverChange }
+        : null,
+      currencyApi: currencyApiRate
+        ? { rate: currencyApiRate }
         : null,
       timestamp: new Date().toISOString(),
     });
