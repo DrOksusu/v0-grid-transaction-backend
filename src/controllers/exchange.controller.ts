@@ -1,5 +1,6 @@
 import { Response, NextFunction } from 'express';
 import axios from 'axios';
+import * as cheerio from 'cheerio';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 
@@ -226,7 +227,9 @@ export const getPrice = async (
 let exchangeRateCache: { rate: number; timestamp: number } | null = null;
 let frankfurterCache: { rate: number; timestamp: number } | null = null;
 let koreaEximCache: { rate: number; timestamp: number; date?: string } | null = null;
+let naverCache: { rate: number; timestamp: number; change?: number } | null = null;
 const EXCHANGE_RATE_CACHE_TTL = 60 * 60 * 1000; // 1시간
+const NAVER_CACHE_TTL = 60 * 1000; // 네이버는 1분 캐시 (실시간에 가깝게)
 
 // 한국수출입은행 환율 조회 함수
 async function fetchKoreaEximRate(): Promise<{ rate: number; date: string } | null> {
@@ -294,6 +297,47 @@ async function fetchKoreaEximRate(): Promise<{ rate: number; date: string } | nu
     return null;
   } catch (error: any) {
     console.error('[Exchange] 한국수출입은행 API 에러:', error.message);
+    return null;
+  }
+}
+
+// 네이버 금융 환율 스크래핑 함수
+async function fetchNaverExchangeRate(): Promise<{ rate: number; change: number } | null> {
+  try {
+    const response = await axios.get(
+      'https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW',
+      {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        },
+      }
+    );
+
+    const $ = cheerio.load(response.data);
+
+    // 현재 환율 추출 (예: 1,450.50)
+    const rateText = $('.no_today .blind').first().text().trim();
+    // 전일 대비 변동 추출
+    const changeText = $('.no_exday .blind').first().text().trim();
+
+    if (rateText) {
+      // 쉼표 제거 후 숫자로 변환
+      const rate = parseFloat(rateText.replace(/,/g, ''));
+      const change = changeText ? parseFloat(changeText.replace(/,/g, '')) : 0;
+
+      if (!isNaN(rate) && rate > 0) {
+        console.log(`[Exchange] 네이버 환율 조회 성공: ${rate}원 (${change >= 0 ? '+' : ''}${change})`);
+        return { rate, change };
+      }
+    }
+
+    console.log('[Exchange] 네이버 환율 파싱 실패');
+    return null;
+  } catch (error: any) {
+    console.error('[Exchange] 네이버 금융 스크래핑 에러:', error.message);
     return null;
   }
 }
@@ -463,7 +507,7 @@ export const getExchangeRateFrankfurter = async (
   }
 };
 
-// 한국수출입은행 + 공개 API 두 가지 환율 반환
+// 한국수출입은행 + 네이버 금융 두 가지 환율 반환
 export const getDualExchangeRates = async (
   req: AuthRequest,
   res: Response,
@@ -472,7 +516,8 @@ export const getDualExchangeRates = async (
   try {
     const now = Date.now();
     let koreaEximRate: number | null = null;
-    let currencyApiRate: number | null = null;
+    let naverRate: number | null = null;
+    let naverChange: number | undefined;
     let koreaEximDate: string | undefined;
 
     // 1. 한국수출입은행 조회
@@ -488,21 +533,16 @@ export const getDualExchangeRates = async (
       }
     }
 
-    // 2. 공개 API (Currency API) 조회
-    if (exchangeRateCache && (now - exchangeRateCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
-      currencyApiRate = exchangeRateCache.rate;
+    // 2. 네이버 금융 조회 (1분 캐시)
+    if (naverCache && (now - naverCache.timestamp) < NAVER_CACHE_TTL) {
+      naverRate = naverCache.rate;
+      naverChange = naverCache.change;
     } else {
-      try {
-        const currencyRes = await axios.get(
-          'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json',
-          { timeout: 5000 }
-        );
-        if (currencyRes.data?.usd?.krw) {
-          currencyApiRate = currencyRes.data.usd.krw;
-          exchangeRateCache = { rate: currencyApiRate, timestamp: now };
-        }
-      } catch (e) {
-        console.log('[Exchange] Currency API 조회 실패');
+      const naverResult = await fetchNaverExchangeRate();
+      if (naverResult) {
+        naverCache = { rate: naverResult.rate, timestamp: now, change: naverResult.change };
+        naverRate = naverResult.rate;
+        naverChange = naverResult.change;
       }
     }
 
@@ -510,8 +550,8 @@ export const getDualExchangeRates = async (
       koreaExim: koreaEximRate
         ? { rate: koreaEximRate, date: koreaEximDate }
         : null,
-      currencyApi: currencyApiRate
-        ? { rate: currencyApiRate }
+      naver: naverRate
+        ? { rate: naverRate, change: naverChange }
         : null,
       timestamp: new Date().toISOString(),
     });
