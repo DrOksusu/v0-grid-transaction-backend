@@ -225,7 +225,78 @@ export const getPrice = async (
 // 환율 캐시 (1시간 유효)
 let exchangeRateCache: { rate: number; timestamp: number } | null = null;
 let frankfurterCache: { rate: number; timestamp: number } | null = null;
+let koreaEximCache: { rate: number; timestamp: number; date?: string } | null = null;
 const EXCHANGE_RATE_CACHE_TTL = 60 * 60 * 1000; // 1시간
+
+// 한국수출입은행 환율 조회 함수
+async function fetchKoreaEximRate(): Promise<{ rate: number; date: string } | null> {
+  try {
+    const apiKey = process.env.KOREA_EXIM_API_KEY;
+    if (!apiKey) {
+      console.log('[Exchange] 한국수출입은행 API 키가 설정되지 않음');
+      return null;
+    }
+
+    // 오늘 날짜 (YYYYMMDD 형식)
+    const today = new Date();
+    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+
+    const response = await axios.get(
+      'https://www.koreaexim.go.kr/site/program/financial/exchangeJSON',
+      {
+        params: {
+          authkey: apiKey,
+          searchdate: dateStr,
+          data: 'AP01', // 환율
+        },
+        timeout: 5000,
+      }
+    );
+
+    if (response.data && Array.isArray(response.data)) {
+      // USD 찾기
+      const usdRate = response.data.find((item: any) => item.cur_unit === 'USD');
+      if (usdRate && usdRate.deal_bas_r) {
+        // 쉼표 제거 후 숫자로 변환 (예: "1,450.5" → 1450.5)
+        const rate = parseFloat(usdRate.deal_bas_r.replace(/,/g, ''));
+        return { rate, date: dateStr };
+      }
+    }
+
+    // 주말/공휴일에는 데이터가 없을 수 있음 - 이전 영업일 조회
+    console.log('[Exchange] 오늘 한국수출입은행 데이터 없음, 이전 영업일 조회');
+    for (let i = 1; i <= 5; i++) {
+      const prevDate = new Date(today);
+      prevDate.setDate(prevDate.getDate() - i);
+      const prevDateStr = prevDate.toISOString().slice(0, 10).replace(/-/g, '');
+
+      const prevResponse = await axios.get(
+        'https://www.koreaexim.go.kr/site/program/financial/exchangeJSON',
+        {
+          params: {
+            authkey: apiKey,
+            searchdate: prevDateStr,
+            data: 'AP01',
+          },
+          timeout: 5000,
+        }
+      );
+
+      if (prevResponse.data && Array.isArray(prevResponse.data) && prevResponse.data.length > 0) {
+        const usdRate = prevResponse.data.find((item: any) => item.cur_unit === 'USD');
+        if (usdRate && usdRate.deal_bas_r) {
+          const rate = parseFloat(usdRate.deal_bas_r.replace(/,/g, ''));
+          return { rate, date: prevDateStr };
+        }
+      }
+    }
+
+    return null;
+  } catch (error: any) {
+    console.error('[Exchange] 한국수출입은행 API 에러:', error.message);
+    return null;
+  }
+}
 
 export const getExchangeRate = async (
   req: AuthRequest,
@@ -235,17 +306,31 @@ export const getExchangeRate = async (
   try {
     const now = Date.now();
 
-    // 캐시 확인
-    if (exchangeRateCache && (now - exchangeRateCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
+    // 1. 한국수출입은행 캐시 확인
+    if (koreaEximCache && (now - koreaEximCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
       return successResponse(res, {
-        rate: exchangeRateCache.rate,
+        rate: koreaEximCache.rate,
         currency: 'USD/KRW',
-        timestamp: new Date(exchangeRateCache.timestamp).toISOString(),
+        timestamp: new Date(koreaEximCache.timestamp).toISOString(),
+        source: 'koreaexim',
         cached: true,
       });
     }
 
-    // 환율 API 호출 (Fawaz Ahmed Currency API - 무료, API 키 불필요)
+    // 2. 한국수출입은행 API 우선 시도
+    const eximResult = await fetchKoreaEximRate();
+    if (eximResult) {
+      koreaEximCache = { rate: eximResult.rate, timestamp: now, date: eximResult.date };
+      return successResponse(res, {
+        rate: eximResult.rate,
+        currency: 'USD/KRW',
+        timestamp: new Date().toISOString(),
+        source: 'koreaexim',
+        date: eximResult.date,
+      });
+    }
+
+    // 3. 한국수출입은행 실패 시 Currency API 폴백
     const response = await axios.get(
       'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json',
       { timeout: 5000 }
@@ -259,11 +344,12 @@ export const getExchangeRate = async (
         rate,
         currency: 'USD/KRW',
         timestamp: new Date().toISOString(),
+        source: 'currency-api',
         cached: false,
       });
     }
 
-    // API 실패 시 백업: 업비트/바이낸스 BTC 가격 비교로 추정
+    // 4. 최후의 백업: 업비트/바이낸스 BTC 가격 비교로 추정
     const [upbitRes, binanceRes] = await Promise.all([
       axios.get('https://api.upbit.com/v1/ticker?markets=KRW-BTC'),
       axios.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'),
@@ -279,6 +365,7 @@ export const getExchangeRate = async (
       rate: estimatedRate,
       currency: 'USD/KRW',
       timestamp: new Date().toISOString(),
+      source: 'btc-estimate',
       estimated: true,
     });
   } catch (error: any) {
@@ -391,7 +478,32 @@ export const getExchangeRateComparison = async (
       date?: string;
     }[] = [];
 
-    // 1. Frankfurter API (ECB)
+    // 1. 한국수출입은행 (가장 공신력 있음)
+    try {
+      if (koreaEximCache && (now - koreaEximCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
+        results.push({
+          source: '한국수출입은행',
+          rate: koreaEximCache.rate,
+          date: koreaEximCache.date,
+        });
+      } else {
+        const eximResult = await fetchKoreaEximRate();
+        if (eximResult) {
+          koreaEximCache = { rate: eximResult.rate, timestamp: now, date: eximResult.date };
+          results.push({
+            source: '한국수출입은행',
+            rate: eximResult.rate,
+            date: eximResult.date,
+          });
+        } else {
+          results.push({ source: '한국수출입은행', rate: null, error: 'API 키 미설정 또는 조회 실패' });
+        }
+      }
+    } catch (e: any) {
+      results.push({ source: '한국수출입은행', rate: null, error: e.message });
+    }
+
+    // 2. Frankfurter API (ECB)
     try {
       if (frankfurterCache && (now - frankfurterCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
         results.push({
