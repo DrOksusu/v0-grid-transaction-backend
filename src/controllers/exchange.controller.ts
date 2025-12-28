@@ -463,6 +463,69 @@ export const getExchangeRateFrankfurter = async (
   }
 };
 
+// 한국수출입은행 + 공개 API 두 가지 환율 반환
+export const getDualExchangeRates = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const now = Date.now();
+    let koreaEximRate: number | null = null;
+    let currencyApiRate: number | null = null;
+    let koreaEximDate: string | undefined;
+
+    // 1. 한국수출입은행 조회
+    if (koreaEximCache && (now - koreaEximCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
+      koreaEximRate = koreaEximCache.rate;
+      koreaEximDate = koreaEximCache.date;
+    } else {
+      const eximResult = await fetchKoreaEximRate();
+      if (eximResult) {
+        koreaEximCache = { rate: eximResult.rate, timestamp: now, date: eximResult.date };
+        koreaEximRate = eximResult.rate;
+        koreaEximDate = eximResult.date;
+      }
+    }
+
+    // 2. 공개 API (Currency API) 조회
+    if (exchangeRateCache && (now - exchangeRateCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
+      currencyApiRate = exchangeRateCache.rate;
+    } else {
+      try {
+        const currencyRes = await axios.get(
+          'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json',
+          { timeout: 5000 }
+        );
+        if (currencyRes.data?.usd?.krw) {
+          currencyApiRate = currencyRes.data.usd.krw;
+          exchangeRateCache = { rate: currencyApiRate, timestamp: now };
+        }
+      } catch (e) {
+        console.log('[Exchange] Currency API 조회 실패');
+      }
+    }
+
+    return successResponse(res, {
+      koreaExim: koreaEximRate
+        ? { rate: koreaEximRate, date: koreaEximDate }
+        : null,
+      currencyApi: currencyApiRate
+        ? { rate: currencyApiRate }
+        : null,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('[Exchange] Dual exchange rate error:', error.message);
+    return errorResponse(
+      res,
+      'EXCHANGE_RATE_ERROR',
+      '환율 정보를 가져올 수 없습니다',
+      500
+    );
+  }
+};
+
 // 여러 소스 환율 비교
 export const getExchangeRateComparison = async (
   req: AuthRequest,

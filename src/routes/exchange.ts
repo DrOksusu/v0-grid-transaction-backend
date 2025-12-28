@@ -5,6 +5,7 @@ import {
   getExchangeRate,
   getExchangeRateFrankfurter,
   getExchangeRateComparison,
+  getDualExchangeRates,
   validateCredentials,
 } from '../controllers/exchange.controller';
 import { authenticate } from '../middlewares/auth';
@@ -17,6 +18,7 @@ router.get('/price/:exchange/:ticker', getPrice);
 router.get('/exchange-rate', getExchangeRate);
 router.get('/exchange-rate/frankfurter', getExchangeRateFrankfurter);
 router.get('/exchange-rate/comparison', getExchangeRateComparison);
+router.get('/exchange-rate/dual', getDualExchangeRates);
 
 // 인증 필요한 API
 router.post('/validate-credentials', authenticate, validateCredentials);
