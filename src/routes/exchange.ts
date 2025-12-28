@@ -3,6 +3,8 @@ import {
   getTickers,
   getPrice,
   getExchangeRate,
+  getExchangeRateFrankfurter,
+  getExchangeRateComparison,
   validateCredentials,
 } from '../controllers/exchange.controller';
 import { authenticate } from '../middlewares/auth';
@@ -13,6 +15,8 @@ const router = Router();
 router.get('/tickers/:exchange', getTickers);
 router.get('/price/:exchange/:ticker', getPrice);
 router.get('/exchange-rate', getExchangeRate);
+router.get('/exchange-rate/frankfurter', getExchangeRateFrankfurter);
+router.get('/exchange-rate/comparison', getExchangeRateComparison);
 
 // 인증 필요한 API
 router.post('/validate-credentials', authenticate, validateCredentials);

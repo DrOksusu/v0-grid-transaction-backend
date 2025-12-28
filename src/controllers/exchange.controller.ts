@@ -224,6 +224,7 @@ export const getPrice = async (
 
 // 환율 캐시 (1시간 유효)
 let exchangeRateCache: { rate: number; timestamp: number } | null = null;
+let frankfurterCache: { rate: number; timestamp: number } | null = null;
 const EXCHANGE_RATE_CACHE_TTL = 60 * 60 * 1000; // 1시간
 
 export const getExchangeRate = async (
@@ -244,16 +245,14 @@ export const getExchangeRate = async (
       });
     }
 
-    // 환율 API 호출 (exchangerate.host 무료 API)
-    const response = await axios.get('https://api.exchangerate.host/latest', {
-      params: {
-        base: 'USD',
-        symbols: 'KRW',
-      },
-    });
+    // 환율 API 호출 (Fawaz Ahmed Currency API - 무료, API 키 불필요)
+    const response = await axios.get(
+      'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json',
+      { timeout: 5000 }
+    );
 
-    if (response.data && response.data.rates && response.data.rates.KRW) {
-      const rate = response.data.rates.KRW;
+    if (response.data && response.data.usd && response.data.usd.krw) {
+      const rate = response.data.usd.krw;
       exchangeRateCache = { rate, timestamp: now };
 
       return successResponse(res, {
@@ -300,6 +299,184 @@ export const getExchangeRate = async (
       res,
       'EXCHANGE_RATE_ERROR',
       '환율 정보를 가져올 수 없습니다',
+      500
+    );
+  }
+};
+
+// Frankfurter API (ECB 유럽중앙은행 데이터)
+export const getExchangeRateFrankfurter = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const now = Date.now();
+
+    // 캐시 확인
+    if (frankfurterCache && (now - frankfurterCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
+      return successResponse(res, {
+        rate: frankfurterCache.rate,
+        currency: 'USD/KRW',
+        source: 'frankfurter',
+        timestamp: new Date(frankfurterCache.timestamp).toISOString(),
+        cached: true,
+      });
+    }
+
+    // Frankfurter API 호출 (ECB 데이터)
+    const response = await axios.get('https://api.frankfurter.app/latest', {
+      params: {
+        from: 'USD',
+        to: 'KRW',
+      },
+    });
+
+    if (response.data && response.data.rates && response.data.rates.KRW) {
+      const rate = response.data.rates.KRW;
+      frankfurterCache = { rate, timestamp: now };
+
+      return successResponse(res, {
+        rate,
+        currency: 'USD/KRW',
+        source: 'frankfurter',
+        date: response.data.date,
+        timestamp: new Date().toISOString(),
+        cached: false,
+      });
+    }
+
+    return errorResponse(
+      res,
+      'EXCHANGE_RATE_ERROR',
+      'Frankfurter API에서 환율을 가져올 수 없습니다',
+      500
+    );
+  } catch (error: any) {
+    console.error('[Exchange] Frankfurter exchange rate fetch error:', error.message);
+
+    // 캐시가 있으면 만료되었더라도 반환
+    if (frankfurterCache) {
+      return successResponse(res, {
+        rate: frankfurterCache.rate,
+        currency: 'USD/KRW',
+        source: 'frankfurter',
+        timestamp: new Date(frankfurterCache.timestamp).toISOString(),
+        cached: true,
+        stale: true,
+      });
+    }
+
+    return errorResponse(
+      res,
+      'EXCHANGE_RATE_ERROR',
+      'Frankfurter 환율 정보를 가져올 수 없습니다',
+      500
+    );
+  }
+};
+
+// 여러 소스 환율 비교
+export const getExchangeRateComparison = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const now = Date.now();
+    const results: {
+      source: string;
+      rate: number | null;
+      error?: string;
+      date?: string;
+    }[] = [];
+
+    // 1. Frankfurter API (ECB)
+    try {
+      if (frankfurterCache && (now - frankfurterCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
+        results.push({
+          source: 'ECB (Frankfurter)',
+          rate: frankfurterCache.rate,
+        });
+      } else {
+        const frankfurterRes = await axios.get('https://api.frankfurter.app/latest', {
+          params: { from: 'USD', to: 'KRW' },
+          timeout: 5000,
+        });
+        if (frankfurterRes.data?.rates?.KRW) {
+          const rate = frankfurterRes.data.rates.KRW;
+          frankfurterCache = { rate, timestamp: now };
+          results.push({
+            source: 'ECB (Frankfurter)',
+            rate,
+            date: frankfurterRes.data.date,
+          });
+        }
+      }
+    } catch (e: any) {
+      results.push({ source: 'ECB (Frankfurter)', rate: null, error: e.message });
+    }
+
+    // 2. Fawaz Ahmed Currency API (무료, API 키 불필요)
+    try {
+      if (exchangeRateCache && (now - exchangeRateCache.timestamp) < EXCHANGE_RATE_CACHE_TTL) {
+        results.push({
+          source: 'Currency API',
+          rate: exchangeRateCache.rate,
+        });
+      } else {
+        const currencyRes = await axios.get(
+          'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json',
+          { timeout: 5000 }
+        );
+        if (currencyRes.data?.usd?.krw) {
+          const rate = currencyRes.data.usd.krw;
+          exchangeRateCache = { rate, timestamp: now };
+          results.push({
+            source: 'Currency API',
+            rate,
+          });
+        }
+      }
+    } catch (e: any) {
+      results.push({ source: 'Currency API', rate: null, error: e.message });
+    }
+
+    // 3. BTC 가격 비교 추정
+    try {
+      const [upbitRes, binanceRes] = await Promise.all([
+        axios.get('https://api.upbit.com/v1/ticker?markets=KRW-BTC', { timeout: 5000 }),
+        axios.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT', { timeout: 5000 }),
+      ]);
+      const upbitBtc = upbitRes.data[0].trade_price;
+      const binanceBtc = parseFloat(binanceRes.data.price);
+      const estimatedRate = upbitBtc / binanceBtc;
+      results.push({
+        source: 'BTC 가격 비교 (추정)',
+        rate: Math.round(estimatedRate * 100) / 100,
+      });
+    } catch (e: any) {
+      results.push({ source: 'BTC 가격 비교 (추정)', rate: null, error: e.message });
+    }
+
+    // 평균 환율 계산 (유효한 값만)
+    const validRates = results.filter(r => r.rate !== null).map(r => r.rate as number);
+    const avgRate = validRates.length > 0
+      ? Math.round((validRates.reduce((a, b) => a + b, 0) / validRates.length) * 100) / 100
+      : null;
+
+    return successResponse(res, {
+      currency: 'USD/KRW',
+      rates: results,
+      average: avgRate,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('[Exchange] Exchange rate comparison error:', error.message);
+    return errorResponse(
+      res,
+      'EXCHANGE_RATE_COMPARISON_ERROR',
+      '환율 비교 정보를 가져올 수 없습니다',
       500
     );
   }
