@@ -1211,20 +1211,30 @@ export class InfiniteBuySchedulerService {
               const daysDiff = Math.floor((now.getTime() - orderDate.getTime()) / (24 * 60 * 60 * 1000));
               const hoursDiff = Math.floor((now.getTime() - orderDate.getTime()) / (60 * 60 * 1000));
 
-              // LOC 주문 (strategy1)은 장 마감 후 체결 안 됐으면 즉시 만료 처리
+              // LOC 주문 (strategy1) 체결 확인은 장 마감 후(06:10, 03:10)에 실행됨
+              // 이 시점에 체결 내역이 없으면 미체결로 즉시 처리 (Day Order/LOC는 장 마감 시 자동 소멸)
               // 기본 전략은 1일 이상 지난 주문만 만료 처리
-              const isLOCOrder = record.orderType === 'loc' || strategyFilter === 'strategy1';
-              const shouldExpire = isLOCOrder ? hoursDiff >= 2 : daysDiff >= 1;  // LOC는 2시간, 기본은 1일
+              const isLOCSchedule = strategyFilter === 'strategy1';
+              const isLOCOrder = record.orderType === 'loc';
+
+              // strategy1 스케줄에서 호출되면 즉시 미체결 처리 (장 마감 후이므로)
+              // 그 외 LOC 주문은 2시간 경과 후, 기본 전략은 1일 경과 후
+              const shouldExpire = isLOCSchedule
+                ? true  // 장 마감 후 체결 확인이므로 즉시 미체결 처리
+                : (isLOCOrder ? hoursDiff >= 2 : daysDiff >= 1);
 
               if (shouldExpire) {
+                // 'unfilled' 상태로 변경 (미체결)
                 await prisma.infiniteBuyRecord.update({
                   where: { id: record.id },
-                  data: { orderStatus: 'expired' },
+                  data: { orderStatus: 'unfilled' },
                 });
 
-                const expireReason = isLOCOrder
-                  ? `LOC 주문 미체결 만료 (${hoursDiff}시간 경과)`
-                  : `주문 만료 취소 (${daysDiff}일 경과)`;
+                const expireReason = isLOCSchedule
+                  ? `LOC/Day Order 미체결 (장 마감 시 자동 소멸)`
+                  : isLOCOrder
+                    ? `LOC 주문 미체결 (${hoursDiff}시간 경과)`
+                    : `주문 미체결 (${daysDiff}일 경과)`;
 
                 console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: ${expireReason} (주문번호: ${record.orderId})`);
 
@@ -1239,7 +1249,9 @@ export class InfiniteBuySchedulerService {
                     daysSinceOrder: daysDiff,
                     hoursSinceOrder: hoursDiff,
                     orderType: record.orderType,
-                    reason: isLOCOrder ? '장 마감 후 LOC 미체결 만료' : '체결/미체결 내역 없음 - 만료/취소된 주문',
+                    reason: isLOCSchedule
+                      ? '장 마감 후 LOC/Day Order 미체결 - 자동 소멸'
+                      : '체결/미체결 내역 없음 - 만료/취소된 주문',
                   },
                 });
               } else {
