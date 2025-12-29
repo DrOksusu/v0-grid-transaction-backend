@@ -1224,17 +1224,54 @@ export class InfiniteBuySchedulerService {
                 : (isLOCOrder ? hoursDiff >= 2 : daysDiff >= 1);
 
               if (shouldExpire) {
+                // LOC 미체결 원인 분석: 종가 조회하여 주문가격과 비교
+                let unfilledReason = '';
+                let closingPrice: number | null = null;
+
+                if (isLOCOrder || isLOCSchedule) {
+                  try {
+                    // 종가(전일 종가) 조회
+                    const priceData = await kisService.getUSStockPrice(
+                      record.stock.ticker,
+                      record.stock.exchange
+                    );
+                    closingPrice = priceData.prevClose || priceData.currentPrice;
+
+                    const orderPrice = record.targetPrice || record.price;
+                    const orderType = record.type; // 'buy' or 'sell'
+
+                    if (orderType === 'buy') {
+                      // LOC 매수: 지정가 >= 종가 → 체결 (종가 이하로 매수)
+                      if (orderPrice < closingPrice) {
+                        unfilledReason = `LOC 매수 미체결: 주문가($${orderPrice.toFixed(2)}) < 종가($${closingPrice.toFixed(2)}) - 종가가 주문가보다 높아 체결 불가`;
+                      } else {
+                        unfilledReason = `LOC 매수 미체결: 주문가($${orderPrice.toFixed(2)}), 종가($${closingPrice.toFixed(2)}) - 원인 불명 (시장 상황 확인 필요)`;
+                      }
+                    } else {
+                      // LOC 매도: 지정가 <= 종가 → 체결 (종가 이상으로 매도)
+                      if (orderPrice > closingPrice) {
+                        unfilledReason = `LOC 매도 미체결: 주문가($${orderPrice.toFixed(2)}) > 종가($${closingPrice.toFixed(2)}) - 종가가 주문가보다 낮아 체결 불가`;
+                      } else {
+                        unfilledReason = `LOC 매도 미체결: 주문가($${orderPrice.toFixed(2)}), 종가($${closingPrice.toFixed(2)}) - 원인 불명 (시장 상황 확인 필요)`;
+                      }
+                    }
+                  } catch (priceError: any) {
+                    console.warn(`[InfiniteBuyScheduler] ${record.stock.ticker}: 종가 조회 실패 - ${priceError.message}`);
+                    unfilledReason = 'LOC 미체결 (종가 조회 실패로 원인 분석 불가)';
+                  }
+                }
+
                 // 'unfilled' 상태로 변경 (미체결)
                 await prisma.infiniteBuyRecord.update({
                   where: { id: record.id },
                   data: { orderStatus: 'unfilled' },
                 });
 
-                const expireReason = isLOCSchedule
+                const expireReason = unfilledReason || (isLOCSchedule
                   ? `LOC/Day Order 미체결 (장 마감 시 자동 소멸)`
                   : isLOCOrder
                     ? `LOC 주문 미체결 (${hoursDiff}시간 경과)`
-                    : `주문 미체결 (${daysDiff}일 경과)`;
+                    : `주문 미체결 (${daysDiff}일 경과)`);
 
                 console.log(`[InfiniteBuyScheduler] ${record.stock.ticker}: ${expireReason} (주문번호: ${record.orderId})`);
 
@@ -1249,6 +1286,10 @@ export class InfiniteBuySchedulerService {
                     daysSinceOrder: daysDiff,
                     hoursSinceOrder: hoursDiff,
                     orderType: record.orderType,
+                    tradeType: record.type,
+                    orderPrice: record.targetPrice || record.price,
+                    closingPrice,
+                    unfilledReason,
                     reason: isLOCSchedule
                       ? '장 마감 후 LOC/Day Order 미체결 - 자동 소멸'
                       : '체결/미체결 내역 없음 - 만료/취소된 주문',
