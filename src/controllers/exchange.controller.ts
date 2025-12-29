@@ -1,6 +1,6 @@
 import { Response, NextFunction } from 'express';
 import axios from 'axios';
-import * as cheerio from 'cheerio';
+import { parse } from 'node-html-parser';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 
@@ -316,31 +316,32 @@ async function fetchNaverExchangeRate(): Promise<{ rate: number; change: number 
       }
     );
 
-    const $ = cheerio.load(response.data);
+    const root = parse(response.data);
 
     // 현재 환율 추출 - 개별 span 숫자들을 조합 (no0~no9, shim=쉼표, jum=소수점)
     // 구조: <p class="no_today"><em><em><span class="no1">1</span><span class="shim">,</span>...
     let rateText = '';
-    $('.no_today em em span').each((_, el) => {
-      const className = $(el).attr('class') || '';
+    const rateSpans = root.querySelectorAll('.no_today em em span');
+    for (const span of rateSpans) {
+      const className = span.getAttribute('class') || '';
       if (className.startsWith('no')) {
         // no0, no1, ..., no9 -> 해당 숫자 추출
         const digit = className.replace('no', '');
         if (/^\d$/.test(digit)) {
           rateText += digit;
         }
-      } else if (className === 'shim') {
-        // 쉼표는 무시 (숫자만 조합)
       } else if (className === 'jum') {
         // 소수점
         rateText += '.';
       }
-    });
+      // shim(쉼표)는 무시
+    }
 
     // 전일 대비 변동 추출
     let changeText = '';
-    $('.no_exday em span').each((_, el) => {
-      const className = $(el).attr('class') || '';
+    const changeSpans = root.querySelectorAll('.no_exday em span');
+    for (const span of changeSpans) {
+      const className = span.getAttribute('class') || '';
       if (className.startsWith('no')) {
         const digit = className.replace('no', '');
         if (/^\d$/.test(digit)) {
@@ -349,10 +350,13 @@ async function fetchNaverExchangeRate(): Promise<{ rate: number; change: number 
       } else if (className === 'jum') {
         changeText += '.';
       }
-    });
+    }
 
     // 상승/하락 여부 확인
-    const isDown = $('.no_exday').hasClass('no_down') || $('.no_today em').first().hasClass('no_down');
+    const noExday = root.querySelector('.no_exday');
+    const noTodayEm = root.querySelector('.no_today em');
+    const isDown = (noExday?.classNames?.includes('no_down')) ||
+                   (noTodayEm?.classNames?.includes('no_down'));
 
     if (rateText) {
       const rate = parseFloat(rateText);
