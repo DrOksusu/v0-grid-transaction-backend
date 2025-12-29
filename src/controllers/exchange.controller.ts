@@ -579,8 +579,9 @@ export const getDualExchangeRates = async (
           { timeout: 5000 }
         );
         if (currencyRes.data?.usd?.krw) {
-          currencyApiRate = currencyRes.data.usd.krw;
-          exchangeRateCache = { rate: currencyApiRate, timestamp: now };
+          const rate = currencyRes.data.usd.krw;
+          currencyApiRate = rate;
+          exchangeRateCache = { rate, timestamp: now };
         }
       } catch (e) {
         console.log('[Exchange] Currency API 조회 실패');
