@@ -917,6 +917,73 @@ export class KisService {
   }
 
   /**
+   * 해외주식 주문 취소 (Rate Limiting 적용)
+   * @param orderId 원주문번호
+   * @param ticker 종목코드
+   * @param quantity 취소수량
+   * @param exchange 거래소 코드 (NASD, NYSE, AMEX)
+   * @param orderDate 원주문일자 (YYYYMMDD 형식, 생략 시 당일)
+   */
+  async cancelUSStockOrder(
+    orderId: string,
+    ticker: string,
+    quantity: number,
+    exchange: string = 'NASD',
+    orderDate?: string
+  ) {
+    return executeWithRateLimit(this.appKey, async () => {
+      return this.withTokenRefresh(async () => {
+        if (!this.isTokenValid()) {
+          await this.getAccessToken();
+        }
+
+        // tr_id: 모의투자 VTTT1004U, 실전투자 TTTT1004U (정정/취소)
+        const trId = this.isPaper ? 'VTTT1004U' : 'TTTT1004U';
+
+        // 주문일자가 없으면 당일로 설정
+        const orgOrdDt = orderDate || new Date().toISOString().slice(0, 10).replace(/-/g, '');
+
+        const body = {
+          CANO: this.accountNoPrefix,
+          ACNT_PRDT_CD: this.accountNoSuffix,
+          OVRS_EXCG_CD: exchange,
+          PDNO: ticker,
+          ORGN_ODNO: orderId,              // 원주문번호
+          RVSE_CNCL_DVSN_CD: '02',         // 02: 취소
+          ORD_QTY: quantity.toString(),    // 취소수량
+          OVRS_ORD_UNPR: '0',              // 취소 시 0
+          ORD_SVR_DVSN_CD: '0',
+        };
+
+        const hashKey = await this.getHashKey(body);
+
+        const response = await axios.post(
+          `${this.baseUrl}/uapi/overseas-stock/v1/trading/order-rvsecncl`,
+          body,
+          {
+            headers: {
+              ...this.getHeaders(trId),
+              hashkey: hashKey,
+            },
+          }
+        );
+
+        const data = response.data;
+
+        if (data.rt_cd !== '0') {
+          throw new Error(data.msg1 || '주문 취소 실패');
+        }
+
+        return {
+          orderId: data.output?.ODNO,      // 취소주문번호
+          message: data.msg1,
+          cancelledOrderId: orderId,
+        };
+      });
+    });
+  }
+
+  /**
    * 환율 조회 (USD/KRW) (Rate Limiting 적용)
    */
   async getExchangeRate() {

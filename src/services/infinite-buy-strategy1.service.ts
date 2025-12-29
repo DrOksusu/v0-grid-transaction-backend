@@ -343,9 +343,92 @@ export class InfiniteBuyStrategy1Service {
   }
 
   /**
+   * 기존 매도 주문 취소
+   * pending 상태인 매도 주문들을 KIS API로 취소하고 DB 상태 업데이트
+   */
+  async cancelExistingSellOrders(userId: number, stockId: number): Promise<{
+    cancelledCount: number;
+    failedCount: number;
+    details: Array<{ orderId: string; success: boolean; error?: string }>;
+  }> {
+    const stock = await prisma.infiniteBuyStock.findFirst({
+      where: { id: stockId, userId },
+    });
+
+    if (!stock) {
+      throw new Error('종목을 찾을 수 없습니다');
+    }
+
+    // pending 상태인 매도 주문 조회
+    const pendingSellOrders = await prisma.infiniteBuyRecord.findMany({
+      where: {
+        stockId,
+        type: 'sell',
+        orderStatus: 'pending',
+        orderId: { not: null },
+      },
+    });
+
+    if (pendingSellOrders.length === 0) {
+      console.log(`[Strategy1] ${stock.ticker}: 취소할 기존 매도 주문 없음`);
+      return { cancelledCount: 0, failedCount: 0, details: [] };
+    }
+
+    console.log(`[Strategy1] ${stock.ticker}: ${pendingSellOrders.length}개의 기존 매도 주문 취소 시작`);
+
+    const kisService = await this.getKisService(userId);
+    const exchangeCode = stock.exchange === 'NAS' ? 'NASD' :
+                        stock.exchange === 'NYS' ? 'NYSE' : 'AMEX';
+
+    let cancelledCount = 0;
+    let failedCount = 0;
+    const details: Array<{ orderId: string; success: boolean; error?: string }> = [];
+
+    for (const order of pendingSellOrders) {
+      try {
+        // KIS API로 주문 취소
+        await kisService.cancelUSStockOrder(
+          order.orderId!,
+          stock.ticker,
+          order.quantity,
+          exchangeCode
+        );
+
+        // DB에서 주문 상태 업데이트
+        await prisma.infiniteBuyRecord.update({
+          where: { id: order.id },
+          data: { orderStatus: 'cancelled' },
+        });
+
+        cancelledCount++;
+        details.push({ orderId: order.orderId!, success: true });
+        console.log(`[Strategy1] ${stock.ticker}: 매도 주문 취소 완료 (주문번호: ${order.orderId})`);
+      } catch (error: any) {
+        failedCount++;
+        details.push({ orderId: order.orderId!, success: false, error: error.message });
+        console.error(`[Strategy1] ${stock.ticker}: 매도 주문 취소 실패 (주문번호: ${order.orderId}):`, error.message);
+
+        // 취소 실패해도 DB 상태는 'cancel_failed'로 업데이트 (다음에 재시도)
+        await prisma.infiniteBuyRecord.update({
+          where: { id: order.id },
+          data: { orderStatus: 'cancel_failed' },
+        });
+      }
+
+      // API 호출 간 딜레이
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    console.log(`[Strategy1] ${stock.ticker}: 매도 주문 취소 완료 - 성공: ${cancelledCount}, 실패: ${failedCount}`);
+    return { cancelledCount, failedCount, details };
+  }
+
+  /**
    * 무한매수전략1 매도 주문 실행
-   * a. 누적수량/4 만큼 평단가 + (10-T/2)% LOC 매도
-   * b. 누적수량*3/4 만큼 평단가 + 10% 지정가 매도
+   * 1. 기존 pending 매도 주문 취소
+   * 2. 새 매도 주문 실행
+   *   a. 누적수량/4 만큼 평단가 + (10-T/2)% LOC 매도
+   *   b. 누적수량*3/4 만큼 평단가 + 10% 지정가 매도
    */
   async executeSell(userId: number, stockId: number): Promise<Strategy1SellResult> {
     const stock = await prisma.infiniteBuyStock.findFirst({
@@ -362,6 +445,16 @@ export class InfiniteBuyStrategy1Service {
 
     if (stock.totalQuantity <= 0) {
       throw new Error('매도할 수량이 없습니다');
+    }
+
+    // 1. 기존 매도 주문 취소
+    try {
+      const cancelResult = await this.cancelExistingSellOrders(userId, stockId);
+      if (cancelResult.cancelledCount > 0) {
+        console.log(`[Strategy1] ${stock.ticker}: ${cancelResult.cancelledCount}개 기존 매도 주문 취소 후 새 주문 진행`);
+      }
+    } catch (cancelError: any) {
+      console.error(`[Strategy1] ${stock.ticker}: 기존 매도 주문 취소 중 오류 (계속 진행):`, cancelError.message);
     }
 
     const kisService = await this.getKisService(userId);
