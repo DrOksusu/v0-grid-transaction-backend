@@ -5,6 +5,7 @@ import { decrypt } from '../utils/encryption';
 import { InfiniteBuyStatus, SchedulerLogType, SchedulerLogStatus } from '@prisma/client';
 import { infiniteBuyStrategy1Service } from './infinite-buy-strategy1.service';
 import { isUSMarketOpen, isUSMarketEarlyCloseDay, getEarlyCloseDayName } from '../utils/us-market-holidays';
+import { PushService } from './push.service';
 
 // 로그 저장 헬퍼
 interface LogParams {
@@ -413,7 +414,7 @@ export class InfiniteBuySchedulerService {
             error: error.message,
           });
 
-          // 개별 에러 로그
+          // 개별 에러 로그 (상세 에러 메시지 포함)
           await saveLog({
             type: 'auto_buy',
             status: 'error',
@@ -421,7 +422,31 @@ export class InfiniteBuySchedulerService {
             ticker: stock.ticker,
             message: `${stock.ticker} 매수 처리 실패`,
             errorMessage: error.message,
+            details: {
+              userId: stock.userId,
+              ticker: stock.ticker,
+              currentRound: stock.currentRound,
+              buyAmount: stock.buyAmount,
+              errorDetail: error.message,
+            },
           });
+
+          // 주문 실패 시 푸시 알림 전송
+          try {
+            await PushService.sendToUser(stock.userId, {
+              title: `❌ ${stock.ticker} 매수 주문 실패`,
+              body: error.message,
+              icon: '/icon-192x192.svg',
+              tag: `order-failed-${stock.ticker}`,
+              data: {
+                type: 'order_failed',
+                ticker: stock.ticker,
+                error: error.message,
+              },
+            });
+          } catch (pushError) {
+            console.error(`[InfiniteBuyScheduler] 푸시 알림 전송 실패:`, pushError);
+          }
         }
 
         // API 호출 간 딜레이 (rate limit 방지)
@@ -551,7 +576,7 @@ export class InfiniteBuySchedulerService {
             error: error.message,
           });
 
-          // 개별 에러 로그
+          // 개별 에러 로그 (상세 에러 메시지 포함)
           await saveLog({
             type: 'strategy1_buy',
             status: 'error',
@@ -559,7 +584,31 @@ export class InfiniteBuySchedulerService {
             ticker: stock.ticker,
             message: `Strategy1 ${stock.ticker} LOC 매수 처리 실패`,
             errorMessage: error.message,
+            details: {
+              userId: stock.userId,
+              ticker: stock.ticker,
+              currentRound: stock.currentRound,
+              buyAmount: stock.buyAmount,
+              errorDetail: error.message,
+            },
           });
+
+          // 주문 실패 시 푸시 알림 전송
+          try {
+            await PushService.sendToUser(stock.userId, {
+              title: `❌ ${stock.ticker} 매수 주문 실패`,
+              body: error.message,
+              icon: '/icon-192x192.svg',
+              tag: `order-failed-${stock.ticker}`,
+              data: {
+                type: 'order_failed',
+                ticker: stock.ticker,
+                error: error.message,
+              },
+            });
+          } catch (pushError) {
+            console.error(`[InfiniteBuyScheduler] 푸시 알림 전송 실패:`, pushError);
+          }
         }
 
         // API 호출 간 딜레이 (rate limit 방지)

@@ -201,6 +201,9 @@ export class InfiniteBuyStrategy1Service {
       const quantityA = Math.floor(halfAmount / priceA);
       const actualAmountA = quantityA * priceA;  // 실제 매수 금액
 
+      // 에러 메시지 수집
+      const errors: string[] = [];
+
       if (quantityA >= 1) {
         try {
           const resultA = await kisService.buyUSStockLOC(
@@ -221,6 +224,7 @@ export class InfiniteBuyStrategy1Service {
           totalAmount += actualAmountA;
         } catch (error: any) {
           console.error('[Strategy1] 전반전 매수 A 실패:', error.message);
+          errors.push(`전반전A: ${error.message}`);
         }
       }
 
@@ -249,13 +253,22 @@ export class InfiniteBuyStrategy1Service {
           totalAmount += actualAmountB;
         } catch (error: any) {
           console.error('[Strategy1] 전반전 매수 B 실패:', error.message);
+          errors.push(`전반전B: ${error.message}`);
         }
+      }
+
+      // 전반전 주문 실패 시 에러와 함께 throw (푸시 알림용)
+      if (orders.length === 0 && errors.length > 0) {
+        throw new Error(errors.join(' | '));
       }
     } else {
       // 후반전 매수: 평단가 - (10-T/2)% LOC 매수
       const price = avgPrice * (1 - locPercent / 100) - 0.01;
       const quantity = Math.floor(stock.buyAmount / price);
       const actualAmount = quantity * price;  // 실제 매수 금액
+
+      // 에러 메시지 수집
+      const errors: string[] = [];
 
       if (quantity >= 1) {
         try {
@@ -277,12 +290,18 @@ export class InfiniteBuyStrategy1Service {
           totalAmount += actualAmount;
         } catch (error: any) {
           console.error('[Strategy1] 후반전 매수 실패:', error.message);
+          errors.push(`후반전: ${error.message}`);
         }
+      }
+
+      // 후반전 주문 실패 시 에러와 함께 throw (푸시 알림용)
+      if (orders.length === 0 && errors.length > 0) {
+        throw new Error(errors.join(' | '));
       }
     }
 
     if (orders.length === 0) {
-      throw new Error('주문 실행에 실패했습니다');
+      throw new Error('주문 실행에 실패했습니다 (수량 부족)');
     }
 
     // 예상 평균단가 계산 (LOC가 체결된다고 가정)
