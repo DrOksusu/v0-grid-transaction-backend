@@ -160,6 +160,7 @@ enum InfiniteBuyStatus {
 enum InfiniteBuyStrategy {
   basic       // 기본 전략 (단순 분할매수)
   strategy1   // 무한매수전략1 (전반전/후반전 LOC 매수)
+  vr          // 밸류 리밸런싱 (VR)
 }
 
 // 무한매수 종목
@@ -191,6 +192,17 @@ model InfiniteBuyStock {
   autoEnabled     Boolean   @default(true)
   buyTime         String?              // 매수 시간 (예: "09:30")
   buyCondition    String    @default("daily") // daily, weekly, condition
+
+  // VR 전략 설정
+  vrValue           Float?              // V값 (목표 평가금)
+  vrPool            Float?              // P값 (보유 현금)
+  vrGradient        Int?      @default(10)  // G값 (기울기, 10 또는 20)
+  vrStyle           String?             // 운용 스타일: deposit, hold, withdraw
+  vrDepositAmount   Float?              // 사이클당 적립금/인출금
+  vrBandPercent     Float?    @default(15)  // 밴드 범위 (%)
+  vrCycleWeeks      Int?      @default(2)   // 사이클 주기 (주 단위, 1~4)
+  vrCycleStartDate  DateTime?           // 현재 사이클 시작일
+  vrLastCycleDate   DateTime?           // 마지막 사이클 실행일
 
   // 타임스탬프
   createdAt       DateTime  @default(now())
@@ -232,6 +244,10 @@ model InfiniteBuyRecord {
   // KIS 주문 정보
   orderId         String?               // KIS 주문번호
   orderStatus     String    @default("pending") // pending, filled, cancelled
+
+  // VR 전략 주문 정보
+  vrOrderIndex    Int?                  // VR 주문 순번 (1번째 매수, 2번째 매수...)
+  vrTargetBand    String?               // min 또는 max (밴드 방향)
 
   // 타임스탬프
   executedAt      DateTime  @default(now())  // 주문 접수 시간
@@ -292,6 +308,8 @@ model ProfitSnapshot {
 enum SchedulerLogType {
   auto_buy        // 자동 매수 스케줄
   strategy1_buy   // 전략1 LOC 매수
+  vr_cycle        // VR 사이클 실행
+  vr_order        // VR 주문 생성/체결
   price_check     // 가격 체크 (익절)
   order_check     // 주문 체결 확인
 }

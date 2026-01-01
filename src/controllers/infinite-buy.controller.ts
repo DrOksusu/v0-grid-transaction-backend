@@ -4,6 +4,7 @@ import { AuthRequest } from '../types';
 import { infiniteBuyService } from '../services/infinite-buy.service';
 import { infiniteBuyScheduler } from '../services/infinite-buy-scheduler.service';
 import { infiniteBuyStrategy1Service } from '../services/infinite-buy-strategy1.service';
+import { infiniteBuyVRService } from '../services/infinite-buy-vr.service';
 import { InfiniteBuyStatus } from '@prisma/client';
 import prisma from '../config/database';
 import { KisService } from '../services/kis.service';
@@ -51,11 +52,11 @@ export const createStock = async (
     }
 
     // 전략 유효성 검사
-    if (strategy && !['basic', 'strategy1'].includes(strategy)) {
+    if (strategy && !['basic', 'strategy1', 'vr'].includes(strategy)) {
       return errorResponse(
         res,
         'VALIDATION_ERROR',
-        '유효하지 않은 전략입니다. (basic 또는 strategy1)',
+        '유효하지 않은 전략입니다. (basic, strategy1 또는 vr)',
         400
       );
     }
@@ -735,11 +736,11 @@ export const updateStockStrategy = async (
       return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
     }
 
-    if (!strategy || !['basic', 'strategy1'].includes(strategy)) {
+    if (!strategy || !['basic', 'strategy1', 'vr'].includes(strategy)) {
       return errorResponse(
         res,
         'VALIDATION_ERROR',
-        '유효하지 않은 전략입니다. (basic 또는 strategy1)',
+        '유효하지 않은 전략입니다. (basic, strategy1 또는 vr)',
         400
       );
     }
@@ -757,13 +758,264 @@ export const updateStockStrategy = async (
       data: { strategy },
     });
 
-    const strategyName = strategy === 'strategy1' ? '무한매수전략1' : '기본 전략';
+    const strategyName = strategy === 'strategy1' ? '무한매수전략1' :
+                         strategy === 'vr' ? '밸류 리밸런싱(VR)' : '기본 전략';
     return successResponse(
       res,
       { id: updated.id.toString(), strategy: updated.strategy },
       `전략이 ${strategyName}(으)로 변경되었습니다`
     );
   } catch (error: any) {
+    next(error);
+  }
+};
+
+// =====================
+// VR (밸류 리밸런싱) API
+// =====================
+
+// VR 전략 초기화
+export const initializeVR = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const stockId = parseInt(req.params.id);
+    const { vrValue, vrPool, vrGradient, vrStyle, vrDepositAmount, vrBandPercent, vrCycleWeeks } = req.body;
+
+    if (isNaN(stockId)) {
+      return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
+    }
+
+    if (!vrValue || vrValue <= 0) {
+      return errorResponse(res, 'VALIDATION_ERROR', 'V값(목표 평가금)은 필수입니다', 400);
+    }
+
+    if (!vrPool || vrPool < 0) {
+      return errorResponse(res, 'VALIDATION_ERROR', 'P값(보유 현금)은 필수입니다', 400);
+    }
+
+    if (!vrStyle || !['deposit', 'hold', 'withdraw'].includes(vrStyle)) {
+      return errorResponse(
+        res,
+        'VALIDATION_ERROR',
+        '운용 스타일은 deposit(적립식), hold(거치식), withdraw(인출식) 중 하나여야 합니다',
+        400
+      );
+    }
+
+    const result = await infiniteBuyVRService.initializeVR(userId, stockId, {
+      vrValue,
+      vrPool,
+      vrGradient,
+      vrStyle,
+      vrDepositAmount,
+      vrBandPercent,
+      vrCycleWeeks,
+    });
+
+    return successResponse(res, result, 'VR 전략이 초기화되었습니다');
+  } catch (error: any) {
+    if (error.message === '종목을 찾을 수 없습니다') {
+      return errorResponse(res, 'STOCK_NOT_FOUND', error.message, 404);
+    }
+    if (error.message.includes('VR 전략이 아닌')) {
+      return errorResponse(res, 'STRATEGY_MISMATCH', error.message, 400);
+    }
+    next(error);
+  }
+};
+
+// VR 상태 조회
+export const getVRStatus = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const stockId = parseInt(req.params.id);
+
+    if (isNaN(stockId)) {
+      return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
+    }
+
+    const status = await infiniteBuyVRService.getVRStatus(userId, stockId);
+
+    return successResponse(res, status);
+  } catch (error: any) {
+    if (error.message === '종목을 찾을 수 없습니다') {
+      return errorResponse(res, 'STOCK_NOT_FOUND', error.message, 404);
+    }
+    if (error.message.includes('VR 전략이 아닌')) {
+      return errorResponse(res, 'STRATEGY_MISMATCH', error.message, 400);
+    }
+    if (error.message.includes('초기화되지 않았습니다')) {
+      return errorResponse(res, 'VR_NOT_INITIALIZED', error.message, 400);
+    }
+    next(error);
+  }
+};
+
+// VR 주문 생성
+export const generateVROrders = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const stockId = parseInt(req.params.id);
+
+    if (isNaN(stockId)) {
+      return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
+    }
+
+    const result = await infiniteBuyVRService.generateOrders(userId, stockId);
+
+    return successResponse(
+      res,
+      result,
+      `${result.totalOrders}개의 주문이 생성되었습니다`
+    );
+  } catch (error: any) {
+    if (error.message === '종목을 찾을 수 없습니다') {
+      return errorResponse(res, 'STOCK_NOT_FOUND', error.message, 404);
+    }
+    if (error.message.includes('VR 전략이 아닌')) {
+      return errorResponse(res, 'STRATEGY_MISMATCH', error.message, 400);
+    }
+    if (error.message.includes('초기화되지 않았습니다')) {
+      return errorResponse(res, 'VR_NOT_INITIALIZED', error.message, 400);
+    }
+    if (error.message.includes('진행 중인 종목이 아닙니다')) {
+      return errorResponse(res, 'STOCK_NOT_ACTIVE', error.message, 400);
+    }
+    next(error);
+  }
+};
+
+// VR 사이클 수동 실행
+export const executeVRCycle = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const stockId = parseInt(req.params.id);
+
+    if (isNaN(stockId)) {
+      return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
+    }
+
+    const result = await infiniteBuyVRService.executeCycle(userId, stockId);
+
+    return successResponse(
+      res,
+      result,
+      `VR 사이클 실행 완료: V ${result.oldV} → ${result.newV}, ${result.ordersCreated}개 주문 생성`
+    );
+  } catch (error: any) {
+    if (error.message === '종목을 찾을 수 없습니다') {
+      return errorResponse(res, 'STOCK_NOT_FOUND', error.message, 404);
+    }
+    if (error.message.includes('VR 전략이 아닌')) {
+      return errorResponse(res, 'STRATEGY_MISMATCH', error.message, 400);
+    }
+    if (error.message.includes('초기화되지 않았습니다')) {
+      return errorResponse(res, 'VR_NOT_INITIALIZED', error.message, 400);
+    }
+    next(error);
+  }
+};
+
+// VR 체결 동기화
+export const syncVROrders = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const stockId = parseInt(req.params.id);
+
+    if (isNaN(stockId)) {
+      return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
+    }
+
+    const result = await infiniteBuyVRService.syncFilledOrders(userId, stockId);
+
+    return successResponse(
+      res,
+      result,
+      result.synced > 0
+        ? `${result.synced}건 체결 동기화 완료`
+        : '동기화할 체결 내역이 없습니다'
+    );
+  } catch (error: any) {
+    if (error.message === '종목을 찾을 수 없습니다') {
+      return errorResponse(res, 'STOCK_NOT_FOUND', error.message, 404);
+    }
+    next(error);
+  }
+};
+
+// VR 설정 변경
+export const updateVRSettings = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const stockId = parseInt(req.params.id);
+    const { vrValue, vrPool, vrGradient, vrStyle, vrDepositAmount, vrBandPercent, vrCycleWeeks } = req.body;
+
+    if (isNaN(stockId)) {
+      return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
+    }
+
+    // 스타일 유효성 검사
+    if (vrStyle && !['deposit', 'hold', 'withdraw'].includes(vrStyle)) {
+      return errorResponse(
+        res,
+        'VALIDATION_ERROR',
+        '운용 스타일은 deposit(적립식), hold(거치식), withdraw(인출식) 중 하나여야 합니다',
+        400
+      );
+    }
+
+    // 사이클 주기 유효성 검사
+    if (vrCycleWeeks && (vrCycleWeeks < 1 || vrCycleWeeks > 4)) {
+      return errorResponse(
+        res,
+        'VALIDATION_ERROR',
+        '사이클 주기는 1~4주 사이여야 합니다',
+        400
+      );
+    }
+
+    const result = await infiniteBuyVRService.updateVRSettings(userId, stockId, {
+      vrValue,
+      vrPool,
+      vrGradient,
+      vrStyle,
+      vrDepositAmount,
+      vrBandPercent,
+      vrCycleWeeks,
+    });
+
+    return successResponse(res, result, 'VR 설정이 변경되었습니다');
+  } catch (error: any) {
+    if (error.message === '종목을 찾을 수 없습니다') {
+      return errorResponse(res, 'STOCK_NOT_FOUND', error.message, 404);
+    }
+    if (error.message.includes('VR 전략이 아닌')) {
+      return errorResponse(res, 'STRATEGY_MISMATCH', error.message, 400);
+    }
     next(error);
   }
 };

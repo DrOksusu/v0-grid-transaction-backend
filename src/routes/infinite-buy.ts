@@ -26,6 +26,13 @@ import {
   executeStrategy1Sell,
   getStrategy1Status,
   updateStockStrategy,
+  // VR (밸류 리밸런싱) API
+  initializeVR,
+  getVRStatus,
+  generateVROrders,
+  executeVRCycle,
+  syncVROrders,
+  updateVRSettings,
   // 계좌 잔고 API
   getAccountBalance,
 } from '../controllers/infinite-buy.controller';
@@ -83,6 +90,27 @@ router.post('/stocks/:id/strategy1/buy', executeStrategy1Buy);
 
 // 전략1 매도 실행 (LOC + 지정가)
 router.post('/stocks/:id/strategy1/sell', executeStrategy1Sell);
+
+// =====================
+// VR (밸류 리밸런싱) API
+// =====================
+// VR 초기화
+router.post('/stocks/:id/vr/init', initializeVR);
+
+// VR 상태 조회
+router.get('/stocks/:id/vr/status', getVRStatus);
+
+// VR 주문 생성
+router.post('/stocks/:id/vr/orders', generateVROrders);
+
+// VR 사이클 수동 실행
+router.post('/stocks/:id/vr/cycle', executeVRCycle);
+
+// VR 체결 동기화
+router.post('/stocks/:id/vr/sync', syncVROrders);
+
+// VR 설정 변경
+router.put('/stocks/:id/vr/settings', updateVRSettings);
 
 // =====================
 // 계좌 잔고 API

@@ -1284,25 +1284,29 @@ export class InfiniteBuySchedulerService {
                       record.stock.ticker,
                       record.stock.exchange
                     );
-                    closingPrice = priceData.prevClose || priceData.currentPrice;
+                    closingPrice = priceData.prevClose || priceData.currentPrice || null;
 
-                    const orderPrice = record.targetPrice || record.price;
-                    const orderType = record.type; // 'buy' or 'sell'
+                    if (closingPrice !== null) {
+                      const orderPrice = record.targetPrice || record.price;
+                      const orderType = record.type; // 'buy' or 'sell'
 
-                    if (orderType === 'buy') {
-                      // LOC 매수: 지정가 >= 종가 → 체결 (종가 이하로 매수)
-                      if (orderPrice < closingPrice) {
-                        unfilledReason = `LOC 매수 미체결: 주문가($${orderPrice.toFixed(2)}) < 종가($${closingPrice.toFixed(2)}) - 종가가 주문가보다 높아 체결 불가`;
+                      if (orderType === 'buy') {
+                        // LOC 매수: 지정가 >= 종가 → 체결 (종가 이하로 매수)
+                        if (orderPrice < closingPrice) {
+                          unfilledReason = `LOC 매수 미체결: 주문가($${orderPrice.toFixed(2)}) < 종가($${closingPrice.toFixed(2)}) - 종가가 주문가보다 높아 체결 불가`;
+                        } else {
+                          unfilledReason = `LOC 매수 미체결: 주문가($${orderPrice.toFixed(2)}), 종가($${closingPrice.toFixed(2)}) - 원인 불명 (시장 상황 확인 필요)`;
+                        }
                       } else {
-                        unfilledReason = `LOC 매수 미체결: 주문가($${orderPrice.toFixed(2)}), 종가($${closingPrice.toFixed(2)}) - 원인 불명 (시장 상황 확인 필요)`;
+                        // LOC 매도: 지정가 <= 종가 → 체결 (종가 이상으로 매도)
+                        if (orderPrice > closingPrice) {
+                          unfilledReason = `LOC 매도 미체결: 주문가($${orderPrice.toFixed(2)}) > 종가($${closingPrice.toFixed(2)}) - 종가가 주문가보다 낮아 체결 불가`;
+                        } else {
+                          unfilledReason = `LOC 매도 미체결: 주문가($${orderPrice.toFixed(2)}), 종가($${closingPrice.toFixed(2)}) - 원인 불명 (시장 상황 확인 필요)`;
+                        }
                       }
                     } else {
-                      // LOC 매도: 지정가 <= 종가 → 체결 (종가 이상으로 매도)
-                      if (orderPrice > closingPrice) {
-                        unfilledReason = `LOC 매도 미체결: 주문가($${orderPrice.toFixed(2)}) > 종가($${closingPrice.toFixed(2)}) - 종가가 주문가보다 낮아 체결 불가`;
-                      } else {
-                        unfilledReason = `LOC 매도 미체결: 주문가($${orderPrice.toFixed(2)}), 종가($${closingPrice.toFixed(2)}) - 원인 불명 (시장 상황 확인 필요)`;
-                      }
+                      unfilledReason = 'LOC 미체결 (종가 데이터 없음)';
                     }
                   } catch (priceError: any) {
                     console.warn(`[InfiniteBuyScheduler] ${record.stock.ticker}: 종가 조회 실패 - ${priceError.message}`);
