@@ -4,6 +4,7 @@ import { decrypt, encrypt } from '../utils/encryption';
 import { InfiniteBuyStatus, InfiniteBuyStrategy, SchedulerLogType, SchedulerLogStatus } from '@prisma/client';
 import { getNextLOCExecutionTime } from '../utils/us-market-holidays';
 import { PushService } from './push.service';
+import { getKisCredential } from '../utils/credential-helper';
 
 // 로그 저장 헬퍼 함수
 async function saveLog(params: {
@@ -58,11 +59,9 @@ interface UpdateStockParams {
 }
 
 export class InfiniteBuyService {
-  // KIS 서비스 인스턴스 가져오기
+  // KIS 서비스 인스턴스 가져오기 (무한매수용 credential 우선, 없으면 default 폴백)
   private async getKisService(userId: number): Promise<KisService> {
-    const credential = await prisma.credential.findFirst({
-      where: { userId, exchange: 'kis' },
-    });
+    const credential = await getKisCredential(userId, 'infinite_buy');
 
     if (!credential) {
       throw new Error('한국투자증권 API 설정을 찾을 수 없습니다');

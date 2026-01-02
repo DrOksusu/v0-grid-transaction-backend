@@ -125,11 +125,19 @@ model Trade {
   @@map("trades")
 }
 
+// Credential 용도 (전략별 계좌 분리)
+enum CredentialPurpose {
+  default        // 기본 (폴백용)
+  infinite_buy   // 무한매수 전용
+  vr             // VR 전략 전용
+}
+
 model Credential {
   id              Int       @id @default(autoincrement())
   userId          Int
   user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   exchange        Exchange
+  purpose         CredentialPurpose @default(default)  // 용도 (전략별 분리)
   apiKey          String    @db.Text
   secretKey       String    @db.Text
   ipWhitelist     String?
@@ -145,7 +153,7 @@ model Credential {
   accessToken     String?   @db.Text  // OAuth Access Token
   tokenExpireAt   DateTime?         // 토큰 만료 시간
 
-  @@unique([userId, exchange])
+  @@unique([userId, exchange, purpose])
   @@map("credentials")
 }
 

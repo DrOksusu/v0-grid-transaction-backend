@@ -4,8 +4,10 @@ import { successResponse, errorResponse } from '../utils/response';
 import { encrypt, decrypt, maskApiKey } from '../utils/encryption';
 import { AuthRequest } from '../types';
 import { KisService } from '../services/kis.service';
+import { CredentialPurpose } from '@prisma/client';
+import { getAllKisCredentials } from '../utils/credential-helper';
 
-// KIS Credential 저장
+// KIS Credential 저장 (purpose별 다중 계좌 지원)
 export const saveKisCredential = async (
   req: AuthRequest,
   res: Response,
@@ -13,7 +15,7 @@ export const saveKisCredential = async (
 ) => {
   try {
     const userId = req.userId!;
-    const { appKey, appSecret, accountNo, isPaper } = req.body;
+    const { appKey, appSecret, accountNo, isPaper, purpose } = req.body;
 
     if (!appKey || !appSecret || !accountNo) {
       return errorResponse(
@@ -34,9 +36,15 @@ export const saveKisCredential = async (
       );
     }
 
-    // 기존 KIS credential 확인
+    // purpose 유효성 검증 (default, infinite_buy, vr)
+    const validPurpose: CredentialPurpose =
+      ['default', 'infinite_buy', 'vr'].includes(purpose)
+        ? purpose
+        : 'default';
+
+    // 기존 KIS credential 확인 (purpose별)
     const existing = await prisma.credential.findFirst({
-      where: { userId, exchange: 'kis' },
+      where: { userId, exchange: 'kis', purpose: validPurpose },
     });
 
     const encryptedAppKey = encrypt(appKey);
@@ -63,6 +71,7 @@ export const saveKisCredential = async (
         res,
         {
           exchange: 'kis',
+          purpose: validPurpose,
           accountNo,
           isPaper: isPaper ?? true,
           isValid: true,
@@ -76,6 +85,7 @@ export const saveKisCredential = async (
       data: {
         userId,
         exchange: 'kis',
+        purpose: validPurpose,
         apiKey: encryptedAppKey,
         secretKey: encryptedAppSecret,
         accountNo,
@@ -90,6 +100,7 @@ export const saveKisCredential = async (
       {
         credentialId: credential.id.toString(),
         exchange: 'kis',
+        purpose: validPurpose,
         accountNo,
         isPaper: isPaper ?? true,
         isValid: true,
@@ -102,7 +113,7 @@ export const saveKisCredential = async (
   }
 };
 
-// KIS 연결 테스트 (토큰 발급 테스트)
+// KIS 연결 테스트 (토큰 발급 테스트, purpose 지원)
 export const testKisConnection = async (
   req: AuthRequest,
   res: Response,
@@ -110,16 +121,23 @@ export const testKisConnection = async (
 ) => {
   try {
     const userId = req.userId!;
+    const { purpose } = req.body;
+
+    // purpose 유효성 검증
+    const validPurpose: CredentialPurpose =
+      ['default', 'infinite_buy', 'vr'].includes(purpose)
+        ? purpose
+        : 'default';
 
     const credential = await prisma.credential.findFirst({
-      where: { userId, exchange: 'kis' },
+      where: { userId, exchange: 'kis', purpose: validPurpose },
     });
 
     if (!credential) {
       return errorResponse(
         res,
         'CREDENTIAL_NOT_FOUND',
-        '한국투자증권 API 설정을 찾을 수 없습니다',
+        `한국투자증권 API 설정을 찾을 수 없습니다 (${validPurpose})`,
         404
       );
     }
@@ -152,6 +170,7 @@ export const testKisConnection = async (
       res,
       {
         connected: true,
+        purpose: validPurpose,
         tokenExpireAt: tokenInfo.tokenExpireAt,
         isPaper: credential.isPaper,
         accountNo: credential.accountNo,
@@ -169,7 +188,7 @@ export const testKisConnection = async (
   }
 };
 
-// KIS 연결 상태 확인
+// KIS 연결 상태 확인 (다중 계좌 지원)
 export const getKisStatus = async (
   req: AuthRequest,
   res: Response,
@@ -178,64 +197,84 @@ export const getKisStatus = async (
   try {
     const userId = req.userId!;
 
-    const credential = await prisma.credential.findFirst({
-      where: { userId, exchange: 'kis' },
-    });
+    // 모든 KIS credentials 조회
+    const credentials = await getAllKisCredentials(userId);
 
-    if (!credential) {
+    if (credentials.length === 0) {
       return successResponse(res, {
         connected: false,
         hasCredential: false,
+        credentials: [],
       });
     }
 
-    // 토큰 유효성 확인
-    let isTokenValid = false;
-    let tokenExpireAt = credential.tokenExpireAt;
-    if (credential.accessToken && credential.tokenExpireAt) {
-      const now = new Date();
-      const bufferTime = 10 * 60 * 1000; // 10분
-      isTokenValid = credential.tokenExpireAt.getTime() - bufferTime > now.getTime();
-    }
+    // 각 credential의 상태 확인
+    const credentialStatuses = await Promise.all(
+      credentials.map(async (credential) => {
+        let isTokenValid = false;
+        let tokenExpireAt = credential.tokenExpireAt;
 
-    // 토큰이 만료되었지만 apiKey/secretKey가 있으면 자동 갱신 시도
-    if (!isTokenValid && credential.apiKey && credential.secretKey) {
-      try {
-        const kisService = new KisService({
-          appKey: decrypt(credential.apiKey),
-          appSecret: decrypt(credential.secretKey),
-          accountNo: credential.accountNo || '',
-          isPaper: credential.isPaper ?? true,
-        });
+        if (credential.accessToken && credential.tokenExpireAt) {
+          const now = new Date();
+          const bufferTime = 10 * 60 * 1000; // 10분
+          isTokenValid = credential.tokenExpireAt.getTime() - bufferTime > now.getTime();
+        }
 
-        const tokenInfo = await kisService.getAccessToken();
+        // 토큰이 만료되었지만 apiKey/secretKey가 있으면 자동 갱신 시도
+        if (!isTokenValid && credential.apiKey && credential.secretKey) {
+          try {
+            const kisService = new KisService({
+              appKey: decrypt(credential.apiKey),
+              appSecret: decrypt(credential.secretKey),
+              accountNo: credential.accountNo || '',
+              isPaper: credential.isPaper ?? true,
+            });
 
-        // DB에 새 토큰 저장
-        await prisma.credential.update({
-          where: { id: credential.id },
-          data: {
-            accessToken: encrypt(tokenInfo.accessToken),
-            tokenExpireAt: tokenInfo.tokenExpireAt,
-            lastValidatedAt: new Date(),
-          },
-        });
+            const tokenInfo = await kisService.getAccessToken();
 
-        isTokenValid = true;
-        tokenExpireAt = tokenInfo.tokenExpireAt;
-        console.log(`[KIS] 토큰 자동 갱신 완료 (userId: ${userId})`);
-      } catch (refreshError: any) {
-        console.error(`[KIS] 토큰 자동 갱신 실패 (userId: ${userId}):`, refreshError.message);
-        // 갱신 실패 시 isTokenValid는 false 유지
-      }
-    }
+            // DB에 새 토큰 저장
+            await prisma.credential.update({
+              where: { id: credential.id },
+              data: {
+                accessToken: encrypt(tokenInfo.accessToken),
+                tokenExpireAt: tokenInfo.tokenExpireAt,
+                lastValidatedAt: new Date(),
+              },
+            });
+
+            isTokenValid = true;
+            tokenExpireAt = tokenInfo.tokenExpireAt;
+            console.log(`[KIS] 토큰 자동 갱신 완료 (userId: ${userId}, purpose: ${credential.purpose})`);
+          } catch (refreshError: any) {
+            console.error(`[KIS] 토큰 자동 갱신 실패 (userId: ${userId}, purpose: ${credential.purpose}):`, refreshError.message);
+          }
+        }
+
+        return {
+          purpose: credential.purpose,
+          connected: isTokenValid,
+          hasCredential: true,
+          isPaper: credential.isPaper,
+          accountNo: credential.accountNo,
+          tokenExpireAt: tokenExpireAt,
+          lastValidatedAt: credential.lastValidatedAt,
+        };
+      })
+    );
+
+    // 하위 호환성: default credential 기준으로 기존 형식 응답
+    const defaultCred = credentialStatuses.find((c) => c.purpose === 'default') || credentialStatuses[0];
 
     return successResponse(res, {
-      connected: isTokenValid,
+      // 하위 호환성 유지 (기존 형식)
+      connected: defaultCred.connected,
       hasCredential: true,
-      isPaper: credential.isPaper,
-      accountNo: credential.accountNo,
-      tokenExpireAt: tokenExpireAt,
-      lastValidatedAt: credential.lastValidatedAt,
+      isPaper: defaultCred.isPaper,
+      accountNo: defaultCred.accountNo,
+      tokenExpireAt: defaultCred.tokenExpireAt,
+      lastValidatedAt: defaultCred.lastValidatedAt,
+      // 새 형식: 모든 credentials 배열
+      credentials: credentialStatuses,
     });
   } catch (error) {
     next(error);

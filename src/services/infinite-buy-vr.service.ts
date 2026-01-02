@@ -3,6 +3,7 @@ import { KisService } from './kis.service';
 import { decrypt, encrypt } from '../utils/encryption';
 import { PushService } from './push.service';
 import { SchedulerLogType, SchedulerLogStatus } from '@prisma/client';
+import { getKisCredential } from '../utils/credential-helper';
 
 /**
  * 밸류 리밸런싱(VR) 서비스
@@ -189,12 +190,10 @@ export class InfiniteBuyVRService {
   }
 
   /**
-   * KIS 서비스 인스턴스 가져오기
+   * KIS 서비스 인스턴스 가져오기 (VR용 credential 우선, 없으면 default 폴백)
    */
   private async getKisService(userId: number): Promise<KisService> {
-    const credential = await prisma.credential.findFirst({
-      where: { userId, exchange: 'kis' },
-    });
+    const credential = await getKisCredential(userId, 'vr');
 
     if (!credential) {
       throw new Error('한국투자증권 API 설정을 찾을 수 없습니다');
