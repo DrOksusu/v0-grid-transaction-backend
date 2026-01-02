@@ -9,6 +9,7 @@ import { InfiniteBuyStatus } from '@prisma/client';
 import prisma from '../config/database';
 import { KisService } from '../services/kis.service';
 import { decrypt, encrypt } from '../utils/encryption';
+import { getKisCredential } from '../utils/credential-helper';
 
 // 종목 생성
 export const createStock = async (
@@ -1079,7 +1080,6 @@ export const getAccountBalance = async (
     const userId = req.userId!;
 
     // KIS credential 조회 (infinite_buy purpose 우선, 없으면 default 폴백)
-    const { getKisCredential } = await import('../utils/credential-helper');
     const credential = await getKisCredential(userId, 'infinite_buy');
 
     if (!credential) {
