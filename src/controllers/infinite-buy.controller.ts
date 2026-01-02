@@ -1078,10 +1078,9 @@ export const getAccountBalance = async (
   try {
     const userId = req.userId!;
 
-    // KIS credential 조회
-    const credential = await prisma.credential.findFirst({
-      where: { userId, exchange: 'kis' },
-    });
+    // KIS credential 조회 (infinite_buy purpose 우선, 없으면 default 폴백)
+    const { getKisCredential } = await import('../utils/credential-helper');
+    const credential = await getKisCredential(userId, 'infinite_buy');
 
     if (!credential) {
       return errorResponse(
