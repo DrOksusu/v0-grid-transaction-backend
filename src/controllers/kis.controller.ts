@@ -220,7 +220,7 @@ export const getKisStatus = async (
           isTokenValid = credential.tokenExpireAt.getTime() - bufferTime > now.getTime();
         }
 
-        // 토큰이 만료되었지만 apiKey/secretKey가 있으면 자동 갱신 시도
+        // 토큰이 만료되었지만 apiKey/secretKey가 있으면 자동 갱신 시도 (10초 타임아웃)
         if (!isTokenValid && credential.apiKey && credential.secretKey) {
           try {
             const kisService = new KisService({
@@ -230,7 +230,13 @@ export const getKisStatus = async (
               isPaper: credential.isPaper ?? true,
             });
 
-            const tokenInfo = await kisService.getAccessToken();
+            // 10초 타임아웃 설정
+            const tokenPromise = kisService.getAccessToken();
+            const timeoutPromise = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('토큰 갱신 타임아웃 (10초)')), 10000)
+            );
+
+            const tokenInfo = await Promise.race([tokenPromise, timeoutPromise]);
 
             // DB에 새 토큰 저장
             await prisma.credential.update({
