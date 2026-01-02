@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import {
   getCachedPrice,
   setCachedPrice,
@@ -9,6 +9,9 @@ import {
 // 한국투자증권 API URL
 const KIS_REAL_URL = 'https://openapi.koreainvestment.com:9443';  // 실전투자
 const KIS_PAPER_URL = 'https://openapivts.koreainvestment.com:29443';  // 모의투자
+
+// 기본 타임아웃 설정 (15초)
+const DEFAULT_TIMEOUT = 15000;
 
 interface KisCredentials {
   appKey: string;
@@ -32,6 +35,7 @@ export class KisService {
   private baseUrl: string;
   private accessToken: string | null = null;
   private tokenExpireAt: Date | null = null;
+  private axiosInstance: AxiosInstance;
 
   constructor(credentials: KisCredentials) {
     this.appKey = credentials.appKey;
@@ -44,6 +48,12 @@ export class KisService {
     const [prefix, suffix] = credentials.accountNo.split('-');
     this.accountNoPrefix = prefix || '';
     this.accountNoSuffix = suffix || '01';
+
+    // axios 인스턴스 생성 (기본 타임아웃 설정)
+    this.axiosInstance = axios.create({
+      baseURL: this.baseUrl,
+      timeout: DEFAULT_TIMEOUT,
+    });
   }
 
   // Access Token 설정 (DB에서 가져온 토큰 설정)
@@ -66,8 +76,8 @@ export class KisService {
   // OAuth Access Token 발급
   async getAccessToken(): Promise<KisTokenInfo> {
     try {
-      const response = await axios.post(
-        `${this.baseUrl}/oauth2/tokenP`,
+      const response = await this.axiosInstance.post(
+        '/oauth2/tokenP',
         {
           grant_type: 'client_credentials',
           appkey: this.appKey,
@@ -116,8 +126,8 @@ export class KisService {
   // hashkey 생성 (POST 요청에 필요)
   private async getHashKey(body: object): Promise<string> {
     try {
-      const response = await axios.post(
-        `${this.baseUrl}/uapi/hashkey`,
+      const response = await this.axiosInstance.post(
+        '/uapi/hashkey',
         body,
         {
           headers: {
@@ -211,8 +221,8 @@ export class KisService {
         // 해외주식 현재가: HHDFS00000300
         const trId = 'HHDFS00000300';
 
-        const response = await axios.get(
-          `${this.baseUrl}/uapi/overseas-price/v1/quotations/price`,
+        const response = await this.axiosInstance.get(
+          '/uapi/overseas-price/v1/quotations/price',
           {
             headers: this.getHeaders(trId),
             params: {
@@ -299,8 +309,8 @@ export class KisService {
 
         for (const exchangeCode of exchanges) {
           try {
-            const response = await axios.get(
-              `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-balance`,
+            const response = await this.axiosInstance.get(
+              '/uapi/overseas-stock/v1/trading/inquire-balance',
               {
                 headers: this.getHeaders(trId),
                 params: {
@@ -371,8 +381,8 @@ export class KisService {
         const trId = this.isPaper ? 'VTTS3007R' : 'TTTS3007R';
 
         try {
-          const response = await axios.get(
-            `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-psamount`,
+          const response = await this.axiosInstance.get(
+            '/uapi/overseas-stock/v1/trading/inquire-psamount',
             {
               headers: this.getHeaders(trId),
               params: {
@@ -438,8 +448,8 @@ export class KisService {
           // tr_id: 모의투자 VTTC8434R, 실전투자 TTTC8434R (예수금상세조회)
           const trId = this.isPaper ? 'VTTC8434R' : 'TTTC8434R';
 
-          const response = await axios.get(
-            `${this.baseUrl}/uapi/domestic-stock/v1/trading/inquire-psbl-order`,
+          const response = await this.axiosInstance.get(
+            '/uapi/domestic-stock/v1/trading/inquire-psbl-order',
             {
               headers: this.getHeaders(trId),
               params: {
@@ -538,8 +548,8 @@ export class KisService {
 
         const hashKey = await this.getHashKey(body);
 
-        const response = await axios.post(
-          `${this.baseUrl}/uapi/overseas-stock/v1/trading/order`,
+        const response = await this.axiosInstance.post(
+          '/uapi/overseas-stock/v1/trading/order',
           body,
           {
             headers: {
@@ -594,8 +604,8 @@ export class KisService {
 
         const hashKey = await this.getHashKey(body);
 
-        const response = await axios.post(
-          `${this.baseUrl}/uapi/overseas-stock/v1/trading/order`,
+        const response = await this.axiosInstance.post(
+          '/uapi/overseas-stock/v1/trading/order',
           body,
           {
             headers: {
@@ -668,8 +678,8 @@ export class KisService {
         for (const exchangeCode of exchanges) {
           for (const ordDt of datesToCheck) {
             try {
-              const response = await axios.get(
-                `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-ccnl`,
+              const response = await this.axiosInstance.get(
+                '/uapi/overseas-stock/v1/trading/inquire-ccnl',
                 {
                   headers: this.getHeaders(trId),
                   params: {
@@ -747,8 +757,8 @@ export class KisService {
 
         for (const exchangeCode of exchanges) {
           try {
-            const response = await axios.get(
-              `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-nccs`,
+            const response = await this.axiosInstance.get(
+              '/uapi/overseas-stock/v1/trading/inquire-nccs',
               {
                 headers: this.getHeaders(trId),
                 params: {
@@ -831,8 +841,8 @@ export class KisService {
 
         const hashKey = await this.getHashKey(body);
 
-        const response = await axios.post(
-          `${this.baseUrl}/uapi/overseas-stock/v1/trading/order`,
+        const response = await this.axiosInstance.post(
+          '/uapi/overseas-stock/v1/trading/order',
           body,
           {
             headers: {
@@ -889,8 +899,8 @@ export class KisService {
 
         const hashKey = await this.getHashKey(body);
 
-        const response = await axios.post(
-          `${this.baseUrl}/uapi/overseas-stock/v1/trading/order`,
+        const response = await this.axiosInstance.post(
+          '/uapi/overseas-stock/v1/trading/order',
           body,
           {
             headers: {
@@ -957,8 +967,8 @@ export class KisService {
 
         const hashKey = await this.getHashKey(body);
 
-        const response = await axios.post(
-          `${this.baseUrl}/uapi/overseas-stock/v1/trading/order-rvsecncl`,
+        const response = await this.axiosInstance.post(
+          '/uapi/overseas-stock/v1/trading/order-rvsecncl',
           body,
           {
             headers: {
@@ -996,8 +1006,8 @@ export class KisService {
 
           const trId = 'CTRP6504R';
 
-          const response = await axios.get(
-            `${this.baseUrl}/uapi/overseas-stock/v1/trading/inquire-present-balance`,
+          const response = await this.axiosInstance.get(
+            '/uapi/overseas-stock/v1/trading/inquire-present-balance',
             {
               headers: this.getHeaders(trId),
               params: {

@@ -1136,10 +1136,24 @@ export const getAccountBalance = async (
       }
     }
 
+    // 타임아웃 헬퍼 함수
+    const withTimeout = <T>(promise: Promise<T>, ms: number, name: string): Promise<T> => {
+      return Promise.race([
+        promise,
+        new Promise<T>((_, reject) =>
+          setTimeout(() => reject(new Error(`${name} 타임아웃 (${ms / 1000}초)`)), ms)
+        ),
+      ]);
+    };
+
     // 토큰이 없거나 만료된 경우 먼저 발급 (병렬 API 호출 전에)
     if (!tokenValid) {
       console.log('[Balance] 토큰 신규 발급 중...');
-      const tokenInfo = await kisService.getAccessToken();
+      const tokenInfo = await withTimeout(
+        kisService.getAccessToken(),
+        15000,
+        '토큰 발급'
+      );
       // 직접 DB에 저장
       await prisma.credential.update({
         where: { id: credential.id },
@@ -1151,11 +1165,11 @@ export const getAccountBalance = async (
       console.log('[Balance] 토큰 DB 저장 완료, 만료:', tokenInfo.tokenExpireAt);
     }
 
-    // 잔고 조회, 매수가능금액 조회, 원화예수금 조회 (병렬)
+    // 잔고 조회, 매수가능금액 조회, 원화예수금 조회 (병렬, 각 20초 타임아웃)
     const [balance, buyingPower, krwDeposit] = await Promise.all([
-      kisService.getUSStockBalance(),
-      kisService.getUSStockBuyingPower(),
-      kisService.getKRWDeposit(),
+      withTimeout(kisService.getUSStockBalance(), 20000, '잔고 조회'),
+      withTimeout(kisService.getUSStockBuyingPower(), 20000, '매수가능금액 조회'),
+      withTimeout(kisService.getKRWDeposit(), 20000, '원화예수금 조회'),
     ]);
 
     // buyingPower에 원화 예수금 정보 병합
