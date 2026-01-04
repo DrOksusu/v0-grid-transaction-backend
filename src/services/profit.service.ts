@@ -419,22 +419,61 @@ export class ProfitService {
     const startDate = new Date(year, monthNum - 1, 1);
     const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
 
-    // 모든 사용자의 봇에서 수익 계산 (중지된 봇 포함, bot.currentProfit 사용)
-    const bots = await prisma.bot.findMany({
+    // 해당 월의 매도 체결 기록에서 수익 계산 (중지된 봇 포함)
+    const trades = await prisma.trade.findMany({
       where: {
-        exchange: 'upbit',  // 그리드매매는 업비트만
+        type: 'sell',
+        status: 'filled',
+        filledAt: {
+          gte: startDate,
+          lte: endDate,
+        },
+        bot: {
+          exchange: 'upbit',  // 그리드매매는 업비트만
+        },
       },
       select: {
-        userId: true,
-        currentProfit: true,
+        profit: true,
+        price: true,
+        amount: true,
+        gridLevel: {
+          select: {
+            buyPrice: true,
+          },
+        },
+        bot: {
+          select: {
+            userId: true,
+          },
+        },
       },
     });
 
-    // 사용자별로 currentProfit 집계 (대시보드와 동일한 로직)
+    // 사용자별로 수익 집계 (profit이 null이면 직접 계산)
     const userProfitMap = new Map<number, number>();
-    for (const bot of bots) {
-      const existing = userProfitMap.get(bot.userId) || 0;
-      userProfitMap.set(bot.userId, existing + bot.currentProfit);
+    const UPBIT_FEE_RATE = 0.0005; // 업비트 수수료 0.05%
+
+    for (const trade of trades) {
+      if (!trade.bot) continue;
+      const userId = trade.bot.userId;
+
+      let profit = trade.profit;
+      // profit이 null이면 gridLevel.buyPrice로 직접 계산
+      if (profit === null && trade.gridLevel?.buyPrice) {
+        const buyPrice = trade.gridLevel.buyPrice;
+        const sellPrice = trade.price;
+        const volume = trade.amount;
+        const buyAmount = volume * buyPrice;
+        const sellAmount = volume * sellPrice;
+        const buyFee = buyAmount * UPBIT_FEE_RATE;
+        const sellFee = sellAmount * UPBIT_FEE_RATE;
+        profit = sellAmount - buyAmount - buyFee - sellFee;
+      }
+
+      if (profit === null || profit === undefined) continue;
+
+      const existing = userProfitMap.get(userId) || 0;
+      userProfitMap.set(userId, existing + profit);
     }
 
     // 사용자 정보 조회
