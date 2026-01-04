@@ -419,34 +419,22 @@ export class ProfitService {
     const startDate = new Date(year, monthNum - 1, 1);
     const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
 
-    // 모든 사용자의 활성 봇에서 당월 수익 계산
-    const trades = await prisma.trade.findMany({
+    // 모든 사용자의 봇에서 수익 계산 (중지된 봇 포함, bot.currentProfit 사용)
+    const bots = await prisma.bot.findMany({
       where: {
-        type: 'sell',
-        status: 'filled',
-        profit: { not: null },
-        filledAt: {
-          gte: startDate,
-          lte: endDate,
-        },
+        exchange: 'upbit',  // 그리드매매는 업비트만
       },
       select: {
-        profit: true,
-        bot: {
-          select: {
-            userId: true,
-          },
-        },
+        userId: true,
+        currentProfit: true,
       },
     });
 
-    // 사용자별로 수익 집계
+    // 사용자별로 currentProfit 집계 (대시보드와 동일한 로직)
     const userProfitMap = new Map<number, number>();
-    for (const trade of trades) {
-      if (trade.profit === null || !trade.bot) continue;
-      const userId = trade.bot.userId;
-      const existing = userProfitMap.get(userId) || 0;
-      userProfitMap.set(userId, existing + trade.profit);
+    for (const bot of bots) {
+      const existing = userProfitMap.get(bot.userId) || 0;
+      userProfitMap.set(bot.userId, existing + bot.currentProfit);
     }
 
     // 사용자 정보 조회
