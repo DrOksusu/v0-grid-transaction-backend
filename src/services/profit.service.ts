@@ -589,9 +589,9 @@ export class ProfitService {
       return null;
     }
 
-    // 해당 사용자의 봇 조회
+    // 해당 사용자의 봇 조회 (활성/중지된 봇)
     const bots = await prisma.bot.findMany({
-      where: { userId: targetUserId },
+      where: { userId: targetUserId, exchange: 'upbit' },
       select: {
         id: true,
         ticker: true,
@@ -601,13 +601,12 @@ export class ProfitService {
 
     const botIds = bots.map(b => b.id);
 
-    // 해당 월의 매도 거래 조회
+    // 해당 월의 매도 거래 조회 (profit null 포함)
     const trades = await prisma.trade.findMany({
       where: {
         botId: { in: botIds },
         type: 'sell',
         status: 'filled',
-        profit: { not: null },
         filledAt: {
           gte: startDate,
           lte: endDate,
@@ -616,22 +615,74 @@ export class ProfitService {
       select: {
         botId: true,
         profit: true,
+        price: true,
+        amount: true,
         filledAt: true,
+        gridLevel: {
+          select: {
+            buyPrice: true,
+          },
+        },
+      },
+    });
+
+    // 해당 월에 삭제된 봇 조회 (ProfitSnapshot)
+    const deletedBots = await prisma.profitSnapshot.findMany({
+      where: {
+        userId: targetUserId,
+        exchange: 'upbit',
+        botType: 'grid',
+        deletedAt: {
+          gte: startDate,
+          lte: endDate,
+        },
+      },
+      select: {
+        ticker: true,
+        finalProfit: true,
+        totalTrades: true,
       },
     });
 
     // 봇(종목)별로 수익 집계
     const tickerProfitMap = new Map<string, { profit: number; trades: number }>();
+    const UPBIT_FEE_RATE = 0.0005;
+
+    // Trade 기록에서 수익 집계
     for (const trade of trades) {
-      if (trade.profit === null) continue;
       const bot = bots.find(b => b.id === trade.botId);
       if (!bot) continue;
+
+      let profit = trade.profit;
+      // profit이 null이면 직접 계산
+      if (profit === null && trade.gridLevel?.buyPrice) {
+        const buyPrice = trade.gridLevel.buyPrice;
+        const sellPrice = trade.price;
+        const volume = trade.amount;
+        const buyAmount = volume * buyPrice;
+        const sellAmount = volume * sellPrice;
+        const buyFee = buyAmount * UPBIT_FEE_RATE;
+        const sellFee = sellAmount * UPBIT_FEE_RATE;
+        profit = sellAmount - buyAmount - buyFee - sellFee;
+      }
+
+      if (profit === null || profit === undefined) continue;
 
       const key = bot.ticker;
       const existing = tickerProfitMap.get(key) || { profit: 0, trades: 0 };
       tickerProfitMap.set(key, {
-        profit: existing.profit + trade.profit,
+        profit: existing.profit + profit,
         trades: existing.trades + 1,
+      });
+    }
+
+    // 삭제된 봇 수익도 추가
+    for (const deleted of deletedBots) {
+      const key = deleted.ticker;
+      const existing = tickerProfitMap.get(key) || { profit: 0, trades: 0 };
+      tickerProfitMap.set(key, {
+        profit: existing.profit + deleted.finalProfit,
+        trades: existing.trades + deleted.totalTrades,
       });
     }
 
