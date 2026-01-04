@@ -419,7 +419,7 @@ export class ProfitService {
     const startDate = new Date(year, monthNum - 1, 1);
     const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
 
-    // 해당 월의 매도 체결 기록에서 수익 계산 (중지된 봇 포함)
+    // 1. 해당 월의 매도 체결 기록에서 수익 계산 (활성/중지된 봇)
     const trades = await prisma.trade.findMany({
       where: {
         type: 'sell',
@@ -449,10 +449,27 @@ export class ProfitService {
       },
     });
 
-    // 사용자별로 수익 집계 (profit이 null이면 직접 계산)
+    // 2. 해당 월에 삭제된 봇의 수익 (ProfitSnapshot)
+    const deletedBotSnapshots = await prisma.profitSnapshot.findMany({
+      where: {
+        exchange: 'upbit',
+        botType: 'grid',
+        deletedAt: {
+          gte: startDate,
+          lte: endDate,
+        },
+      },
+      select: {
+        userId: true,
+        finalProfit: true,
+      },
+    });
+
+    // 사용자별로 수익 집계
     const userProfitMap = new Map<number, number>();
     const UPBIT_FEE_RATE = 0.0005; // 업비트 수수료 0.05%
 
+    // Trade 기록에서 수익 집계
     for (const trade of trades) {
       if (!trade.bot) continue;
       const userId = trade.bot.userId;
@@ -474,6 +491,12 @@ export class ProfitService {
 
       const existing = userProfitMap.get(userId) || 0;
       userProfitMap.set(userId, existing + profit);
+    }
+
+    // 삭제된 봇 수익도 추가 (ProfitSnapshot)
+    for (const snapshot of deletedBotSnapshots) {
+      const existing = userProfitMap.get(snapshot.userId) || 0;
+      userProfitMap.set(snapshot.userId, existing + snapshot.finalProfit);
     }
 
     // 사용자 정보 조회
