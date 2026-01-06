@@ -334,4 +334,42 @@ export class UpbitService {
       }
     }
   }
+
+  // 여러 종목 현재가 일괄 조회 (공개 API)
+  static async getMultiplePrices(markets: string[], retries = 3): Promise<Map<string, number>> {
+    const priceMap = new Map<string, number>();
+
+    if (markets.length === 0) {
+      return priceMap;
+    }
+
+    // 중복 제거
+    const uniqueMarkets = [...new Set(markets)];
+
+    for (let i = 0; i < retries; i++) {
+      try {
+        await throttlePublicApi();
+        const response = await axios.get(
+          `${UPBIT_API_URL}/ticker?markets=${uniqueMarkets.join(',')}`
+        );
+
+        for (const ticker of response.data) {
+          priceMap.set(ticker.market, ticker.trade_price);
+        }
+
+        return priceMap;
+      } catch (error: any) {
+        // 429 에러면 대기 후 재시도
+        if (error.response?.status === 429 && i < retries - 1) {
+          console.log(`[Upbit] 429 에러, ${(i + 1) * 500}ms 후 재시도...`);
+          await new Promise(resolve => setTimeout(resolve, (i + 1) * 500));
+          continue;
+        }
+        console.error(`[Upbit] 일괄 현재가 조회 실패:`, error.message);
+        return priceMap; // 실패 시 빈 맵 반환 (에러 무시)
+      }
+    }
+
+    return priceMap;
+  }
 }

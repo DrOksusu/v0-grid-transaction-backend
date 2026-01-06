@@ -122,6 +122,11 @@ export const getAllBots = async (
       orderBy: { createdAt: 'desc' },
     });
 
+    // 업비트 봇들의 현재가 일괄 조회
+    const upbitBots = bots.filter(b => b.exchange === 'upbit');
+    const markets = upbitBots.map(b => `KRW-${b.ticker.replace('KRW-', '')}`);
+    const priceMap = await UpbitService.getMultiplePrices(markets);
+
     const summary = {
       totalBots: bots.length,
       activeBots: bots.filter(b => b.status === 'running').length,
@@ -138,6 +143,13 @@ export const getAllBots = async (
       for (let i = 0; i < bot.gridCount; i++) {
         buyPrices.push(roundToTickSize(price)); // 호가 단위에 맞게 반올림
         price *= multiplier;
+      }
+
+      // 현재가 조회 (업비트의 경우 일괄 조회 결과에서 가져옴)
+      let currentPrice = 0;
+      if (bot.exchange === 'upbit') {
+        const market = `KRW-${bot.ticker.replace('KRW-', '')}`;
+        currentPrice = priceMap.get(market) || 0;
       }
 
       return {
@@ -158,6 +170,7 @@ export const getAllBots = async (
         totalTrades: bot.totalTrades,
         investmentAmount: bot.investmentAmount,
         buyPrices, // 매수 가격 배열 추가
+        currentPrice, // 현재가 추가
         createdAt: bot.createdAt,
       };
     });
