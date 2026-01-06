@@ -143,11 +143,11 @@ class UpbitPriceManager {
     const normalizedTicker = ticker.toUpperCase();
 
     if (this.subscriptions.has(normalizedTicker)) {
-      console.log(`[PriceManager] Already subscribed to ${normalizedTicker}`);
       return;
     }
 
-    console.log(`[PriceManager] Subscribing to ${normalizedTicker}`);
+    // 구독 로그는 디버그 레벨 (필요시 주석 해제)
+    // console.log(`[PriceManager] Subscribing to ${normalizedTicker}`);
     this.subscriptions.add(normalizedTicker);
 
     if (this.isConnected) {
@@ -165,7 +165,8 @@ class UpbitPriceManager {
       return;
     }
 
-    console.log(`[PriceManager] Unsubscribing from ${normalizedTicker}`);
+    // 구독 해제 로그는 디버그 레벨 (필요시 주석 해제)
+    // console.log(`[PriceManager] Unsubscribing from ${normalizedTicker}`);
     this.subscriptions.delete(normalizedTicker);
     this.priceCache.delete(normalizedTicker);
 
@@ -189,7 +190,6 @@ class UpbitPriceManager {
 
     // 캐시가 너무 오래되었으면 null 반환
     if (Date.now() - cached.timestamp > this.CACHE_TTL) {
-      console.log(`[PriceManager] Cache expired for ${normalizedTicker}`);
       this.priceCache.delete(normalizedTicker);
       return null;
     }
@@ -210,8 +210,7 @@ class UpbitPriceManager {
       return cachedPrice;
     }
 
-    // 2. 캐시 없으면 REST API 폴백
-    console.log(`[PriceManager] Cache miss for ${normalizedTicker}, falling back to REST API`);
+    // 2. 캐시 없으면 REST API 폴백 (로그 생략)
 
     try {
       const priceData = await UpbitService.getCurrentPrice(normalizedTicker);
@@ -275,7 +274,10 @@ class UpbitPriceManager {
       { format: 'DEFAULT' }
     ]);
 
-    console.log(`[PriceManager] Subscribing to ${tickers.length} tickers: ${tickers.join(', ')}`);
+    // 구독 시작 로그는 연결 시 1회만 출력
+    if (this.reconnectAttempts === 0) {
+      console.log(`[PriceManager] WebSocket 구독: ${tickers.length}개 종목`);
+    }
     this.ws.send(message);
   }
 

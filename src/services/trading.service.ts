@@ -54,12 +54,13 @@ export class TradingService {
       // 현재가 조회 (WebSocket 캐시 우선, 없으면 REST 폴백)
       const currentPrice = await priceManager.getPriceWithFallback(bot.ticker);
 
-      console.log(`[Trading] Bot ${botId} (${bot.ticker}): currentPrice=${currentPrice.toLocaleString()} (via WebSocket)`);
-
       // 실행 가능한 그리드 찾기
       const executableGrids = await GridService.findExecutableGrids(botId, currentPrice);
 
-      console.log(`[Trading] Bot ${botId}: executableGrids = buy:${executableGrids.buy?.price || 'none'}, sell:${executableGrids.sell?.price || 'none'}`);
+      // 실행할 주문이 있을 때만 로깅
+      if (executableGrids.buy || executableGrids.sell) {
+        console.log(`[Trading] Bot ${botId} (${bot.ticker}): price=${currentPrice.toLocaleString()}, buy:${executableGrids.buy?.price || '-'}, sell:${executableGrids.sell?.price || '-'}`);
+      }
 
       let executed = false;
 
@@ -310,7 +311,7 @@ export class TradingService {
 
       try {
         orders = await upbit.getOrdersByUuids(orderIds);
-        console.log(`[Trading] Bot ${botId}: 배치 조회 성공 - ${orders.length}개 주문`);
+        // 배치 조회 로그는 체결된 주문이 있을 때만 출력 (아래에서 처리)
       } catch (err: any) {
         // 배치 조회 실패 시 개별 조회로 폴백 (호환성)
         console.log(`[Trading] Bot ${botId}: 배치 조회 실패, 개별 조회로 폴백 - ${err.message}`);

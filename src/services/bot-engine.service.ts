@@ -109,28 +109,23 @@ class BotEngine {
         },
       });
 
-      if (runningBots.length > 0) {
-        console.log(`[BotEngine] Checking ${runningBots.length} running bot(s)...`);
-
-        for (const bot of runningBots) {
-          const hasGridLevels = bot.gridLevels.length > 0;
-          console.log(`[BotEngine] Bot ${bot.id} (${bot.ticker}): gridLevels=${hasGridLevels ? 'YES' : 'NO'}`);
-        }
+      // 실행 중인 봇 수는 주기적으로만 로깅 (10분마다)
+      if (runningBots.length > 0 && Date.now() % 600000 < this.CHECK_INTERVAL) {
+        console.log(`[BotEngine] ${runningBots.length}개 봇 실행 중`);
       }
 
       // 각 봇에 대해 거래 실행
       for (const bot of runningBots) {
         try {
-          // 그리드 레벨이 없으면 스킵
+          // 그리드 레벨이 없으면 스킵 (로그 없이)
           if (bot.gridLevels.length === 0) {
-            console.log(`[BotEngine] Bot ${bot.id}: No grid levels, skipping...`);
             continue;
           }
 
           // 거래 실행
           const result = await TradingService.executeTrade(bot.id);
           if (result.executed) {
-            console.log(`[BotEngine] Bot ${bot.id}: Trade executed!`);
+            console.log(`[BotEngine] Bot ${bot.id} (${bot.ticker}): 거래 실행됨`);
           }
 
           // 체결된 주문 확인
