@@ -54,14 +54,14 @@ jobs:
 
       - name: Deploy to Lightsail
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          ECR_TOKEN: ${{ steps.ecr-token.outputs.token }}
         with:
           host: ${{ env.LIGHTSAIL_HOST }}
           username: ${{ env.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           envs: ECR_TOKEN
-        env:
-          ECR_TOKEN: ${{ steps.ecr-token.outputs.token }}
-        script: |
+          script: |
             # ECR 로그인 (GitHub Actions에서 받은 토큰 사용)
             echo "$ECR_TOKEN" | docker login --username AWS --password-stdin 827899252497.dkr.ecr.ap-northeast-1.amazonaws.com
 
