@@ -57,12 +57,15 @@ jobs:
             # ECR 로그인
             aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 827899252497.dkr.ecr.ap-northeast-1.amazonaws.com
 
-            # 최신 이미지 pull
-            docker pull 827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest
-
             # 기존 컨테이너 중지 및 삭제
             docker stop grid-bot 2>/dev/null || true
             docker rm grid-bot 2>/dev/null || true
+
+            # 기존 이미지 삭제 (캐시 무효화)
+            docker rmi 827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest 2>/dev/null || true
+
+            # 최신 이미지 pull (강제)
+            docker pull 827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest
 
             # 새 컨테이너 실행
             docker run -d \
