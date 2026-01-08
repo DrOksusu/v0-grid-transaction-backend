@@ -10,12 +10,16 @@ const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http:/
   .split(',')
   .map(origin => origin.trim());
 
+// Vercel 프리뷰 URL 패턴
+const vercelPreviewPattern = /^https:\/\/v0-grid-transaction.*\.vercel\.app$/;
+
 app.use(cors({
   origin: (origin, callback) => {
     // origin이 없는 경우 (같은 origin 또는 서버 간 요청)
     if (!origin) return callback(null, true);
 
-    if (allowedOrigins.includes(origin)) {
+    // 정확히 일치하는 도메인 또는 Vercel 프리뷰 URL 패턴 허용
+    if (allowedOrigins.includes(origin) || vercelPreviewPattern.test(origin)) {
       callback(null, true);
     } else {
       console.log(`[CORS] Blocked origin: ${origin}`);
