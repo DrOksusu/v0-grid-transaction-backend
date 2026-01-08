@@ -1,9 +1,19 @@
 import { Server as SocketServer, Socket } from 'socket.io';
 import { Server as HttpServer } from 'http';
 
+// 가격 데이터 인터페이스
+interface PriceData {
+  ticker: string;
+  price: number;
+  change24h: number;
+  volume24h: number;
+  timestamp: number;
+}
+
 class SocketService {
   private io: SocketServer | null = null;
   private botRooms: Map<string, Set<string>> = new Map(); // botId -> Set of socket ids
+  private priceSubscribers: Set<string> = new Set(); // 가격 구독자 socket ids
 
   initialize(httpServer: HttpServer) {
     // CORS 설정: 쉼표로 구분된 여러 도메인 허용
@@ -47,6 +57,20 @@ class SocketService {
         console.log(`[Socket] ${socket.id} unsubscribed from bot ${botId}`);
       });
 
+      // 가격 구독 (대시보드용)
+      socket.on('subscribe:prices', () => {
+        socket.join('prices');
+        this.priceSubscribers.add(socket.id);
+        console.log(`[Socket] ${socket.id} subscribed to prices (total: ${this.priceSubscribers.size})`);
+      });
+
+      // 가격 구독 해제
+      socket.on('unsubscribe:prices', () => {
+        socket.leave('prices');
+        this.priceSubscribers.delete(socket.id);
+        console.log(`[Socket] ${socket.id} unsubscribed from prices`);
+      });
+
       // 연결 해제
       socket.on('disconnect', () => {
         console.log(`[Socket] Client disconnected: ${socket.id}`);
@@ -55,6 +79,9 @@ class SocketService {
         this.botRooms.forEach((sockets, botId) => {
           sockets.delete(socket.id);
         });
+
+        // 가격 구독자에서도 제거
+        this.priceSubscribers.delete(socket.id);
       });
     });
 
@@ -174,6 +201,47 @@ class SocketService {
 
   getIO() {
     return this.io;
+  }
+
+  // 가격 업데이트 브로드캐스트 (단일 티커)
+  emitPriceUpdate(ticker: string, data: {
+    price: number;
+    change24h: number;
+    volume24h: number;
+    high24h?: number;
+    low24h?: number;
+  }) {
+    if (!this.io || this.priceSubscribers.size === 0) {
+      return;
+    }
+
+    this.io.to('prices').emit('price:update', {
+      ticker,
+      ...data,
+      timestamp: Date.now(),
+    });
+  }
+
+  // 여러 가격 일괄 브로드캐스트
+  emitPricesBatch(prices: Array<{
+    ticker: string;
+    price: number;
+    change24h: number;
+    volume24h: number;
+  }>) {
+    if (!this.io || this.priceSubscribers.size === 0) {
+      return;
+    }
+
+    this.io.to('prices').emit('prices:batch', {
+      prices,
+      timestamp: Date.now(),
+    });
+  }
+
+  // 가격 구독자 수
+  getPriceSubscribersCount(): number {
+    return this.priceSubscribers.size;
   }
 }
 

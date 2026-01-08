@@ -3,6 +3,7 @@ import axios from 'axios';
 import { parse } from 'node-html-parser';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
+import { priceManager } from '../services/upbit-price-manager';
 
 // 티커 캐시 (메모리 캐시, 5분간 유효)
 let tickerCache: {
@@ -134,7 +135,24 @@ export const getPrice = async (
     }
 
     if (exchange === 'upbit') {
-      // 업비트 API 호출 (throttling 적용)
+      // 1. WebSocket 캐시에서 먼저 조회 (실시간 데이터)
+      const wsData = priceManager.getTickerData(ticker);
+      if (wsData) {
+        priceData = {
+          ticker,
+          currentPrice: wsData.trade_price,
+          change24h: wsData.signed_change_rate * 100,
+          volume24h: wsData.trade_volume,
+          high24h: wsData.prev_closing_price, // WebSocket에는 high/low가 없어서 대체
+          low24h: wsData.prev_closing_price,
+          timestamp: new Date().toISOString(),
+        };
+        // 캐시 저장
+        priceCache.set(cacheKey, { data: priceData, timestamp: now });
+        return successResponse(res, priceData);
+      }
+
+      // 2. WebSocket 데이터가 없으면 REST API 폴백 (throttling 적용)
       await throttlePriceApi();
       const response = await axios.get(`https://api.upbit.com/v1/ticker?markets=${ticker}`);
 

@@ -35,17 +35,20 @@ class BotEngine {
       // WebSocket 연결
       priceManager.connect();
 
+      // 대시보드 기본 종목 (항상 구독)
+      const defaultTickers = ['KRW-BTC', 'KRW-ETH', 'KRW-USDT'];
+
       // 실행 중인 봇들의 티커 조회
       const runningBots = await prisma.bot.findMany({
         where: { status: 'running' },
         select: { ticker: true },
       });
 
-      // 유니크 티커들 구독
-      const uniqueTickers = [...new Set(runningBots.map(bot => bot.ticker))];
-      console.log(`[BotEngine] Subscribing to ${uniqueTickers.length} tickers via WebSocket`);
+      // 기본 종목 + 봇 종목 합쳐서 유니크하게 구독
+      const allTickers = [...new Set([...defaultTickers, ...runningBots.map(bot => bot.ticker)])];
+      console.log(`[BotEngine] Subscribing to ${allTickers.length} tickers via WebSocket (including dashboard defaults)`);
 
-      for (const ticker of uniqueTickers) {
+      for (const ticker of allTickers) {
         priceManager.subscribe(ticker);
       }
     } catch (error: any) {

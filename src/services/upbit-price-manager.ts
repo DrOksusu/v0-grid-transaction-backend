@@ -9,6 +9,7 @@
 
 import WebSocket from 'ws';
 import { UpbitService } from './upbit.service';
+import { socketService } from './socket.service';
 
 interface TickerData {
   type: string;
@@ -34,6 +35,17 @@ interface PriceCache {
   data: TickerData;
 }
 
+// 클라이언트 브로드캐스트용 버퍼
+interface BroadcastBuffer {
+  prices: Map<string, {
+    ticker: string;
+    price: number;
+    change24h: number;
+    volume24h: number;
+  }>;
+  lastBroadcast: number;
+}
+
 class UpbitPriceManager {
   private static instance: UpbitPriceManager;
 
@@ -45,10 +57,18 @@ class UpbitPriceManager {
   private maxReconnectAttempts: number = 10;
   private reconnectTimeout: NodeJS.Timeout | null = null;
   private pingInterval: NodeJS.Timeout | null = null;
+  private broadcastInterval: NodeJS.Timeout | null = null;
+
+  // 클라이언트 브로드캐스트 버퍼 (1초마다 일괄 전송)
+  private broadcastBuffer: BroadcastBuffer = {
+    prices: new Map(),
+    lastBroadcast: 0,
+  };
 
   private readonly WS_URL = 'wss://api.upbit.com/websocket/v1';
   private readonly PING_INTERVAL = 30000; // 30초마다 PING
   private readonly CACHE_TTL = 60000; // 캐시 유효기간 60초 (WebSocket 끊어졌을 때 대비)
+  private readonly BROADCAST_INTERVAL = 1000; // 1초마다 클라이언트에 브로드캐스트
 
   private constructor() {}
 
@@ -85,6 +105,9 @@ class UpbitPriceManager {
 
         // Ping 시작
         this.startPing();
+
+        // 클라이언트 브로드캐스트 시작
+        this.startBroadcast();
       });
 
       this.ws.on('message', (data: Buffer) => {
@@ -120,6 +143,7 @@ class UpbitPriceManager {
     console.log('[PriceManager] Disconnecting...');
 
     this.stopPing();
+    this.stopBroadcast();
 
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
@@ -134,6 +158,7 @@ class UpbitPriceManager {
     this.isConnected = false;
     this.subscriptions.clear();
     this.priceCache.clear();
+    this.broadcastBuffer.prices.clear();
   }
 
   /**
@@ -294,6 +319,14 @@ class UpbitPriceManager {
           timestamp: Date.now(),
           data: message,
         });
+
+        // 브로드캐스트 버퍼에 추가 (1초마다 일괄 전송됨)
+        this.broadcastBuffer.prices.set(message.code, {
+          ticker: message.code,
+          price: message.trade_price,
+          change24h: message.signed_change_rate * 100, // 퍼센트로 변환
+          volume24h: message.trade_volume,
+        });
       }
     } catch (error: any) {
       // PING 응답 등 JSON이 아닌 메시지는 무시
@@ -328,6 +361,42 @@ class UpbitPriceManager {
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
+    }
+  }
+
+  /**
+   * 클라이언트 브로드캐스트 시작 (1초마다)
+   */
+  private startBroadcast(): void {
+    this.stopBroadcast();
+
+    this.broadcastInterval = setInterval(() => {
+      // 구독자가 없거나 버퍼가 비어있으면 스킵
+      if (socketService.getPriceSubscribersCount() === 0) {
+        return;
+      }
+
+      if (this.broadcastBuffer.prices.size === 0) {
+        return;
+      }
+
+      // 버퍼의 가격 데이터를 배열로 변환해서 전송
+      const prices = Array.from(this.broadcastBuffer.prices.values());
+      socketService.emitPricesBatch(prices);
+
+      // 버퍼 초기화
+      this.broadcastBuffer.prices.clear();
+      this.broadcastBuffer.lastBroadcast = Date.now();
+    }, this.BROADCAST_INTERVAL);
+  }
+
+  /**
+   * 클라이언트 브로드캐스트 중지
+   */
+  private stopBroadcast(): void {
+    if (this.broadcastInterval) {
+      clearInterval(this.broadcastInterval);
+      this.broadcastInterval = null;
     }
   }
 
