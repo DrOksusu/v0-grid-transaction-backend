@@ -4,6 +4,7 @@ import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { GridService, roundToTickSize } from '../services/grid.service';
 import { UpbitService } from '../services/upbit.service';
+import { priceManager } from '../services/upbit-price-manager';
 import { decrypt } from '../utils/encryption';
 import { botEngine } from '../services/bot-engine.service';
 import { ProfitService } from '../services/profit.service';
@@ -122,10 +123,28 @@ export const getAllBots = async (
       orderBy: { createdAt: 'desc' },
     });
 
-    // 업비트 봇들의 현재가 일괄 조회
+    // 업비트 봇들의 현재가 조회 (WebSocket 캐시 우선, REST 폴백)
     const upbitBots = bots.filter(b => b.exchange === 'upbit');
     const markets = upbitBots.map(b => `KRW-${b.ticker.replace('KRW-', '')}`);
-    const priceMap = await UpbitService.getMultiplePrices(markets);
+
+    // 1. WebSocket 캐시에서 먼저 조회
+    const priceMap = new Map<string, number>();
+    const uncachedMarkets: string[] = [];
+
+    for (const market of markets) {
+      const cachedPrice = priceManager.getPrice(market);
+      if (cachedPrice !== null) {
+        priceMap.set(market, cachedPrice);
+      } else {
+        uncachedMarkets.push(market);
+      }
+    }
+
+    // 2. 캐시에 없는 것만 REST API로 조회
+    if (uncachedMarkets.length > 0) {
+      const restPrices = await UpbitService.getMultiplePrices(uncachedMarkets);
+      restPrices.forEach((price, market) => priceMap.set(market, price));
+    }
 
     const summary = {
       totalBots: bots.length,
