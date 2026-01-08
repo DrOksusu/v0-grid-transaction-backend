@@ -123,27 +123,16 @@ export const getAllBots = async (
       orderBy: { createdAt: 'desc' },
     });
 
-    // 업비트 봇들의 현재가 조회 (WebSocket 캐시 우선, REST 폴백)
-    const upbitBots = bots.filter(b => b.exchange === 'upbit');
-    const markets = upbitBots.map(b => `KRW-${b.ticker.replace('KRW-', '')}`);
-
-    // 1. WebSocket 캐시에서 먼저 조회
+    // 업비트 봇들의 현재가 조회 (WebSocket 캐시만 사용 - 빠른 응답)
+    // 가격이 없으면 0으로 반환, 프론트엔드에서 WebSocket으로 실시간 업데이트
     const priceMap = new Map<string, number>();
-    const uncachedMarkets: string[] = [];
 
-    for (const market of markets) {
-      const cachedPrice = priceManager.getPrice(market);
-      if (cachedPrice !== null) {
-        priceMap.set(market, cachedPrice);
-      } else {
-        uncachedMarkets.push(market);
+    for (const bot of bots) {
+      if (bot.exchange === 'upbit') {
+        const market = `KRW-${bot.ticker.replace('KRW-', '')}`;
+        const cachedPrice = priceManager.getPrice(market);
+        priceMap.set(market, cachedPrice || 0);
       }
-    }
-
-    // 2. 캐시에 없는 것만 REST API로 조회
-    if (uncachedMarkets.length > 0) {
-      const restPrices = await UpbitService.getMultiplePrices(uncachedMarkets);
-      restPrices.forEach((price, market) => priceMap.set(market, price));
     }
 
     const summary = {
