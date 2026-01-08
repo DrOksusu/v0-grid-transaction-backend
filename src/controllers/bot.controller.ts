@@ -110,6 +110,7 @@ export const getAllBots = async (
   res: Response,
   next: NextFunction
 ) => {
+  const startTime = Date.now();
   try {
     const userId = req.userId!;
     const { status, exchange } = req.query;
@@ -122,6 +123,7 @@ export const getAllBots = async (
       where,
       orderBy: { createdAt: 'desc' },
     });
+    console.log(`[API] getAllBots DB 조회: ${Date.now() - startTime}ms, ${bots.length}개 봇`);
 
     // 업비트 봇들의 현재가 조회 (WebSocket 캐시만 사용 - 빠른 응답)
     // 가격이 없으면 0으로 반환, 프론트엔드에서 WebSocket으로 실시간 업데이트
@@ -183,11 +185,13 @@ export const getAllBots = async (
       };
     });
 
+    console.log(`[API] getAllBots 전체 응답: ${Date.now() - startTime}ms`);
     return successResponse(res, {
       bots: botsData,
       summary,
     });
   } catch (error) {
+    console.error(`[API] getAllBots 에러: ${Date.now() - startTime}ms`, error);
     next(error);
   }
 };
