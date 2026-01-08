@@ -11,6 +11,26 @@ const startServer = async () => {
     await prisma.$connect();
     console.log('Database connected successfully');
 
+    // Connection pool 워밍업 - 병렬 쿼리로 여러 연결 미리 생성
+    const warmupStart = Date.now();
+    await Promise.all([
+      prisma.$queryRaw`SELECT 1`,
+      prisma.$queryRaw`SELECT 1`,
+      prisma.$queryRaw`SELECT 1`,
+      prisma.$queryRaw`SELECT 1`,
+      prisma.$queryRaw`SELECT 1`,
+    ]);
+    console.log(`Database connection pool warmed up in ${Date.now() - warmupStart}ms`);
+
+    // Connection keep-alive: 5분마다 연결 유지 (MySQL wait_timeout 대응)
+    setInterval(async () => {
+      try {
+        await prisma.$queryRaw`SELECT 1`;
+      } catch (error) {
+        console.error('[Prisma] Keep-alive ping failed:', error);
+      }
+    }, 5 * 60 * 1000); // 5분
+
     // HTTP 서버 생성
     const httpServer = createServer(app);
 
