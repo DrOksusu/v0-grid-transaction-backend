@@ -66,6 +66,9 @@ model Bot {
   gridLevels         GridLevel[]
   trades             Trade[]
 
+  @@index([userId])
+  @@index([status])
+  @@index([userId, status])
   @@map("bots")
 }
 
@@ -96,6 +99,9 @@ model GridLevel {
   updatedAt  DateTime         @updatedAt
   trades     Trade[]
 
+  @@index([botId])
+  @@index([botId, status])
+  @@index([status])
   @@map("grid_levels")
 }
 
@@ -122,6 +128,9 @@ model Trade {
   filledAt     DateTime?
   createdAt    DateTime    @default(now())
 
+  @@index([botId])
+  @@index([botId, status])
+  @@index([gridLevelId])
   @@map("trades")
 }
 
@@ -154,6 +163,8 @@ model Credential {
   tokenExpireAt   DateTime?         // 토큰 만료 시간
 
   @@unique([userId, exchange, purpose])
+  @@index([userId])
+  @@index([userId, exchange])
   @@map("credentials")
 }
 
