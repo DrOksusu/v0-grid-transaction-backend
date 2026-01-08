@@ -1,6 +1,11 @@
 # Build stage
 FROM node:18-alpine AS builder
 
+# 캐시 무효화를 위한 빌드 인자
+ARG BUILD_DATE=unknown
+ARG COMMIT_SHA=unknown
+RUN echo "Build: $BUILD_DATE - $COMMIT_SHA"
+
 # Install OpenSSL for Prisma
 RUN apk add --no-cache openssl
 
