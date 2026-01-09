@@ -340,6 +340,17 @@ class SocketService {
   hasBotsSubscribers(userId: number): boolean {
     return (this.botsSubscribers.get(userId)?.size || 0) > 0;
   }
+
+  // 봇 구독 중인 모든 유저 ID 목록 반환
+  getSubscribedUserIds(): number[] {
+    const userIds: number[] = [];
+    this.botsSubscribers.forEach((sockets, userId) => {
+      if (sockets.size > 0) {
+        userIds.push(userId);
+      }
+    });
+    return userIds;
+  }
 }
 
 export const socketService = new SocketService();

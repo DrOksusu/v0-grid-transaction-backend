@@ -113,17 +113,10 @@ class BotEngine {
   // 모든 실행 중인 봇 처리
   private async executeBots() {
     try {
-      // 실행 중인 모든 봇 조회
+      // 실행 중인 봇 ID + 티커만 조회 (gridLevels include 제거로 성능 개선)
       const runningBots = await prisma.bot.findMany({
-        where: {
-          status: 'running',
-        },
-        include: {
-          gridLevels: {
-            where: { status: 'available' },
-            take: 1,
-          },
-        },
+        where: { status: 'running' },
+        select: { id: true, ticker: true },
       });
 
       // 실행 중인 봇 수는 주기적으로만 로깅 (10분마다)
@@ -131,11 +124,23 @@ class BotEngine {
         console.log(`[BotEngine] ${runningBots.length}개 봇 실행 중`);
       }
 
+      if (runningBots.length === 0) return;
+
+      // available 그리드가 있는 봇 ID들을 한 번에 조회
+      const botsWithAvailableGrids = await prisma.gridLevel.groupBy({
+        by: ['botId'],
+        where: {
+          botId: { in: runningBots.map(b => b.id) },
+          status: 'available',
+        },
+      });
+      const botsWithGridsSet = new Set(botsWithAvailableGrids.map(g => g.botId));
+
       // 각 봇에 대해 거래 실행
       for (const bot of runningBots) {
         try {
           // 그리드 레벨이 없으면 스킵 (로그 없이)
-          if (bot.gridLevels.length === 0) {
+          if (!botsWithGridsSet.has(bot.id)) {
             continue;
           }
 
@@ -167,19 +172,32 @@ class BotEngine {
   // 구독 중인 유저들에게 봇 데이터 브로드캐스트
   private async broadcastBotsToSubscribers() {
     try {
-      // 구독 중인 모든 유저 ID 가져오기 (socketService에서)
-      // 각 유저별로 봇 데이터 조회 후 전송
-      const userIds = await this.getSubscribedUserIds();
+      // socketService에서 구독 중인 유저 ID 직접 가져오기 (DB 조회 없음)
+      const subscribedUserIds = socketService.getSubscribedUserIds();
+      if (subscribedUserIds.length === 0) return;
 
-      for (const userId of userIds) {
+      // 구독 중인 유저들의 봇을 한 번에 조회 (N+1 문제 해결)
+      const allBots = await prisma.bot.findMany({
+        where: { userId: { in: subscribedUserIds } },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      // 유저별로 그룹화
+      const botsByUser = new Map<number, typeof allBots>();
+      for (const bot of allBots) {
+        if (!botsByUser.has(bot.userId)) {
+          botsByUser.set(bot.userId, []);
+        }
+        botsByUser.get(bot.userId)!.push(bot);
+      }
+
+      // 각 유저에게 브로드캐스트
+      for (const userId of subscribedUserIds) {
         if (!socketService.hasBotsSubscribers(userId)) continue;
 
-        const bots = await prisma.bot.findMany({
-          where: { userId },
-          orderBy: { createdAt: 'desc' },
-        });
+        const bots = botsByUser.get(userId) || [];
 
-        // 가격 정보 가져오기
+        // 가격 정보 가져오기 (메모리 캐시에서)
         const priceMap = new Map<string, number>();
         for (const bot of bots) {
           if (bot.exchange === 'upbit') {
@@ -243,15 +261,6 @@ class BotEngine {
         console.error('[BotEngine] Broadcast error:', error.message);
       }
     }
-  }
-
-  // 구독 중인 유저 ID 목록 가져오기
-  private async getSubscribedUserIds(): Promise<number[]> {
-    // 봇이 있는 모든 유저 ID 조회
-    const users = await prisma.bot.groupBy({
-      by: ['userId'],
-    });
-    return users.map(u => u.userId);
   }
 }
 
