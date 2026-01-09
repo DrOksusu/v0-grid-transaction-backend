@@ -14,6 +14,8 @@ class SocketService {
   private io: SocketServer | null = null;
   private botRooms: Map<string, Set<string>> = new Map(); // botId -> Set of socket ids
   private priceSubscribers: Set<string> = new Set(); // 가격 구독자 socket ids
+  private botsSubscribers: Map<number, Set<string>> = new Map(); // userId -> Set of socket ids
+  private socketUserMap: Map<string, number> = new Map(); // socketId -> userId
 
   initialize(httpServer: HttpServer) {
     // CORS 설정: 쉼표로 구분된 여러 도메인 허용
@@ -71,6 +73,34 @@ class SocketService {
         console.log(`[Socket] ${socket.id} unsubscribed from prices`);
       });
 
+      // 봇 목록 구독 (userId 기반)
+      socket.on('subscribe:bots', (userId: number) => {
+        if (!userId) return;
+
+        const room = `user:${userId}:bots`;
+        socket.join(room);
+
+        if (!this.botsSubscribers.has(userId)) {
+          this.botsSubscribers.set(userId, new Set());
+        }
+        this.botsSubscribers.get(userId)!.add(socket.id);
+        this.socketUserMap.set(socket.id, userId);
+
+        console.log(`[Socket] ${socket.id} subscribed to bots for user ${userId}`);
+      });
+
+      // 봇 목록 구독 해제
+      socket.on('unsubscribe:bots', () => {
+        const userId = this.socketUserMap.get(socket.id);
+        if (userId) {
+          const room = `user:${userId}:bots`;
+          socket.leave(room);
+          this.botsSubscribers.get(userId)?.delete(socket.id);
+          this.socketUserMap.delete(socket.id);
+          console.log(`[Socket] ${socket.id} unsubscribed from bots`);
+        }
+      });
+
       // 연결 해제
       socket.on('disconnect', () => {
         console.log(`[Socket] Client disconnected: ${socket.id}`);
@@ -82,6 +112,13 @@ class SocketService {
 
         // 가격 구독자에서도 제거
         this.priceSubscribers.delete(socket.id);
+
+        // 봇 구독자에서도 제거
+        const userId = this.socketUserMap.get(socket.id);
+        if (userId) {
+          this.botsSubscribers.get(userId)?.delete(socket.id);
+          this.socketUserMap.delete(socket.id);
+        }
       });
     });
 
@@ -242,6 +279,66 @@ class SocketService {
   // 가격 구독자 수
   getPriceSubscribersCount(): number {
     return this.priceSubscribers.size;
+  }
+
+  // 봇 목록 전체 전송 (userId의 모든 봇)
+  emitBotsList(userId: number, bots: Array<{
+    _id: string;
+    exchange: string;
+    ticker: string;
+    status: string;
+    currentProfit: number;
+    profitPercent: number;
+    totalTrades: number;
+    investmentAmount: number;
+    currentPrice: number;
+    lowerPrice: number;
+    upperPrice: number;
+    gridCount: number;
+    priceChangePercent: number;
+    orderAmount: number;
+    stopAtMax: boolean;
+    buyPrices: number[];
+    createdAt: Date;
+  }>, summary: {
+    totalBots: number;
+    activeBots: number;
+    totalProfit: number;
+    totalInvestment: number;
+  }) {
+    if (!this.io) return;
+
+    const room = `user:${userId}:bots`;
+    this.io.to(room).emit('bots:list', { bots, summary, timestamp: Date.now() });
+  }
+
+  // 개별 봇 업데이트 전송
+  emitBotStatusUpdate(userId: number, botId: number, data: {
+    status?: string;
+    currentProfit?: number;
+    profitPercent?: number;
+    totalTrades?: number;
+    currentPrice?: number;
+    errorMessage?: string | null;
+  }) {
+    if (!this.io) return;
+
+    const room = `user:${userId}:bots`;
+    this.io.to(room).emit('bots:update', {
+      botId: botId.toString(),
+      ...data,
+      timestamp: Date.now(),
+    });
+  }
+
+  // 봇 구독자 수
+  getBotsSubscribersCount(userId: number): number {
+    return this.botsSubscribers.get(userId)?.size || 0;
+  }
+
+  // 특정 유저에게 봇 구독자가 있는지 확인
+  hasBotsSubscribers(userId: number): boolean {
+    return (this.botsSubscribers.get(userId)?.size || 0) > 0;
   }
 }
 

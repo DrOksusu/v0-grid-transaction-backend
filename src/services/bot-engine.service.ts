@@ -1,11 +1,15 @@
 import prisma from '../config/database';
 import { TradingService } from './trading.service';
 import { priceManager } from './upbit-price-manager';
+import { socketService } from './socket.service';
+import { roundToTickSize } from './grid.service';
 
 class BotEngine {
   private isRunning: boolean = false;
   private interval: NodeJS.Timeout | null = null;
+  private broadcastInterval: NodeJS.Timeout | null = null;
   private readonly CHECK_INTERVAL = 10000; // 10초마다 체크
+  private readonly BROADCAST_INTERVAL = 5000; // 5초마다 봇 데이터 브로드캐스트
 
   // 엔진 시작
   async start() {
@@ -24,6 +28,11 @@ class BotEngine {
     this.interval = setInterval(async () => {
       await this.executeBots();
     }, this.CHECK_INTERVAL);
+
+    // 봇 데이터 브로드캐스트 시작
+    this.broadcastInterval = setInterval(async () => {
+      await this.broadcastBotsToSubscribers();
+    }, this.BROADCAST_INTERVAL);
 
     // 즉시 한 번 실행
     this.executeBots();
@@ -61,6 +70,11 @@ class BotEngine {
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;
+    }
+
+    if (this.broadcastInterval) {
+      clearInterval(this.broadcastInterval);
+      this.broadcastInterval = null;
     }
 
     // PriceManager WebSocket 연결 종료
@@ -148,6 +162,96 @@ class BotEngine {
       isRunning: this.isRunning,
       checkInterval: this.CHECK_INTERVAL,
     };
+  }
+
+  // 구독 중인 유저들에게 봇 데이터 브로드캐스트
+  private async broadcastBotsToSubscribers() {
+    try {
+      // 구독 중인 모든 유저 ID 가져오기 (socketService에서)
+      // 각 유저별로 봇 데이터 조회 후 전송
+      const userIds = await this.getSubscribedUserIds();
+
+      for (const userId of userIds) {
+        if (!socketService.hasBotsSubscribers(userId)) continue;
+
+        const bots = await prisma.bot.findMany({
+          where: { userId },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        // 가격 정보 가져오기
+        const priceMap = new Map<string, number>();
+        for (const bot of bots) {
+          if (bot.exchange === 'upbit') {
+            const market = `KRW-${bot.ticker.replace('KRW-', '')}`;
+            const cachedPrice = priceManager.getPrice(market);
+            priceMap.set(market, cachedPrice || 0);
+          }
+        }
+
+        const summary = {
+          totalBots: bots.length,
+          activeBots: bots.filter(b => b.status === 'running').length,
+          totalProfit: bots.reduce((sum, b) => sum + b.currentProfit, 0),
+          totalInvestment: bots.reduce((sum, b) => sum + b.investmentAmount, 0),
+        };
+
+        const botsData = bots.map(bot => {
+          const buyPrices: number[] = [];
+          const multiplier = 1 + bot.priceChangePercent / 100;
+          let price = bot.lowerPrice;
+
+          for (let i = 0; i < bot.gridCount; i++) {
+            buyPrices.push(roundToTickSize(price));
+            price *= multiplier;
+          }
+
+          let currentPrice = 0;
+          if (bot.exchange === 'upbit') {
+            const market = `KRW-${bot.ticker.replace('KRW-', '')}`;
+            currentPrice = priceMap.get(market) || 0;
+          }
+
+          return {
+            _id: bot.id.toString(),
+            exchange: bot.exchange,
+            ticker: bot.ticker,
+            lowerPrice: bot.lowerPrice,
+            upperPrice: bot.upperPrice,
+            gridCount: bot.gridCount,
+            priceChangePercent: bot.priceChangePercent,
+            orderAmount: bot.orderAmount,
+            stopAtMax: bot.stopAtMax,
+            status: bot.status,
+            currentProfit: bot.currentProfit,
+            profitPercent: bot.investmentAmount > 0
+              ? (bot.currentProfit / bot.investmentAmount) * 100
+              : 0,
+            totalTrades: bot.totalTrades,
+            investmentAmount: bot.investmentAmount,
+            buyPrices,
+            currentPrice,
+            createdAt: bot.createdAt,
+          };
+        });
+
+        socketService.emitBotsList(userId, botsData, summary);
+      }
+    } catch (error: any) {
+      // 에러 로깅은 자주 발생할 수 있으므로 최소화
+      if (error.message !== 'No subscribers') {
+        console.error('[BotEngine] Broadcast error:', error.message);
+      }
+    }
+  }
+
+  // 구독 중인 유저 ID 목록 가져오기
+  private async getSubscribedUserIds(): Promise<number[]> {
+    // 봇이 있는 모든 유저 ID 조회
+    const users = await prisma.bot.groupBy({
+      by: ['userId'],
+    });
+    return users.map(u => u.userId);
   }
 }
 
