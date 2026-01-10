@@ -9,7 +9,7 @@ class BotEngine {
   private interval: NodeJS.Timeout | null = null;
   private broadcastInterval: NodeJS.Timeout | null = null;
   private readonly CHECK_INTERVAL = 10000; // 10초마다 체크
-  private readonly BROADCAST_INTERVAL = 5000; // 5초마다 봇 데이터 브로드캐스트
+  private readonly BROADCAST_INTERVAL = 10000; // 10초마다 봇 데이터 브로드캐스트
 
   // 엔진 시작
   async start() {
