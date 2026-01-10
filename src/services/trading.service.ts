@@ -6,31 +6,115 @@ import { socketService } from './socket.service';
 import { priceManager } from './upbit-price-manager';
 import { ProfitService } from './profit.service';
 
+// 자격증명 캐시 (5분 TTL)
+interface CachedCredential {
+  apiKey: string;
+  secretKey: string;
+  expireAt: number;
+}
+const credentialCache = new Map<number, CachedCredential>(); // botId -> credential
+const CREDENTIAL_CACHE_TTL = 5 * 60 * 1000; // 5분
+
+// 봇 정보 캐시 (1분 TTL) - userId, ticker 등 자주 변하지 않는 정보
+interface CachedBotInfo {
+  userId: number;
+  ticker: string;
+  orderAmount: number;
+  expireAt: number;
+}
+const botInfoCache = new Map<number, CachedBotInfo>();
+const BOT_INFO_CACHE_TTL = 60 * 1000; // 1분
+
 export class TradingService {
-  // 특정 봇에 대한 거래 실행
-  static async executeTrade(botId: number) {
-    try {
-      // 봇 정보 조회
-      const bot = await prisma.bot.findUnique({
-        where: { id: botId },
-        include: {
-          user: {
-            include: {
-              credentials: {
-                where: { exchange: 'upbit' },
-              },
+  // 캐시된 자격증명 조회 (없으면 DB에서 가져와서 캐시)
+  private static async getCachedCredential(botId: number): Promise<{ apiKey: string; secretKey: string; userId: number } | null> {
+    const now = Date.now();
+    const cached = credentialCache.get(botId);
+    const cachedBot = botInfoCache.get(botId);
+
+    if (cached && cached.expireAt > now && cachedBot && cachedBot.expireAt > now) {
+      return { apiKey: cached.apiKey, secretKey: cached.secretKey, userId: cachedBot.userId };
+    }
+
+    // 캐시 미스 - DB에서 조회
+    const bot = await prisma.bot.findUnique({
+      where: { id: botId },
+      include: {
+        user: {
+          include: {
+            credentials: {
+              where: { exchange: 'upbit' },
+              select: { apiKey: true, secretKey: true },
             },
           },
         },
+      },
+    });
+
+    if (!bot || !bot.user.credentials[0]) return null;
+
+    const credential = bot.user.credentials[0];
+    const apiKey = decrypt(credential.apiKey);
+    const secretKey = decrypt(credential.secretKey);
+
+    // 캐시 저장
+    credentialCache.set(botId, {
+      apiKey,
+      secretKey,
+      expireAt: now + CREDENTIAL_CACHE_TTL,
+    });
+    botInfoCache.set(botId, {
+      userId: bot.userId,
+      ticker: bot.ticker,
+      orderAmount: bot.orderAmount,
+      expireAt: now + BOT_INFO_CACHE_TTL,
+    });
+
+    return { apiKey, secretKey, userId: bot.userId };
+  }
+
+  // 캐시된 봇 정보 조회
+  private static async getCachedBotInfo(botId: number): Promise<CachedBotInfo | null> {
+    const now = Date.now();
+    const cached = botInfoCache.get(botId);
+
+    if (cached && cached.expireAt > now) {
+      return cached;
+    }
+
+    const bot = await prisma.bot.findUnique({
+      where: { id: botId },
+      select: { userId: true, ticker: true, orderAmount: true },
+    });
+
+    if (!bot) return null;
+
+    const botInfo: CachedBotInfo = {
+      userId: bot.userId,
+      ticker: bot.ticker,
+      orderAmount: bot.orderAmount,
+      expireAt: now + BOT_INFO_CACHE_TTL,
+    };
+    botInfoCache.set(botId, botInfo);
+    return botInfo;
+  }
+
+  // 특정 봇에 대한 거래 실행
+  static async executeTrade(botId: number) {
+    try {
+      // 봇 상태만 간단히 조회 (캐시된 정보는 별도)
+      const bot = await prisma.bot.findUnique({
+        where: { id: botId },
+        select: { id: true, status: true, ticker: true, orderAmount: true },
       });
 
       if (!bot || bot.status !== 'running') {
         return { success: false, message: '봇이 실행 중이 아닙니다' };
       }
 
-      // API 키 확인
-      const credential = bot.user.credentials[0];
-      if (!credential) {
+      // 캐시된 자격증명 조회 (5분 TTL)
+      const cachedCred = await this.getCachedCredential(botId);
+      if (!cachedCred) {
         await prisma.bot.update({
           where: { id: botId },
           data: {
@@ -41,9 +125,7 @@ export class TradingService {
         return { success: false, message: 'API 인증 정보가 없습니다' };
       }
 
-      // API 키 복호화
-      const apiKey = decrypt(credential.apiKey);
-      const secretKey = decrypt(credential.secretKey);
+      const { apiKey, secretKey } = cachedCred;
 
       // Upbit 서비스 초기화
       const upbit = new UpbitService({
@@ -277,24 +359,11 @@ export class TradingService {
       // pending 그리드가 없으면 조기 리턴
       if (pendingGrids.length === 0) return;
 
-      const bot = await prisma.bot.findUnique({
-        where: { id: botId },
-        include: {
-          user: {
-            include: {
-              credentials: {
-                where: { exchange: 'upbit' },
-              },
-            },
-          },
-        },
-      });
+      // 캐시된 자격증명 조회 (5분 TTL) - 무거운 JOIN 쿼리 제거
+      const cachedCred = await this.getCachedCredential(botId);
+      if (!cachedCred) return;
 
-      if (!bot || !bot.user.credentials[0]) return;
-
-      const credential = bot.user.credentials[0];
-      const apiKey = decrypt(credential.apiKey);
-      const secretKey = decrypt(credential.secretKey);
+      const { apiKey, secretKey, userId } = cachedCred;
 
       const upbit = new UpbitService({
         accessKey: apiKey,
@@ -389,7 +458,7 @@ export class TradingService {
 
             // 월별 수익 기록 (매도 체결 시에만)
             if (grid.type === 'sell' && profit !== 0) {
-              await ProfitService.recordProfit(bot.userId, 'upbit', profit);
+              await ProfitService.recordProfit(userId, 'upbit', profit);
             }
 
             // 거래 기록에 수익 업데이트
@@ -436,8 +505,15 @@ export class TradingService {
 
             // ========== 체결 즉시 반대 주문 실행 ==========
             // 봇이 여전히 running 상태인지 확인
-            if (bot.status === 'running') {
-              await this.executeOppositeOrder(upbit, bot, grid);
+            if (updatedBot && updatedBot.status === 'running') {
+              const botInfo = await this.getCachedBotInfo(botId);
+              if (botInfo) {
+                await this.executeOppositeOrder(upbit, {
+                  id: botId,
+                  ticker: botInfo.ticker,
+                  orderAmount: botInfo.orderAmount,
+                }, grid);
+              }
             }
           }
         } catch (error: any) {
