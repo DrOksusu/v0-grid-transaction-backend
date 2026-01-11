@@ -7,6 +7,7 @@ import kisRoutes from './kis';
 import infiniteBuyRoutes from './infinite-buy';
 import profitRoutes from './profits';
 import pushRoutes from './push';
+import whaleRoutes from './whale';
 
 const router = Router();
 
@@ -26,5 +27,6 @@ router.use('/kis', kisRoutes);
 router.use('/infinite-buy', infiniteBuyRoutes);
 router.use('/profits', profitRoutes);
 router.use('/push', pushRoutes);
+router.use('/whale', whaleRoutes);
 
 export default router;

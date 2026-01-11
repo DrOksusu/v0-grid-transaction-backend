@@ -5,6 +5,7 @@ import prisma, { logPoolStats } from './config/database';
 import { botEngine } from './services/bot-engine.service';
 import { socketService } from './services/socket.service';
 import { infiniteBuyScheduler } from './services/infinite-buy-scheduler.service';
+import { whaleAlertService } from './services/whale-alert.service';
 
 const startServer = async () => {
   try {
@@ -76,6 +77,9 @@ const startServer = async () => {
         // 무한매수법 스케줄러 시작
         infiniteBuyScheduler.start();
         console.log('Infinite buy scheduler started');
+
+        // 고래 알림 서비스 시작
+        whaleAlertService.start();
       } else {
         console.log('⚠️  Development mode: Schedulers disabled to prevent duplicate orders');
         console.log('   To enable schedulers, set NODE_ENV=production');
@@ -92,6 +96,7 @@ startServer();
 process.on('SIGINT', async () => {
   botEngine.stop();
   infiniteBuyScheduler.stop();
+  whaleAlertService.stop();
   await prisma.$disconnect();
   process.exit(0);
 });
@@ -99,6 +104,7 @@ process.on('SIGINT', async () => {
 process.on('SIGTERM', async () => {
   botEngine.stop();
   infiniteBuyScheduler.stop();
+  whaleAlertService.stop();
   await prisma.$disconnect();
   process.exit(0);
 });

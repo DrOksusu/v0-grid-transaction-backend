@@ -16,6 +16,7 @@ class SocketService {
   private priceSubscribers: Set<string> = new Set(); // 가격 구독자 socket ids
   private botsSubscribers: Map<number, Set<string>> = new Map(); // userId -> Set of socket ids
   private socketUserMap: Map<string, number> = new Map(); // socketId -> userId
+  private whaleSubscribers: Set<string> = new Set(); // 고래 활동 구독자 socket ids
 
   initialize(httpServer: HttpServer) {
     // CORS 설정: 쉼표로 구분된 여러 도메인 허용
@@ -101,6 +102,20 @@ class SocketService {
         }
       });
 
+      // 고래 활동 구독
+      socket.on('subscribe:whale', () => {
+        socket.join('whale');
+        this.whaleSubscribers.add(socket.id);
+        console.log(`[Socket] ${socket.id} subscribed to whale activity (total: ${this.whaleSubscribers.size})`);
+      });
+
+      // 고래 활동 구독 해제
+      socket.on('unsubscribe:whale', () => {
+        socket.leave('whale');
+        this.whaleSubscribers.delete(socket.id);
+        console.log(`[Socket] ${socket.id} unsubscribed from whale activity`);
+      });
+
       // 연결 해제
       socket.on('disconnect', () => {
         console.log(`[Socket] Client disconnected: ${socket.id}`);
@@ -112,6 +127,9 @@ class SocketService {
 
         // 가격 구독자에서도 제거
         this.priceSubscribers.delete(socket.id);
+
+        // 고래 구독자에서도 제거
+        this.whaleSubscribers.delete(socket.id);
 
         // 봇 구독자에서도 제거
         const userId = this.socketUserMap.get(socket.id);
@@ -350,6 +368,24 @@ class SocketService {
       }
     });
     return userIds;
+  }
+
+  // 고래 활동 업데이트 브로드캐스트
+  emitWhaleUpdate(data: {
+    transactions: Record<string, any[]>;
+    summaries: Record<string, any>;
+    timestamp: number;
+  }) {
+    if (!this.io || this.whaleSubscribers.size === 0) {
+      return;
+    }
+
+    this.io.to('whale').emit('whale:update', data);
+  }
+
+  // 고래 구독자 수
+  getWhaleSubscribersCount(): number {
+    return this.whaleSubscribers.size;
   }
 }
 
