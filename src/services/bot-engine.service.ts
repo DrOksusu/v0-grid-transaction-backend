@@ -8,8 +8,11 @@ class BotEngine {
   private isRunning: boolean = false;
   private interval: NodeJS.Timeout | null = null;
   private broadcastInterval: NodeJS.Timeout | null = null;
-  private readonly CHECK_INTERVAL = 10000; // 10초마다 체크
+  private readonly BASE_INTERVAL = 3000; // 기본 체크 주기 3초 (가장 빠른 봇 기준)
   private readonly BROADCAST_INTERVAL = 10000; // 10초마다 봇 데이터 브로드캐스트
+
+  // 봇별 마지막 실행 시간 추적
+  private lastExecutionTime: Map<number, number> = new Map();
 
   // 엔진 시작
   async start() {
@@ -24,10 +27,10 @@ class BotEngine {
     // WebSocket PriceManager 시작 및 실행 중인 봇 티커 구독
     await this.initializePriceManager();
 
-    // 주기적으로 봇 실행
+    // 주기적으로 봇 실행 (동적 간격 - 기본 3초마다 체크)
     this.interval = setInterval(async () => {
       await this.executeBots();
-    }, this.CHECK_INTERVAL);
+    }, this.BASE_INTERVAL);
 
     // 봇 데이터 브로드캐스트 시작
     this.broadcastInterval = setInterval(async () => {
@@ -110,9 +113,11 @@ class BotEngine {
     return priceManager.getConnectionStatus();
   }
 
-  // 모든 실행 중인 봇 처리
+  // 모든 실행 중인 봇 처리 (동적 간격 적용)
   private async executeBots() {
     try {
+      const now = Date.now();
+
       // 실행 중인 봇 ID + 티커만 조회 (gridLevels include 제거로 성능 개선)
       const runningBots = await prisma.bot.findMany({
         where: { status: 'running' },
@@ -120,25 +125,43 @@ class BotEngine {
       });
 
       // 실행 중인 봇 수는 주기적으로만 로깅 (10분마다)
-      if (runningBots.length > 0 && Date.now() % 600000 < this.CHECK_INTERVAL) {
-        console.log(`[BotEngine] ${runningBots.length}개 봇 실행 중`);
+      if (runningBots.length > 0 && now % 600000 < this.BASE_INTERVAL) {
+        // 변동성 정보도 함께 로깅
+        const volatilityInfo = runningBots.map(b => {
+          const vol = priceManager.getVolatility(b.ticker);
+          const interval = priceManager.getRecommendedInterval(b.ticker);
+          return `${b.ticker.replace('KRW-', '')}:${vol.toFixed(1)}%/${interval/1000}s`;
+        }).join(', ');
+        console.log(`[BotEngine] ${runningBots.length}개 봇 실행 중 (변동성: ${volatilityInfo})`);
       }
 
       if (runningBots.length === 0) return;
+
+      // 실행 대상 봇 필터링 (변동성 기반 간격 체크)
+      const botsToExecute = runningBots.filter(bot => {
+        const lastExec = this.lastExecutionTime.get(bot.id) || 0;
+        const recommendedInterval = priceManager.getRecommendedInterval(bot.ticker);
+        return (now - lastExec) >= recommendedInterval;
+      });
+
+      if (botsToExecute.length === 0) return;
 
       // available 그리드가 있는 봇 ID들을 한 번에 조회
       const botsWithAvailableGrids = await prisma.gridLevel.groupBy({
         by: ['botId'],
         where: {
-          botId: { in: runningBots.map(b => b.id) },
+          botId: { in: botsToExecute.map(b => b.id) },
           status: 'available',
         },
       });
       const botsWithGridsSet = new Set(botsWithAvailableGrids.map(g => g.botId));
 
       // 각 봇에 대해 거래 실행
-      for (const bot of runningBots) {
+      for (const bot of botsToExecute) {
         try {
+          // 실행 시간 기록 (그리드 유무와 관계없이)
+          this.lastExecutionTime.set(bot.id, now);
+
           // 그리드 레벨이 없으면 스킵 (로그 없이)
           if (!botsWithGridsSet.has(bot.id)) {
             continue;
@@ -147,7 +170,8 @@ class BotEngine {
           // 거래 실행
           const result = await TradingService.executeTrade(bot.id);
           if (result.executed) {
-            console.log(`[BotEngine] Bot ${bot.id} (${bot.ticker}): 거래 실행됨`);
+            const volatility = priceManager.getVolatility(bot.ticker);
+            console.log(`[BotEngine] Bot ${bot.id} (${bot.ticker}): 거래 실행됨 (변동성: ${volatility.toFixed(2)}%)`);
           }
 
           // 체결된 주문 확인
@@ -165,7 +189,8 @@ class BotEngine {
   getStatus() {
     return {
       isRunning: this.isRunning,
-      checkInterval: this.CHECK_INTERVAL,
+      baseInterval: this.BASE_INTERVAL,
+      dynamicIntervals: '3s(5%+) / 5s(3-5%) / 10s(1-3%) / 15s(<1%)',
     };
   }
 

@@ -35,6 +35,15 @@ interface PriceCache {
   data: TickerData;
 }
 
+// 변동성 추적용 인터페이스
+interface VolatilityData {
+  high: number;
+  low: number;
+  prices: Array<{ price: number; timestamp: number }>;
+  lastCalculated: number;
+  volatility: number; // 퍼센트
+}
+
 // 클라이언트 브로드캐스트용 버퍼
 interface BroadcastBuffer {
   prices: Map<string, {
@@ -51,6 +60,7 @@ class UpbitPriceManager {
 
   private ws: WebSocket | null = null;
   private priceCache: Map<string, PriceCache> = new Map();
+  private volatilityCache: Map<string, VolatilityData> = new Map();
   private subscriptions: Set<string> = new Set();
   private isConnected: boolean = false;
   private reconnectAttempts: number = 0;
@@ -69,6 +79,7 @@ class UpbitPriceManager {
   private readonly PING_INTERVAL = 30000; // 30초마다 PING
   private readonly CACHE_TTL = 60000; // 캐시 유효기간 60초 (WebSocket 끊어졌을 때 대비)
   private readonly BROADCAST_INTERVAL = 1000; // 1초마다 클라이언트에 브로드캐스트
+  private readonly VOLATILITY_WINDOW = 60000; // 변동성 계산 윈도우 (1분)
 
   private constructor() {}
 
@@ -158,6 +169,7 @@ class UpbitPriceManager {
     this.isConnected = false;
     this.subscriptions.clear();
     this.priceCache.clear();
+    this.volatilityCache.clear();
     this.broadcastBuffer.prices.clear();
   }
 
@@ -280,6 +292,64 @@ class UpbitPriceManager {
   }
 
   /**
+   * 변동성 업데이트 (내부 메서드)
+   */
+  private updateVolatility(ticker: string, price: number, timestamp: number): void {
+    let data = this.volatilityCache.get(ticker);
+
+    if (!data) {
+      data = {
+        high: price,
+        low: price,
+        prices: [],
+        lastCalculated: timestamp,
+        volatility: 0,
+      };
+      this.volatilityCache.set(ticker, data);
+    }
+
+    // 가격 기록 추가
+    data.prices.push({ price, timestamp });
+
+    // 오래된 가격 제거 (1분 윈도우)
+    const cutoff = timestamp - this.VOLATILITY_WINDOW;
+    data.prices = data.prices.filter(p => p.timestamp > cutoff);
+
+    // 최고/최저 재계산
+    if (data.prices.length > 0) {
+      data.high = Math.max(...data.prices.map(p => p.price));
+      data.low = Math.min(...data.prices.map(p => p.price));
+
+      // 변동성 계산: (고가 - 저가) / 평균가 * 100
+      const avg = (data.high + data.low) / 2;
+      data.volatility = avg > 0 ? ((data.high - data.low) / avg) * 100 : 0;
+      data.lastCalculated = timestamp;
+    }
+  }
+
+  /**
+   * 변동성 조회 (퍼센트)
+   * @returns 변동성 퍼센트 (예: 2.5 = 2.5%)
+   */
+  getVolatility(ticker: string): number {
+    const normalizedTicker = ticker.toUpperCase();
+    const data = this.volatilityCache.get(normalizedTicker);
+    return data?.volatility ?? 0;
+  }
+
+  /**
+   * 변동성 기반 체크 간격 추천 (밀리초)
+   */
+  getRecommendedInterval(ticker: string): number {
+    const volatility = this.getVolatility(ticker);
+
+    if (volatility >= 5) return 3000;  // 5%+ → 3초
+    if (volatility >= 3) return 5000;  // 3-5% → 5초
+    if (volatility >= 1) return 10000; // 1-3% → 10초
+    return 15000; // 1% 미만 → 15초
+  }
+
+  /**
    * 구독 메시지 전송
    */
   private sendSubscription(): void {
@@ -314,16 +384,22 @@ class UpbitPriceManager {
       const message = JSON.parse(data.toString()) as TickerData;
 
       if (message.type === 'ticker' && message.code) {
+        const now = Date.now();
+        const price = message.trade_price;
+
         this.priceCache.set(message.code, {
-          price: message.trade_price,
-          timestamp: Date.now(),
+          price: price,
+          timestamp: now,
           data: message,
         });
+
+        // 변동성 추적 업데이트
+        this.updateVolatility(message.code, price, now);
 
         // 브로드캐스트 버퍼에 추가 (1초마다 일괄 전송됨)
         this.broadcastBuffer.prices.set(message.code, {
           ticker: message.code,
-          price: message.trade_price,
+          price: price,
           change24h: message.signed_change_rate * 100, // 퍼센트로 변환
           volume24h: message.trade_volume,
         });
