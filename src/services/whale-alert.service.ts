@@ -49,9 +49,13 @@ class WhaleAlertService {
   private readonly MIN_VALUE_USD = 500000; // 최소 $500,000 거래만 추적
   private readonly SUPPORTED_SYMBOLS = ['btc', 'eth', 'xrp'];
   private readonly FETCH_INTERVAL = 60000; // 1분마다 조회 (무료 티어 제한)
+  private readonly QUERY_PERIOD = 86400; // 24시간 (초)
 
   private fetchInterval: NodeJS.Timeout | null = null;
   private isRunning: boolean = false;
+  private lastFetchTime: number = 0;
+  private lastFetchSuccess: boolean = false;
+  private lastError: string | null = null;
 
   // 캐시: 최근 거래 및 요약
   private recentTransactions: Map<string, WhaleTransaction[]> = new Map(); // symbol -> transactions
@@ -108,10 +112,12 @@ class WhaleAlertService {
    * 모든 지원 코인의 거래 조회
    */
   private async fetchAllTransactions(): Promise<void> {
+    this.lastFetchTime = Date.now();
+
     try {
-      // 현재 시간에서 1시간 전부터 조회
+      // 현재 시간에서 24시간 전부터 조회
       const now = Math.floor(Date.now() / 1000);
-      const start = now - 3600; // 1시간 전
+      const start = now - this.QUERY_PERIOD; // 24시간 전
 
       const url = `${this.API_BASE}/transactions?api_key=${this.apiKey}&min_value=${this.MIN_VALUE_USD}&start=${start}&cursor=`;
 
@@ -119,6 +125,8 @@ class WhaleAlertService {
 
       if (!response.ok) {
         const errorText = await response.text();
+        this.lastFetchSuccess = false;
+        this.lastError = `API 오류: ${response.status}`;
         console.error('[WhaleAlert] API 오류:', response.status, errorText);
         return;
       }
@@ -126,8 +134,13 @@ class WhaleAlertService {
       const data = await response.json() as { transactions?: any[]; result?: string };
 
       if (!data.transactions || !Array.isArray(data.transactions)) {
+        this.lastFetchSuccess = true;
+        this.lastError = null;
         return;
       }
+
+      this.lastFetchSuccess = true;
+      this.lastError = null;
 
       // 지원하는 코인별로 분류
       const transactionsBySymbol = new Map<string, WhaleTransaction[]>();
@@ -167,6 +180,8 @@ class WhaleAlertService {
       }
 
     } catch (error: any) {
+      this.lastFetchSuccess = false;
+      this.lastError = error.message;
       console.error('[WhaleAlert] 거래 조회 실패:', error.message);
     }
   }
@@ -250,7 +265,7 @@ class WhaleAlertService {
 
     const summary: WhaleSummary = {
       symbol: symbol.toUpperCase(),
-      period: '1h',
+      period: '24h',
       exchangeToWallet: { count: 0, totalAmount: 0, totalUsd: 0 },
       walletToExchange: { count: 0, totalAmount: 0, totalUsd: 0 },
       netFlow: 0,
@@ -338,11 +353,30 @@ class WhaleAlertService {
   /**
    * 상태 조회
    */
-  getStatus(): { isRunning: boolean; supportedSymbols: string[]; minValueUsd: number } {
+  getStatus(): {
+    isRunning: boolean;
+    hasApiKey: boolean;
+    supportedSymbols: string[];
+    minValueUsd: number;
+    period: string;
+    lastFetchTime: number;
+    lastFetchSuccess: boolean;
+    lastError: string | null;
+    totalTransactions: number;
+  } {
+    const totalTransactions = Array.from(this.recentTransactions.values())
+      .reduce((sum, arr) => sum + arr.length, 0);
+
     return {
       isRunning: this.isRunning,
+      hasApiKey: !!this.apiKey,
       supportedSymbols: this.SUPPORTED_SYMBOLS.map(s => s.toUpperCase()),
       minValueUsd: this.MIN_VALUE_USD,
+      period: '24h',
+      lastFetchTime: this.lastFetchTime,
+      lastFetchSuccess: this.lastFetchSuccess,
+      lastError: this.lastError,
+      totalTransactions,
     };
   }
 }

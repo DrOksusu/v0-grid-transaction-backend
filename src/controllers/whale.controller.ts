@@ -16,10 +16,12 @@ export const getWhaleActivity = async (
 
     const data = whaleAlertService.getData(symbol as string | undefined);
     const summaries = whaleAlertService.getAllSummaries();
+    const status = whaleAlertService.getStatus();
 
     return successResponse(res, {
       transactions: data.transactions,
       summaries,
+      status,
       timestamp: Date.now(),
     });
   } catch (error) {
