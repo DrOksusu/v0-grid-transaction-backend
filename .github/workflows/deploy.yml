@@ -91,6 +91,7 @@ jobs:
               -e "VAPID_PUBLIC_KEY=${{ secrets.VAPID_PUBLIC_KEY }}" \
               -e "VAPID_PRIVATE_KEY=${{ secrets.VAPID_PRIVATE_KEY }}" \
               -e "VAPID_SUBJECT=${{ secrets.VAPID_SUBJECT }}" \
+              -e "WHALE_ALERT_API_KEY=${{ secrets.WHALE_ALERT_API_KEY }}" \
               827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest
 
             # 상태 확인
