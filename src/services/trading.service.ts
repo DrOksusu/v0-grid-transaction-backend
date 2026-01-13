@@ -525,12 +525,111 @@ export class TradingService {
     }
   }
 
+  /**
+   * 잔고 부족 시 원거리 매수 주문 정리
+   * 현재가 기준 가까운 N개만 유지하고 나머지 취소
+   */
+  private static async trimBuyOrdersOnInsufficientBalance(
+    upbit: UpbitService,
+    botId: number,
+    ticker: string,
+    keepCount: number = 7
+  ): Promise<{ cancelled: number; kept: number }> {
+    try {
+      console.log(`[Trading] Bot ${botId}: 잔고 부족으로 매수 주문 정리 시작 (유지할 주문: ${keepCount}개)`);
+
+      // 1. 현재가 조회
+      const market = `KRW-${ticker}`;
+      const tickerData = await UpbitService.getCurrentPrice(market);
+      const currentPrice = tickerData.trade_price;
+      console.log(`[Trading] Bot ${botId}: 현재가 ${currentPrice.toLocaleString()}원`);
+
+      // 2. 미체결 매수 주문 조회 (pending 상태, buy 타입, orderId 있는 것)
+      const pendingBuyGrids = await prisma.gridLevel.findMany({
+        where: {
+          botId,
+          type: 'buy',
+          status: 'pending',
+          orderId: { not: null },
+        },
+        orderBy: { price: 'desc' }, // 높은 가격(현재가에 가까운)부터 정렬
+      });
+
+      console.log(`[Trading] Bot ${botId}: 미체결 매수 주문 ${pendingBuyGrids.length}개 발견`);
+
+      if (pendingBuyGrids.length <= keepCount) {
+        console.log(`[Trading] Bot ${botId}: 주문 개수가 ${keepCount}개 이하, 정리 불필요`);
+        return { cancelled: 0, kept: pendingBuyGrids.length };
+      }
+
+      // 3. 현재가와 가까운 순으로 정렬 (거리 기준)
+      const sortedByDistance = pendingBuyGrids
+        .map(grid => ({
+          ...grid,
+          distance: Math.abs(currentPrice - grid.price),
+        }))
+        .sort((a, b) => a.distance - b.distance);
+
+      // 4. 유지할 주문과 취소할 주문 분리
+      const toKeep = sortedByDistance.slice(0, keepCount);
+      const toCancel = sortedByDistance.slice(keepCount);
+
+      console.log(`[Trading] Bot ${botId}: 유지 ${toKeep.length}개, 취소 ${toCancel.length}개`);
+
+      // 5. 원거리 주문 취소
+      let cancelledCount = 0;
+      for (const grid of toCancel) {
+        try {
+          if (grid.orderId) {
+            await upbit.cancelOrder(grid.orderId);
+
+            // 그리드 상태를 inactive로 변경 (다음에 다시 주문 가능)
+            await prisma.gridLevel.update({
+              where: { id: grid.id },
+              data: {
+                status: 'inactive',
+                orderId: null,
+              },
+            });
+
+            cancelledCount++;
+            console.log(`[Trading] Bot ${botId}: 매수 주문 취소 완료 - ${grid.price.toLocaleString()}원 (현재가 대비 ${((grid.distance / currentPrice) * 100).toFixed(2)}%)`);
+          }
+        } catch (cancelError: any) {
+          console.error(`[Trading] Bot ${botId}: 주문 취소 실패 (${grid.price}원) - ${cancelError.message}`);
+        }
+      }
+
+      // 6. 에러 메시지 제거 (정리 완료 후 정상 동작)
+      if (cancelledCount > 0) {
+        await prisma.bot.update({
+          where: { id: botId },
+          data: { errorMessage: null },
+        });
+
+        // 소켓으로 알림
+        socketService.emitBotUpdate(botId, {
+          message: `잔고 부족으로 원거리 매수 주문 ${cancelledCount}개 취소, ${toKeep.length}개 유지`,
+        });
+      }
+
+      console.log(`[Trading] Bot ${botId}: 매수 주문 정리 완료 - 취소 ${cancelledCount}개, 유지 ${toKeep.length}개`);
+      return { cancelled: cancelledCount, kept: toKeep.length };
+
+    } catch (error: any) {
+      console.error(`[Trading] Bot ${botId}: 매수 주문 정리 실패 - ${error.message}`);
+      return { cancelled: 0, kept: 0 };
+    }
+  }
+
   // 체결 후 즉시 반대 주문 실행
   private static async executeOppositeOrder(
     upbit: UpbitService,
     bot: { id: number; ticker: string; orderAmount: number },
-    filledGrid: { id: number; type: string; sellPrice: number | null; buyPrice: number | null; botId: number }
+    filledGrid: { id: number; type: string; sellPrice: number | null; buyPrice: number | null; botId: number },
+    retryCount: number = 0
   ) {
+    const MAX_RETRIES = 3;
     try {
       if (filledGrid.type === 'buy' && filledGrid.sellPrice) {
         // 매수 체결 → 즉시 매도 주문
@@ -645,7 +744,49 @@ export class TradingService {
     } catch (error: any) {
       console.error(`[Trading] Bot ${bot.id}: 반대 주문 실행 실패 - ${error.message}`);
 
-      // 에러 메시지 저장
+      // 잔고 부족 에러는 재시도해도 해결되지 않음
+      const isBalanceError = error.message.includes('부족') ||
+                             error.message.includes('insufficient') ||
+                             error.message.includes('balance');
+
+      // 재시도 가능한 에러이고 재시도 횟수가 남아있으면 재시도
+      if (!isBalanceError && retryCount < MAX_RETRIES) {
+        const delay = 5000 * (retryCount + 1); // 점진적 대기: 5초, 10초, 15초
+        console.log(`[Trading] Bot ${bot.id}: ${delay/1000}초 후 반대 주문 재시도 (${retryCount + 1}/${MAX_RETRIES})...`);
+
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1);
+      }
+
+      // 잔고 부족 에러: 원거리 매수 주문 정리 후 재시도
+      if (isBalanceError && filledGrid.type === 'sell') {
+        console.log(`[Trading] Bot ${bot.id}: 잔고 부족 - 원거리 매수 주문 정리 시작`);
+
+        const result = await this.trimBuyOrdersOnInsufficientBalance(
+          upbit,
+          bot.id,
+          bot.ticker,
+          7 // 현재가 기준 7개만 유지
+        );
+
+        // 주문 정리 후 재시도 (한 번만)
+        if (result.cancelled > 0 && retryCount === 0) {
+          console.log(`[Trading] Bot ${bot.id}: 주문 정리 완료, 매수 주문 재시도`);
+          await new Promise(resolve => setTimeout(resolve, 2000)); // 2초 대기
+          return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1);
+        }
+
+        // 정리해도 실패하면 에러 저장
+        if (result.cancelled === 0) {
+          await prisma.bot.update({
+            where: { id: bot.id },
+            data: { errorMessage: `반대 주문 실패: ${error.message} (정리할 주문 없음)` },
+          });
+        }
+        return;
+      }
+
+      // 그 외 에러: 에러 메시지 저장
       await prisma.bot.update({
         where: { id: bot.id },
         data: { errorMessage: `반대 주문 실패: ${error.message}` },
