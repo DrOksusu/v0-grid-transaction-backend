@@ -105,7 +105,7 @@ export class TradingService {
       // 봇 상태만 간단히 조회 (캐시된 정보는 별도)
       const bot = await prisma.bot.findUnique({
         where: { id: botId },
-        select: { id: true, status: true, ticker: true, orderAmount: true },
+        select: { id: true, status: true, ticker: true, orderAmount: true, errorMessage: true },
       });
 
       if (!bot || bot.status !== 'running') {
@@ -135,6 +135,14 @@ export class TradingService {
 
       // 현재가 조회 (WebSocket 캐시 우선, 없으면 REST 폴백)
       const currentPrice = await priceManager.getPriceWithFallback(bot.ticker);
+
+      // 현재가 조회 성공 시 기존 에러 메시지 제거 (일시적 에러 복구)
+      if (bot.errorMessage) {
+        await prisma.bot.update({
+          where: { id: botId },
+          data: { errorMessage: null },
+        });
+      }
 
       // 실행 가능한 그리드 찾기
       const executableGrids = await GridService.findExecutableGrids(botId, currentPrice);
@@ -607,8 +615,9 @@ export class TradingService {
           data: { errorMessage: null },
         });
 
-        // 소켓으로 알림
-        socketService.emitBotUpdate(botId, {
+        // 소켓으로 알림 (시스템 에러 타입으로 정보 전달)
+        socketService.emitError(botId, {
+          type: 'system_error',
           message: `잔고 부족으로 원거리 매수 주문 ${cancelledCount}개 취소, ${toKeep.length}개 유지`,
         });
       }
@@ -628,7 +637,7 @@ export class TradingService {
     bot: { id: number; ticker: string; orderAmount: number },
     filledGrid: { id: number; type: string; sellPrice: number | null; buyPrice: number | null; botId: number },
     retryCount: number = 0
-  ) {
+  ): Promise<void> {
     const MAX_RETRIES = 3;
     try {
       if (filledGrid.type === 'buy' && filledGrid.sellPrice) {
