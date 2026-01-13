@@ -1079,8 +1079,11 @@ export const getAccountBalance = async (
   try {
     const userId = req.userId!;
 
-    // KIS credential 조회 (infinite_buy purpose 우선, 없으면 default 폴백)
-    const credential = await getKisCredential(userId, 'infinite_buy');
+    // purpose 쿼리 파라미터 지원 (vr, infinite_buy, default)
+    const purpose = (req.query.purpose as string) || 'infinite_buy';
+
+    // KIS credential 조회 (purpose에 따라 해당 계좌 조회)
+    const credential = await getKisCredential(userId, purpose as any);
 
     if (!credential) {
       return errorResponse(
@@ -1094,7 +1097,7 @@ export const getAccountBalance = async (
     const appKey = decrypt(credential.apiKey);
     const appSecret = decrypt(credential.secretKey);
 
-    console.log('[Balance] 계좌정보:', credential.accountNo, '모의투자:', credential.isPaper);
+    console.log('[Balance] 계좌정보:', credential.accountNo, '모의투자:', credential.isPaper, 'purpose:', purpose);
 
     const kisService = new KisService({
       appKey,
