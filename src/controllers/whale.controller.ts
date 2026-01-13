@@ -14,13 +14,44 @@ export const getWhaleActivity = async (
   try {
     const { symbol } = req.query;
 
-    const data = whaleAlertService.getData(symbol as string | undefined);
-    const summaries = whaleAlertService.getAllSummaries();
+    // 특정 심볼 요청 시
+    if (symbol) {
+      const data = whaleAlertService.getData(symbol as string);
+      const summaries = whaleAlertService.getAllSummaries();
+      const status = whaleAlertService.getStatus();
+
+      return successResponse(res, {
+        transactions: data.transactions,
+        summaries,
+        status,
+        timestamp: Date.now(),
+      });
+    }
+
+    // 전체 요청 시 - WebSocket과 동일한 구조로 반환
+    const allSummaries = whaleAlertService.getAllSummaries();
     const status = whaleAlertService.getStatus();
 
+    // 심볼별로 거래 조회
+    const transactionsBySymbol: Record<string, any[]> = {};
+    const summariesBySymbol: Record<string, any> = {};
+
+    for (const sym of ['btc', 'eth', 'xrp']) {
+      const data = whaleAlertService.getData(sym);
+      transactionsBySymbol[sym] = data.transactions;
+      if (data.summary) {
+        summariesBySymbol[sym] = data.summary;
+      }
+    }
+
+    // summaries 배열에서도 심볼별로 매핑
+    for (const summary of allSummaries) {
+      summariesBySymbol[summary.symbol.toLowerCase()] = summary;
+    }
+
     return successResponse(res, {
-      transactions: data.transactions,
-      summaries,
+      transactions: transactionsBySymbol,
+      summaries: summariesBySymbol,
       status,
       timestamp: Date.now(),
     });
