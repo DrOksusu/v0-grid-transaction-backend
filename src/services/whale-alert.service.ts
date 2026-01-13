@@ -4,6 +4,7 @@
  * 온체인 고래 활동을 모니터링하고 클라이언트에 브로드캐스트
  * - Whale Alert API를 통해 대형 거래 감지
  * - BTC, ETH, XRP 지원
+ * - 다중 시간대 지원: 1h, 24h, 7d
  */
 
 import { socketService } from './socket.service';
@@ -31,17 +32,45 @@ export interface WhaleTransaction {
   signal: 'bullish' | 'bearish' | 'neutral';
 }
 
-// 요약 통계 인터페이스
-export interface WhaleSummary {
-  symbol: string;
-  period: string;
+// 기간별 요약 통계 인터페이스
+export interface PeriodSummary {
   exchangeToWallet: { count: number; totalAmount: number; totalUsd: number };
   walletToExchange: { count: number; totalAmount: number; totalUsd: number };
   netFlow: number; // 양수: 거래소에서 유출 (매수 신호), 음수: 거래소로 유입 (매도 신호)
   netFlowUsd: number;
   dominantSignal: 'bullish' | 'bearish' | 'neutral';
+  transactionCount: number;
+}
+
+// 다중 시간대 요약 인터페이스
+export interface WhaleSummary {
+  symbol: string;
+  period: string; // 대표 기간 (하위호환)
+  // 기간별 요약
+  periods: {
+    '1h': PeriodSummary;
+    '24h': PeriodSummary;
+    '7d': PeriodSummary;
+  };
+  // 하위호환용 (24h 기준)
+  exchangeToWallet: { count: number; totalAmount: number; totalUsd: number };
+  walletToExchange: { count: number; totalAmount: number; totalUsd: number };
+  netFlow: number;
+  netFlowUsd: number;
+  dominantSignal: 'bullish' | 'bearish' | 'neutral';
+  // 신호 강도 (모든 기간이 같은 방향이면 strong)
+  signalStrength: 'strong' | 'moderate' | 'weak' | 'mixed';
   lastUpdated: number;
 }
+
+// 시간대별 초 단위
+const PERIODS = {
+  '1h': 3600,
+  '24h': 86400,
+  '7d': 604800,
+} as const;
+
+type PeriodKey = keyof typeof PERIODS;
 
 class WhaleAlertService {
   private apiKey: string;
@@ -49,7 +78,8 @@ class WhaleAlertService {
   private readonly MIN_VALUE_USD = 500000; // 최소 $500,000 거래만 추적
   private readonly SUPPORTED_SYMBOLS = ['btc', 'eth', 'xrp'];
   private readonly FETCH_INTERVAL = 60000; // 1분마다 조회 (무료 티어 제한)
-  private readonly QUERY_PERIOD = 86400; // 24시간 (초)
+  private readonly QUERY_PERIOD = 86400; // API 조회는 24시간 (7일 데이터는 누적)
+  private readonly MAX_TRANSACTIONS = 500; // 심볼당 최대 저장 거래 수
 
   private fetchInterval: NodeJS.Timeout | null = null;
   private isRunning: boolean = false;
@@ -57,7 +87,7 @@ class WhaleAlertService {
   private lastFetchSuccess: boolean = false;
   private lastError: string | null = null;
 
-  // 캐시: 최근 거래 및 요약
+  // 캐시: 최근 거래 및 요약 (7일치 누적)
   private recentTransactions: Map<string, WhaleTransaction[]> = new Map(); // symbol -> transactions
   private summaries: Map<string, WhaleSummary> = new Map(); // symbol -> summary
 
@@ -85,7 +115,7 @@ class WhaleAlertService {
     }
 
     this.isRunning = true;
-    console.log('[WhaleAlert] 고래 모니터링 시작');
+    console.log('[WhaleAlert] 고래 모니터링 시작 (다중 시간대: 1h, 24h, 7d)');
 
     // 즉시 한 번 실행
     this.fetchAllTransactions();
@@ -115,9 +145,9 @@ class WhaleAlertService {
     this.lastFetchTime = Date.now();
 
     try {
-      // 현재 시간에서 24시간 전부터 조회
+      // 현재 시간에서 24시간 전부터 조회 (API 제한)
       const now = Math.floor(Date.now() / 1000);
-      const start = now - this.QUERY_PERIOD; // 24시간 전
+      const start = now - this.QUERY_PERIOD;
 
       const url = `${this.API_BASE}/transactions?api_key=${this.apiKey}&min_value=${this.MIN_VALUE_USD}&start=${start}&cursor=`;
 
@@ -142,32 +172,20 @@ class WhaleAlertService {
       this.lastFetchSuccess = true;
       this.lastError = null;
 
-      // 지원하는 코인별로 분류
-      const transactionsBySymbol = new Map<string, WhaleTransaction[]>();
-      for (const symbol of this.SUPPORTED_SYMBOLS) {
-        transactionsBySymbol.set(symbol, []);
-      }
-
+      // 새로운 거래를 기존 데이터에 병합
       for (const tx of data.transactions as any[]) {
         const symbol = tx.symbol?.toLowerCase();
         if (!this.SUPPORTED_SYMBOLS.includes(symbol)) continue;
 
         const transaction = this.parseTransaction(tx);
-        transactionsBySymbol.get(symbol)?.push(transaction);
+        this.addTransaction(symbol, transaction);
       }
 
-      // 캐시 업데이트 및 요약 계산
+      // 7일 이전 거래 정리 및 요약 계산
+      const cutoffTime = now - PERIODS['7d'];
       for (const symbol of this.SUPPORTED_SYMBOLS) {
-        const transactions = transactionsBySymbol.get(symbol) || [];
-
-        // 최신순 정렬
-        transactions.sort((a, b) => b.timestamp - a.timestamp);
-
-        // 최근 50개만 유지
-        this.recentTransactions.set(symbol, transactions.slice(0, 50));
-
-        // 요약 계산
-        this.calculateSummary(symbol);
+        this.cleanOldTransactions(symbol, cutoffTime);
+        this.calculateMultiPeriodSummary(symbol);
       }
 
       // 클라이언트에 브로드캐스트
@@ -176,7 +194,7 @@ class WhaleAlertService {
       // 디버그 로그 (10분마다)
       if (Date.now() % 600000 < this.FETCH_INTERVAL) {
         const totalTx = Array.from(this.recentTransactions.values()).reduce((sum, arr) => sum + arr.length, 0);
-        console.log(`[WhaleAlert] ${totalTx}개 고래 거래 감지`);
+        console.log(`[WhaleAlert] ${totalTx}개 고래 거래 저장 중 (7일 누적)`);
       }
 
     } catch (error: any) {
@@ -184,6 +202,38 @@ class WhaleAlertService {
       this.lastError = error.message;
       console.error('[WhaleAlert] 거래 조회 실패:', error.message);
     }
+  }
+
+  /**
+   * 거래 추가 (중복 방지)
+   */
+  private addTransaction(symbol: string, transaction: WhaleTransaction): void {
+    const transactions = this.recentTransactions.get(symbol) || [];
+
+    // 중복 확인 (id 또는 hash로)
+    const exists = transactions.some(tx => tx.id === transaction.id || tx.hash === transaction.hash);
+    if (exists) return;
+
+    transactions.push(transaction);
+
+    // 최신순 정렬
+    transactions.sort((a, b) => b.timestamp - a.timestamp);
+
+    // 최대 개수 제한
+    if (transactions.length > this.MAX_TRANSACTIONS) {
+      transactions.splice(this.MAX_TRANSACTIONS);
+    }
+
+    this.recentTransactions.set(symbol, transactions);
+  }
+
+  /**
+   * 오래된 거래 정리
+   */
+  private cleanOldTransactions(symbol: string, cutoffTime: number): void {
+    const transactions = this.recentTransactions.get(symbol) || [];
+    const filtered = transactions.filter(tx => tx.timestamp >= cutoffTime);
+    this.recentTransactions.set(symbol, filtered);
   }
 
   /**
@@ -258,23 +308,24 @@ class WhaleAlertService {
   }
 
   /**
-   * 요약 통계 계산
+   * 기간별 요약 계산
    */
-  private calculateSummary(symbol: string): void {
-    const transactions = this.recentTransactions.get(symbol) || [];
+  private calculatePeriodSummary(transactions: WhaleTransaction[], periodSeconds: number): PeriodSummary {
+    const now = Math.floor(Date.now() / 1000);
+    const cutoff = now - periodSeconds;
 
-    const summary: WhaleSummary = {
-      symbol: symbol.toUpperCase(),
-      period: '24h',
+    const filteredTx = transactions.filter(tx => tx.timestamp >= cutoff);
+
+    const summary: PeriodSummary = {
       exchangeToWallet: { count: 0, totalAmount: 0, totalUsd: 0 },
       walletToExchange: { count: 0, totalAmount: 0, totalUsd: 0 },
       netFlow: 0,
       netFlowUsd: 0,
       dominantSignal: 'neutral',
-      lastUpdated: Date.now(),
+      transactionCount: filteredTx.length,
     };
 
-    for (const tx of transactions) {
+    for (const tx of filteredTx) {
       if (tx.transactionType === 'exchange_to_wallet') {
         summary.exchangeToWallet.count++;
         summary.exchangeToWallet.totalAmount += tx.amount;
@@ -290,14 +341,60 @@ class WhaleAlertService {
     summary.netFlow = summary.exchangeToWallet.totalAmount - summary.walletToExchange.totalAmount;
     summary.netFlowUsd = summary.exchangeToWallet.totalUsd - summary.walletToExchange.totalUsd;
 
-    // 지배적 신호 결정
-    if (summary.netFlowUsd > 1000000) {
+    // 지배적 신호 결정 (기간별 임계값 적용)
+    const threshold = periodSeconds <= 3600 ? 500000 : periodSeconds <= 86400 ? 1000000 : 5000000;
+    if (summary.netFlowUsd > threshold) {
       summary.dominantSignal = 'bullish';
-    } else if (summary.netFlowUsd < -1000000) {
+    } else if (summary.netFlowUsd < -threshold) {
       summary.dominantSignal = 'bearish';
     } else {
       summary.dominantSignal = 'neutral';
     }
+
+    return summary;
+  }
+
+  /**
+   * 다중 시간대 요약 통계 계산
+   */
+  private calculateMultiPeriodSummary(symbol: string): void {
+    const transactions = this.recentTransactions.get(symbol) || [];
+
+    const periods = {
+      '1h': this.calculatePeriodSummary(transactions, PERIODS['1h']),
+      '24h': this.calculatePeriodSummary(transactions, PERIODS['24h']),
+      '7d': this.calculatePeriodSummary(transactions, PERIODS['7d']),
+    };
+
+    // 신호 강도 계산
+    const signals = [periods['1h'].dominantSignal, periods['24h'].dominantSignal, periods['7d'].dominantSignal];
+    const bullishCount = signals.filter(s => s === 'bullish').length;
+    const bearishCount = signals.filter(s => s === 'bearish').length;
+
+    let signalStrength: WhaleSummary['signalStrength'];
+    if (bullishCount === 3 || bearishCount === 3) {
+      signalStrength = 'strong';
+    } else if (bullishCount >= 2 || bearishCount >= 2) {
+      signalStrength = 'moderate';
+    } else if (bullishCount === 1 && bearishCount === 1) {
+      signalStrength = 'mixed';
+    } else {
+      signalStrength = 'weak';
+    }
+
+    const summary: WhaleSummary = {
+      symbol: symbol.toUpperCase(),
+      period: '24h', // 하위호환
+      periods,
+      // 하위호환용 (24h 기준)
+      exchangeToWallet: periods['24h'].exchangeToWallet,
+      walletToExchange: periods['24h'].walletToExchange,
+      netFlow: periods['24h'].netFlow,
+      netFlowUsd: periods['24h'].netFlowUsd,
+      dominantSignal: periods['24h'].dominantSignal,
+      signalStrength,
+      lastUpdated: Date.now(),
+    };
 
     this.summaries.set(symbol, summary);
   }
@@ -358,7 +455,7 @@ class WhaleAlertService {
     hasApiKey: boolean;
     supportedSymbols: string[];
     minValueUsd: number;
-    period: string;
+    periods: string[];
     lastFetchTime: number;
     lastFetchSuccess: boolean;
     lastError: string | null;
@@ -380,7 +477,7 @@ class WhaleAlertService {
       hasApiKey: !!this.apiKey,
       supportedSymbols: this.SUPPORTED_SYMBOLS.map(s => s.toUpperCase()),
       minValueUsd: this.MIN_VALUE_USD,
-      period: '24h',
+      periods: ['1h', '24h', '7d'],
       lastFetchTime: this.lastFetchTime,
       lastFetchSuccess: this.lastFetchSuccess,
       lastError: this.lastError,
