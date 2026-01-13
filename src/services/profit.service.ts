@@ -201,6 +201,16 @@ export class ProfitService {
       });
     }
 
+    // 삭제된 봇의 수익도 월별로 추가 (deletedAt 월 기준)
+    for (const snapshot of snapshots) {
+      const deletedMonth = `${snapshot.deletedAt.getFullYear()}-${String(snapshot.deletedAt.getMonth() + 1).padStart(2, '0')}`;
+      const existing = monthlyMap.get(deletedMonth) || { profit: 0, trades: 0 };
+      monthlyMap.set(deletedMonth, {
+        profit: existing.profit + snapshot.finalProfit,
+        trades: existing.trades + snapshot.totalTrades,
+      });
+    }
+
     // 정렬된 월별 수익 배열
     const monthlyProfits = Array.from(monthlyMap.entries())
       .map(([month, data]) => ({ month, profit: data.profit, trades: data.trades }))
