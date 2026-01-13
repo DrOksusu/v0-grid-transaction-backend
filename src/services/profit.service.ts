@@ -221,7 +221,11 @@ export class ProfitService {
     const thisMonthProfit = thisMonthData?.profit || 0;
     const thisMonthTrades = thisMonthData?.trades || 0;
 
-    // 활성 봇 수익 합계
+    // 총 수익 = 월별 수익의 합계 (일관성 유지)
+    const totalProfitFromMonthly = monthlyProfits.reduce((sum, mp) => sum + mp.profit, 0);
+    const totalTradesFromMonthly = monthlyProfits.reduce((sum, mp) => sum + mp.trades, 0);
+
+    // 활성 봇 수익 합계 (참고용 - Bot 테이블 기준)
     const activeProfit = activeBots.reduce((sum, bot) => sum + bot.currentProfit, 0);
     const activeTrades = activeBots.reduce((sum, bot) => sum + bot.totalTrades, 0);
 
@@ -230,9 +234,9 @@ export class ProfitService {
     const deletedTrades = snapshots.reduce((sum, s) => sum + s.totalTrades, 0);
 
     return {
-      // 총 수익 = 활성 봇 수익 + 삭제된 봇 수익 (봇 기준 집계)
-      totalProfit: activeProfit + deletedProfit,
-      totalTrades: activeTrades + deletedTrades,
+      // 총 수익 = 월별 수익의 합계 (Trade 테이블 기준으로 일관성 유지)
+      totalProfit: totalProfitFromMonthly,
+      totalTrades: totalTradesFromMonthly,
       thisMonthProfit,
       thisMonthTrades,
       monthlyProfits,
