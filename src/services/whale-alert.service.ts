@@ -363,9 +363,17 @@ class WhaleAlertService {
     lastFetchSuccess: boolean;
     lastError: string | null;
     totalTransactions: number;
+    totalUsd: number;
   } {
-    const totalTransactions = Array.from(this.recentTransactions.values())
-      .reduce((sum, arr) => sum + arr.length, 0);
+    let totalTransactions = 0;
+    let totalUsd = 0;
+
+    for (const txs of this.recentTransactions.values()) {
+      totalTransactions += txs.length;
+      for (const tx of txs) {
+        totalUsd += tx.amountUsd || 0;
+      }
+    }
 
     return {
       isRunning: this.isRunning,
@@ -377,6 +385,7 @@ class WhaleAlertService {
       lastFetchSuccess: this.lastFetchSuccess,
       lastError: this.lastError,
       totalTransactions,
+      totalUsd,
     };
   }
 }
