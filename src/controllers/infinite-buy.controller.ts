@@ -784,7 +784,7 @@ export const initializeVR = async (
   try {
     const userId = req.userId!;
     const stockId = parseInt(req.params.id);
-    const { vrValue, vrPool, vrGradient, vrStyle, vrDepositAmount, vrBandPercent, vrCycleWeeks } = req.body;
+    const { vrValue, vrPool, vrGradient, vrStyle, vrDepositAmount, vrBandPercent, vrCycleWeeks, initialQuantity, initialAvgPrice } = req.body;
 
     if (isNaN(stockId)) {
       return errorResponse(res, 'VALIDATION_ERROR', '유효하지 않은 종목 ID입니다', 400);
@@ -815,6 +815,8 @@ export const initializeVR = async (
       vrDepositAmount,
       vrBandPercent,
       vrCycleWeeks,
+      initialQuantity,
+      initialAvgPrice,
     });
 
     return successResponse(res, result, 'VR 전략이 초기화되었습니다');
