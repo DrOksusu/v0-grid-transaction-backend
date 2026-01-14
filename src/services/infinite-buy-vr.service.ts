@@ -59,6 +59,8 @@ interface VRInitParams {
   vrDepositAmount?: number;
   vrBandPercent?: number;
   vrCycleWeeks?: number;
+  initialQuantity?: number;   // 초기 보유 수량
+  initialAvgPrice?: number;   // 초기 평균 매수가
 }
 
 interface VROrderResult {
@@ -278,6 +280,11 @@ export class InfiniteBuyVRService {
     const vrBandPercent = params.vrBandPercent || 15;
     const vrCycleWeeks = params.vrCycleWeeks || 2;
 
+    // 초기 보유 수량 처리
+    const initialQuantity = params.initialQuantity || 0;
+    const initialAvgPrice = params.initialAvgPrice || 0;
+    const initialInvested = initialQuantity * initialAvgPrice;
+
     const updated = await prisma.infiniteBuyStock.update({
       where: { id: stockId },
       data: {
@@ -290,6 +297,10 @@ export class InfiniteBuyVRService {
         vrCycleWeeks,
         vrCycleStartDate: new Date(),
         status: 'buying',
+        // 초기 보유 수량 설정
+        totalQuantity: initialQuantity,
+        avgPrice: initialAvgPrice,
+        totalInvested: initialInvested,
       },
     });
 
@@ -307,6 +318,9 @@ export class InfiniteBuyVRService {
         vrDepositAmount: params.vrDepositAmount,
         vrBandPercent,
         vrCycleWeeks,
+        initialQuantity,
+        initialAvgPrice,
+        initialInvested,
       },
     });
 
