@@ -1,11 +1,12 @@
 import { createServer } from 'http';
 import app from './app';
 import { config } from './config/env';
-import prisma, { logPoolStats } from './config/database';
+import prisma, { logPoolStats, poolStats } from './config/database';
 import { botEngine } from './services/bot-engine.service';
 import { socketService } from './services/socket.service';
 import { infiniteBuyScheduler } from './services/infinite-buy-scheduler.service';
 import { whaleAlertService } from './services/whale-alert.service';
+import { metricsService } from './services/metrics.service';
 
 const startServer = async () => {
   try {
@@ -68,6 +69,10 @@ const startServer = async () => {
       console.log(`Server is running on port ${config.port}`);
       console.log(`Environment: ${config.nodeEnv}`);
 
+      // 메트릭 서비스 시작 (모든 환경)
+      metricsService.start(poolStats);
+      console.log('Metrics service started');
+
       // 프로덕션 환경에서만 스케줄러 시작 (중복 주문 방지)
       if (config.nodeEnv === 'production') {
         // 봇 엔진 시작
@@ -94,6 +99,7 @@ const startServer = async () => {
 startServer();
 
 process.on('SIGINT', async () => {
+  metricsService.stop();
   botEngine.stop();
   infiniteBuyScheduler.stop();
   whaleAlertService.stop();
@@ -102,6 +108,7 @@ process.on('SIGINT', async () => {
 });
 
 process.on('SIGTERM', async () => {
+  metricsService.stop();
   botEngine.stop();
   infiniteBuyScheduler.stop();
   whaleAlertService.stop();

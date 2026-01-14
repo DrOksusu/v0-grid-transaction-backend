@@ -2,8 +2,8 @@ import { PrismaClient } from '@prisma/client';
 
 const isProduction = process.env.NODE_ENV === 'production';
 
-// Connection pool 디버깅용 카운터
-const poolStats = {
+// Connection pool 디버깅용 카운터 (메트릭 서비스에서 참조)
+export const poolStats = {
   totalQueries: 0,
   slowQueries: 0,  // 100ms 이상
   verySlowQueries: 0,  // 500ms 이상

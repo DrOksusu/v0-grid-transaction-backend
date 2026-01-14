@@ -8,6 +8,7 @@ import infiniteBuyRoutes from './infinite-buy';
 import profitRoutes from './profits';
 import pushRoutes from './push';
 import whaleRoutes from './whale';
+import metricsRoutes from './metrics';
 
 const router = Router();
 
@@ -28,5 +29,6 @@ router.use('/infinite-buy', infiniteBuyRoutes);
 router.use('/profits', profitRoutes);
 router.use('/push', pushRoutes);
 router.use('/whale', whaleRoutes);
+router.use('/metrics', metricsRoutes);
 
 export default router;
