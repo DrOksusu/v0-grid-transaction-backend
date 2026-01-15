@@ -5,6 +5,7 @@
  */
 
 import os from 'os';
+import fs from 'fs';
 import {
   RequestMetric,
   AggregatedMetrics,
@@ -226,12 +227,56 @@ class MetricsService {
   }
 
   /**
+   * Docker 컨테이너 메모리 조회 (cgroup v1/v2)
+   */
+  private getContainerMemory(): { used: number; limit: number; available: boolean } {
+    try {
+      // cgroup v2 경로 (최신 Docker/Linux)
+      const cgroupV2Usage = '/sys/fs/cgroup/memory.current';
+      const cgroupV2Limit = '/sys/fs/cgroup/memory.max';
+
+      // cgroup v1 경로 (구버전)
+      const cgroupV1Usage = '/sys/fs/cgroup/memory/memory.usage_in_bytes';
+      const cgroupV1Limit = '/sys/fs/cgroup/memory/memory.limit_in_bytes';
+
+      let used = 0;
+      let limit = 0;
+
+      // cgroup v2 먼저 시도
+      if (fs.existsSync(cgroupV2Usage)) {
+        used = parseInt(fs.readFileSync(cgroupV2Usage, 'utf8').trim(), 10);
+        const limitStr = fs.readFileSync(cgroupV2Limit, 'utf8').trim();
+        // 'max'는 제한 없음을 의미
+        limit = limitStr === 'max' ? os.totalmem() : parseInt(limitStr, 10);
+      }
+      // cgroup v1 시도
+      else if (fs.existsSync(cgroupV1Usage)) {
+        used = parseInt(fs.readFileSync(cgroupV1Usage, 'utf8').trim(), 10);
+        limit = parseInt(fs.readFileSync(cgroupV1Limit, 'utf8').trim(), 10);
+        // 매우 큰 값은 제한 없음을 의미 (보통 호스트 메모리보다 큼)
+        if (limit > os.totalmem() * 2) {
+          limit = os.totalmem();
+        }
+      } else {
+        // cgroup 파일이 없음 (컨테이너가 아님)
+        return { used: 0, limit: 0, available: false };
+      }
+
+      return { used, limit, available: true };
+    } catch {
+      // 읽기 실패
+      return { used: 0, limit: 0, available: false };
+    }
+  }
+
+  /**
    * 시스템 메트릭 조회
    */
   getSystemMetrics(): SystemMetrics {
     const memUsage = process.memoryUsage();
     const totalMem = os.totalmem();
     const freeMem = os.freemem();
+    const containerMem = this.getContainerMemory();
 
     return {
       timestamp: Date.now(),
@@ -246,6 +291,7 @@ class MetricsService {
         heapTotal: memUsage.heapTotal,
         external: memUsage.external,
         rss: memUsage.rss,
+        container: containerMem,
       },
       eventLoop: {
         lag: Math.round(this.lastEventLoopLag * 100) / 100,

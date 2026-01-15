@@ -47,6 +47,12 @@ export interface SystemMetrics {
     heapTotal: number;
     external: number;
     rss: number;
+    // Docker 컨테이너 메모리 (cgroup)
+    container?: {
+      used: number;
+      limit: number;
+      available: boolean; // cgroup 읽기 가능 여부
+    };
   };
   eventLoop: {
     lag: number; // ms
