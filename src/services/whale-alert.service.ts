@@ -75,7 +75,7 @@ type PeriodKey = keyof typeof PERIODS;
 class WhaleAlertService {
   private apiKey: string;
   private readonly API_BASE = 'https://api.whale-alert.io/v1';
-  private readonly MIN_VALUE_USD = 500000; // 최소 $500,000 거래만 추적
+  private readonly MIN_VALUE_USD = 250000; // 최소 $250,000 거래만 추적
   private readonly SUPPORTED_SYMBOLS = ['btc', 'eth', 'xrp'];
   private readonly FETCH_INTERVAL = 60000; // 1분마다 조회
   private readonly QUERY_PERIOD = 604800; // 7일 (유료 API 기준)
