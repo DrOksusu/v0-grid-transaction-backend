@@ -4,9 +4,10 @@ import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 
 const UPBIT_API_URL = 'https://api.upbit.com/v1';
-// API 요청 쓰로틀링을 위한 설정
-const ORDER_API_MIN_INTERVAL = 200; // 주문 API 최소 간격 (ms)
-const PUBLIC_API_MIN_INTERVAL = 100; // 공개 API 최소 간격 (ms)
+// API 요청 쓰로틀링을 위한 설정 (429 에러 방지)
+const ORDER_API_MIN_INTERVAL = 500; // 주문 API 최소 간격 (ms) - 초당 2건으로 안전하게 설정
+const PUBLIC_API_MIN_INTERVAL = 200; // 공개 API 최소 간격 (ms) - 초당 5건
+const MAX_RETRIES = 3; // 429 에러 시 최대 재시도 횟수
 let lastOrderApiCall = 0;
 let lastPublicApiCall = 0;
 
@@ -38,6 +39,38 @@ async function throttlePublicApi(): Promise<void> {
   }
 
   lastPublicApiCall = Date.now();
+}
+
+/**
+ * 429 에러 발생 시 지수 백오프로 재시도
+ */
+async function executeWithRetry<T>(
+  fn: () => Promise<T>,
+  context: string = 'API'
+): Promise<T> {
+  let lastError: any;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+
+      // 429 에러인 경우 지수 백오프로 재시도
+      if (error.response?.status === 429) {
+        const backoffMs = Math.min(1000 * Math.pow(2, attempt), 5000); // 최대 5초
+        console.log(`[Upbit] ${context} 429 에러, ${backoffMs}ms 후 재시도 (${attempt + 1}/${MAX_RETRIES})`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+        continue;
+      }
+
+      // 429가 아닌 에러는 즉시 throw
+      throw error;
+    }
+  }
+
+  // 모든 재시도 실패
+  throw lastError;
 }
 
 
@@ -270,10 +303,10 @@ export class UpbitService {
     }
   }
 
-  // 주문 조회 (단건)
+  // 주문 조회 (단건) - 429 에러 시 자동 재시도
   async getOrder(uuid: string) {
-    try {
-      await throttleOrderApi();  // Rate limiting 추가
+    return executeWithRetry(async () => {
+      await throttleOrderApi();
       const queryString = `uuid=${uuid}`;
 
       const response = await axios.get(
@@ -284,34 +317,96 @@ export class UpbitService {
       );
 
       return response.data;
-    } catch (error: any) {
-      throw new Error(`주문 조회 실패: ${error.response?.data?.error?.message || error.message}`);
-    }
+    }, `getOrder(${uuid.slice(0, 8)}...)`);
   }
 
-  // 주문 목록 조회 (배치) - 429 에러 방지용
-  // uuids: 조회할 주문 UUID 배열 (최대 100개)
+  // 주문 목록 조회 (배치) - 429 에러 자동 재시도 + 청크 처리
+  // uuids: 조회할 주문 UUID 배열 (자동으로 청크 분할)
   async getOrdersByUuids(uuids: string[]): Promise<any[]> {
     if (uuids.length === 0) return [];
 
-    try {
+    // UUID는 36자, uuids[]=는 8자 → 항목당 약 45자
+    // 업비트 API URL 길이 제한 고려하여 5개씩 처리 (안전하게)
+    const CHUNK_SIZE = 5;
+    const results: any[] = [];
+    const totalChunks = Math.ceil(uuids.length / CHUNK_SIZE);
+
+    // 청크 개수가 많으면 로그 출력
+    if (totalChunks > 10) {
+      console.log(`[Upbit] 대량 주문 조회: ${uuids.length}건, ${totalChunks}청크로 분할`);
+    }
+
+    // 청크로 분할하여 순차 처리
+    for (let i = 0; i < uuids.length; i += CHUNK_SIZE) {
+      const chunk = uuids.slice(i, i + CHUNK_SIZE);
+
+      const chunkResult = await executeWithRetry(async () => {
+        await throttleOrderApi();
+
+        // Upbit API는 uuids[] 파라미터로 여러 주문을 한번에 조회 가능
+        // URLSearchParams는 []를 %5B%5D로 인코딩하므로 수동으로 query string 생성
+        const queryString = chunk.map(uuid => `uuids[]=${uuid}`).join('&');
+
+        const response = await axios.get(
+          `${UPBIT_API_URL}/orders/uuids?${queryString}`,
+          {
+            headers: this.getHeaders(queryString),
+          }
+        );
+
+        return response.data;
+      }, `getOrdersByUuids(청크 ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(uuids.length / CHUNK_SIZE)}, ${chunk.length}건)`);
+
+      results.push(...chunkResult);
+
+      // 다음 청크 전 딜레이 (마지막 청크가 아닌 경우)
+      if (i + CHUNK_SIZE < uuids.length) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    }
+
+    return results;
+  }
+
+  // 마켓별 주문 조회 (state: wait, done, cancel)
+  // URL 길이 제한 없이 해당 마켓의 모든 주문을 조회
+  async getOrdersByMarket(market: string, state: string = 'wait'): Promise<any[]> {
+    return executeWithRetry(async () => {
       await throttleOrderApi();
 
-      // Upbit API는 uuids[] 파라미터로 여러 주문을 한번에 조회 가능
-      // URLSearchParams는 []를 %5B%5D로 인코딩하므로 수동으로 query string 생성
-      const queryString = uuids.map(uuid => `uuids[]=${uuid}`).join('&');
+      const queryString = `market=${market}&state=${state}&order_by=desc`;
 
       const response = await axios.get(
-        `${UPBIT_API_URL}/orders/uuids?${queryString}`,
+        `${UPBIT_API_URL}/orders?${queryString}`,
         {
           headers: this.getHeaders(queryString),
         }
       );
 
       return response.data;
-    } catch (error: any) {
-      throw new Error(`주문 목록 조회 실패: ${error.response?.data?.error?.message || error.message}`);
+    }, `getOrdersByMarket(${market}, ${state})`);
+  }
+
+  // 여러 마켓의 미체결 주문 일괄 조회
+  async getWaitingOrdersByMarkets(markets: string[]): Promise<Map<string, any[]>> {
+    const result = new Map<string, any[]>();
+
+    for (const market of markets) {
+      try {
+        const orders = await this.getOrdersByMarket(market, 'wait');
+        result.set(market, orders);
+
+        // 다음 마켓 조회 전 딜레이
+        if (markets.indexOf(market) < markets.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+      } catch (error: any) {
+        console.error(`[Upbit] ${market} 주문 조회 실패:`, error.message);
+        result.set(market, []);
+      }
     }
+
+    return result;
   }
 
   // 현재가 조회 (공개 API)

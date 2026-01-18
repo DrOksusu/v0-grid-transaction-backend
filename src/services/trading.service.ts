@@ -392,9 +392,10 @@ export class TradingService {
   }
 
   /**
-   * 중앙 집중식 체결 주문 확인 (모든 봇의 pending 주문을 사용자별로 묶어서 조회)
-   * - 사용자별로 한 번의 API 호출로 모든 봇의 주문 상태를 확인
-   * - 봇 수가 늘어나도 API 호출 수는 사용자 수에 비례
+   * 중앙 집중식 체결 주문 확인 (마켓별 조회 방식)
+   * - 사용자별 + 마켓별로 미체결 주문 조회
+   * - URL 길이 제한 없이 안정적으로 조회 가능
+   * - API 호출 수 = 사용자 수 × 사용 중인 마켓 수
    */
   static async checkAllFilledOrders(runningBotIds: number[]) {
     if (runningBotIds.length === 0) return;
@@ -416,20 +417,35 @@ export class TradingService {
 
       if (allPendingGrids.length === 0) return;
 
-      // 2. 사용자별로 그리드 그룹화
-      const gridsByUser = new Map<number, typeof allPendingGrids>();
+      // 2. 사용자별 + 마켓별로 그리드 그룹화
+      // Map<userId, Map<market, grids[]>>
+      const gridsByUserAndMarket = new Map<number, Map<string, typeof allPendingGrids>>();
+
       for (const grid of allPendingGrids) {
         const userId = grid.bot.userId;
-        if (!gridsByUser.has(userId)) {
-          gridsByUser.set(userId, []);
+        const market = grid.bot.ticker;
+
+        if (!gridsByUserAndMarket.has(userId)) {
+          gridsByUserAndMarket.set(userId, new Map());
         }
-        gridsByUser.get(userId)!.push(grid);
+
+        const userMarkets = gridsByUserAndMarket.get(userId)!;
+        if (!userMarkets.has(market)) {
+          userMarkets.set(market, []);
+        }
+        userMarkets.get(market)!.push(grid);
       }
 
-      console.log(`[Trading] 중앙 집중식 조회: ${allPendingGrids.length}개 주문, ${gridsByUser.size}명 사용자`);
+      // 총 마켓 수 계산
+      let totalMarkets = 0;
+      for (const userMarkets of gridsByUserAndMarket.values()) {
+        totalMarkets += userMarkets.size;
+      }
 
-      // 3. 사용자별로 API 호출 (사용자 수만큼만 호출)
-      for (const [userId, userGrids] of gridsByUser) {
+      console.log(`[Trading] 마켓별 조회: ${allPendingGrids.length}개 주문, ${gridsByUserAndMarket.size}명 사용자, ${totalMarkets}개 마켓`);
+
+      // 3. 사용자별로 마켓별 조회
+      for (const [userId, userMarkets] of gridsByUserAndMarket) {
         try {
           // 사용자 자격증명 조회
           const credential = await this.getUserCredential(userId);
@@ -443,46 +459,46 @@ export class TradingService {
             secretKey: credential.secretKey,
           });
 
-          // 해당 사용자의 모든 주문 ID 수집
-          const orderIds = userGrids.map(g => g.orderId as string);
-
-          // 배치 조회 (한 번의 API 호출)
-          let orders: any[] = [];
-          try {
-            orders = await upbit.getOrdersByUuids(orderIds);
-          } catch (err: any) {
-            console.log(`[Trading] User ${userId}: 배치 조회 실패 - ${err.message}`);
-            // 폴백 없이 다음 사용자로 진행 (429 방지)
-            continue;
-          }
-
-          // orderId로 빠른 조회를 위한 Map 생성
-          const orderMap = new Map(orders.map(o => [o.uuid, o]));
-
-          // 4. 각 그리드에 대해 체결 처리
-          for (const grid of userGrids) {
+          // 각 마켓별로 미체결 주문 조회
+          for (const [market, grids] of userMarkets) {
             try {
-              const order = orderMap.get(grid.orderId);
-              if (!order) continue;
+              // 해당 마켓의 모든 미체결 주문 조회 (state=wait)
+              const waitOrders = await upbit.getOrdersByMarket(market, 'wait');
 
-              // 체결 완료 확인
-              if (order.state === 'done') {
-                await this.processFilledOrder(grid, order, upbit, userId);
+              // 체결된 주문 조회 (state=done) - 최근 체결된 것 확인
+              const doneOrders = await upbit.getOrdersByMarket(market, 'done');
+
+              // 우리 봇의 orderId 목록
+              const ourOrderIds = new Set(grids.map(g => g.orderId as string));
+
+              // 체결된 주문 중 우리 봇의 주문 찾기
+              const filledOrders = doneOrders.filter((o: any) => ourOrderIds.has(o.uuid));
+
+              // orderId로 그리드 찾기 위한 Map
+              const gridByOrderId = new Map(grids.map(g => [g.orderId, g]));
+
+              // 체결된 주문 처리
+              for (const order of filledOrders) {
+                const grid = gridByOrderId.get(order.uuid);
+                if (grid && order.state === 'done') {
+                  await this.processFilledOrder(grid, order, upbit, userId);
+                }
               }
+
             } catch (error: any) {
-              console.error(`[Trading] 주문 처리 실패 (Grid ${grid.id}):`, error.message);
+              console.error(`[Trading] User ${userId}, ${market} 조회 실패:`, error.message);
             }
           }
 
-          // 다음 사용자 처리 전 잠시 대기 (429 방지)
-          await new Promise(resolve => setTimeout(resolve, 300));
+          // 다음 사용자 처리 전 대기
+          await new Promise(resolve => setTimeout(resolve, 200));
 
         } catch (error: any) {
           console.error(`[Trading] User ${userId} 체결 확인 실패:`, error.message);
         }
       }
     } catch (error: any) {
-      console.error('[Trading] 중앙 집중식 체결 확인 실패:', error.message);
+      console.error('[Trading] 마켓별 체결 확인 실패:', error.message);
     }
   }
 
