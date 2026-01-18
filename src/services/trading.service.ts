@@ -25,7 +25,45 @@ interface CachedBotInfo {
 const botInfoCache = new Map<number, CachedBotInfo>();
 const BOT_INFO_CACHE_TTL = 60 * 1000; // 1분
 
+// 사용자별 자격증명 캐시 (중앙 집중식 조회용)
+interface UserCredentialCache {
+  apiKey: string;
+  secretKey: string;
+  expireAt: number;
+}
+const userCredentialCache = new Map<number, UserCredentialCache>(); // userId -> credential
+
 export class TradingService {
+  // 사용자별 자격증명 조회 (중앙 집중식 조회용)
+  private static async getUserCredential(userId: number): Promise<{ apiKey: string; secretKey: string } | null> {
+    const now = Date.now();
+    const cached = userCredentialCache.get(userId);
+
+    if (cached && cached.expireAt > now) {
+      return { apiKey: cached.apiKey, secretKey: cached.secretKey };
+    }
+
+    // 캐시 미스 - DB에서 조회
+    const credential = await prisma.credential.findFirst({
+      where: { userId, exchange: 'upbit' },
+      select: { apiKey: true, secretKey: true },
+    });
+
+    if (!credential) return null;
+
+    const apiKey = decrypt(credential.apiKey);
+    const secretKey = decrypt(credential.secretKey);
+
+    // 캐시 저장 (5분 TTL)
+    userCredentialCache.set(userId, {
+      apiKey,
+      secretKey,
+      expireAt: now + CREDENTIAL_CACHE_TTL,
+    });
+
+    return { apiKey, secretKey };
+  }
+
   // 캐시된 자격증명 조회 (없으면 DB에서 가져와서 캐시)
   private static async getCachedCredential(botId: number): Promise<{ apiKey: string; secretKey: string; userId: number } | null> {
     const now = Date.now();
@@ -353,7 +391,214 @@ export class TradingService {
     }
   }
 
-  // 체결된 주문 확인 및 즉시 반대 주문 실행 (배치 조회로 429 에러 방지)
+  /**
+   * 중앙 집중식 체결 주문 확인 (모든 봇의 pending 주문을 사용자별로 묶어서 조회)
+   * - 사용자별로 한 번의 API 호출로 모든 봇의 주문 상태를 확인
+   * - 봇 수가 늘어나도 API 호출 수는 사용자 수에 비례
+   */
+  static async checkAllFilledOrders(runningBotIds: number[]) {
+    if (runningBotIds.length === 0) return;
+
+    try {
+      // 1. 모든 running 봇의 pending 그리드를 한 번에 조회
+      const allPendingGrids = await prisma.gridLevel.findMany({
+        where: {
+          botId: { in: runningBotIds },
+          status: 'pending',
+          orderId: { not: null },
+        },
+        include: {
+          bot: {
+            select: { userId: true, ticker: true, orderAmount: true, status: true },
+          },
+        },
+      });
+
+      if (allPendingGrids.length === 0) return;
+
+      // 2. 사용자별로 그리드 그룹화
+      const gridsByUser = new Map<number, typeof allPendingGrids>();
+      for (const grid of allPendingGrids) {
+        const userId = grid.bot.userId;
+        if (!gridsByUser.has(userId)) {
+          gridsByUser.set(userId, []);
+        }
+        gridsByUser.get(userId)!.push(grid);
+      }
+
+      console.log(`[Trading] 중앙 집중식 조회: ${allPendingGrids.length}개 주문, ${gridsByUser.size}명 사용자`);
+
+      // 3. 사용자별로 API 호출 (사용자 수만큼만 호출)
+      for (const [userId, userGrids] of gridsByUser) {
+        try {
+          // 사용자 자격증명 조회
+          const credential = await this.getUserCredential(userId);
+          if (!credential) {
+            console.log(`[Trading] User ${userId}: 자격증명 없음, 스킵`);
+            continue;
+          }
+
+          const upbit = new UpbitService({
+            accessKey: credential.apiKey,
+            secretKey: credential.secretKey,
+          });
+
+          // 해당 사용자의 모든 주문 ID 수집
+          const orderIds = userGrids.map(g => g.orderId as string);
+
+          // 배치 조회 (한 번의 API 호출)
+          let orders: any[] = [];
+          try {
+            orders = await upbit.getOrdersByUuids(orderIds);
+          } catch (err: any) {
+            console.log(`[Trading] User ${userId}: 배치 조회 실패 - ${err.message}`);
+            // 폴백 없이 다음 사용자로 진행 (429 방지)
+            continue;
+          }
+
+          // orderId로 빠른 조회를 위한 Map 생성
+          const orderMap = new Map(orders.map(o => [o.uuid, o]));
+
+          // 4. 각 그리드에 대해 체결 처리
+          for (const grid of userGrids) {
+            try {
+              const order = orderMap.get(grid.orderId);
+              if (!order) continue;
+
+              // 체결 완료 확인
+              if (order.state === 'done') {
+                await this.processFilledOrder(grid, order, upbit, userId);
+              }
+            } catch (error: any) {
+              console.error(`[Trading] 주문 처리 실패 (Grid ${grid.id}):`, error.message);
+            }
+          }
+
+          // 다음 사용자 처리 전 잠시 대기 (429 방지)
+          await new Promise(resolve => setTimeout(resolve, 300));
+
+        } catch (error: any) {
+          console.error(`[Trading] User ${userId} 체결 확인 실패:`, error.message);
+        }
+      }
+    } catch (error: any) {
+      console.error('[Trading] 중앙 집중식 체결 확인 실패:', error.message);
+    }
+  }
+
+  /**
+   * 체결된 주문 처리 (checkAllFilledOrders에서 호출)
+   */
+  private static async processFilledOrder(
+    grid: any,
+    order: any,
+    upbit: UpbitService,
+    userId: number
+  ) {
+    const botId = grid.botId;
+
+    // 업비트 실제 체결 시간 추출
+    let actualFilledAt = new Date();
+    if (order.trades && order.trades.length > 0) {
+      const lastTrade = order.trades[order.trades.length - 1];
+      if (lastTrade.created_at) {
+        actualFilledAt = new Date(lastTrade.created_at);
+      }
+    }
+
+    // 그리드 레벨을 filled로 업데이트
+    await GridService.updateGridLevel(
+      grid.id,
+      'filled',
+      grid.orderId!,
+      actualFilledAt
+    );
+
+    // 수익 계산 (매도 체결 시에만)
+    let profit = 0;
+    const UPBIT_FEE_RATE = 0.0005;
+
+    if (grid.type === 'sell' && grid.buyPrice) {
+      const buyPrice = grid.buyPrice;
+      const sellPrice = parseFloat(order.price);
+      const volume = parseFloat(order.executed_volume);
+
+      const buyAmount = volume * buyPrice;
+      const buyFee = buyAmount * UPBIT_FEE_RATE;
+      const sellAmount = volume * sellPrice;
+      const sellFee = sellAmount * UPBIT_FEE_RATE;
+
+      profit = sellAmount - buyAmount - buyFee - sellFee;
+      console.log(`[Trading] Bot ${botId}: 매도 체결 - 매수가 ${buyPrice}원, 매도가 ${sellPrice}원, 수익 ${profit.toFixed(2)}원`);
+    }
+
+    // 봇 통계 업데이트
+    await prisma.bot.update({
+      where: { id: botId },
+      data: {
+        totalTrades: { increment: 1 },
+        currentProfit: { increment: profit },
+      },
+    });
+
+    // 월별 수익 기록
+    if (grid.type === 'sell' && profit !== 0) {
+      await ProfitService.recordProfit(userId, 'upbit', profit);
+    }
+
+    // 거래 기록 업데이트
+    const trade = await prisma.trade.findFirst({
+      where: { orderId: grid.orderId! },
+    });
+
+    if (trade) {
+      await prisma.trade.update({
+        where: { id: trade.id },
+        data: {
+          status: 'filled',
+          filledAt: actualFilledAt,
+          ...(grid.type === 'sell' && profit !== 0 ? { profit } : {}),
+        },
+      });
+
+      socketService.emitTradeFilled(botId, {
+        id: trade.id,
+        type: grid.type as 'buy' | 'sell',
+        price: trade.price,
+        amount: trade.amount,
+        total: trade.total,
+        profit: profit !== 0 ? profit : undefined,
+        status: 'filled',
+        filledAt: actualFilledAt,
+      });
+    }
+
+    // 봇 상태 업데이트 알림
+    const updatedBot = await prisma.bot.findUnique({
+      where: { id: botId },
+    });
+
+    if (updatedBot) {
+      socketService.emitBotUpdate(botId, {
+        totalTrades: updatedBot.totalTrades,
+        currentProfit: updatedBot.currentProfit,
+      });
+
+      // 반대 주문 실행
+      if (updatedBot.status === 'running') {
+        const botInfo = await this.getCachedBotInfo(botId);
+        if (botInfo) {
+          await this.executeOppositeOrder(upbit, {
+            id: botId,
+            ticker: botInfo.ticker,
+            orderAmount: botInfo.orderAmount,
+          }, grid);
+        }
+      }
+    }
+  }
+
+  // 체결된 주문 확인 및 즉시 반대 주문 실행 (배치 조회로 429 에러 방지) - 개별 봇용 (호환성 유지)
   static async checkFilledOrders(botId: number) {
     try {
       // pending 상태의 그리드 레벨 조회

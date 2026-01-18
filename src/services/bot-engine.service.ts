@@ -10,6 +10,7 @@ class BotEngine {
   private broadcastInterval: NodeJS.Timeout | null = null;
   private readonly BASE_INTERVAL = 3000; // 기본 체크 주기 3초 (가장 빠른 봇 기준)
   private readonly BROADCAST_INTERVAL = 10000; // 10초마다 봇 데이터 브로드캐스트
+  private readonly BOT_EXECUTION_DELAY = 300; // 봇 간 실행 딜레이 (ms) - 429 에러 방지
 
   // 봇별 마지막 실행 시간 추적
   private lastExecutionTime: Map<number, number> = new Map();
@@ -156,8 +157,9 @@ class BotEngine {
       });
       const botsWithGridsSet = new Set(botsWithAvailableGrids.map(g => g.botId));
 
-      // 각 봇에 대해 거래 실행
-      for (const bot of botsToExecute) {
+      // 각 봇에 대해 거래 실행 (429 에러 방지를 위해 순차 실행 + 딜레이)
+      for (let i = 0; i < botsToExecute.length; i++) {
+        const bot = botsToExecute[i];
         try {
           // 실행 시간 기록 (그리드 유무와 관계없이)
           this.lastExecutionTime.set(bot.id, now);
@@ -174,12 +176,20 @@ class BotEngine {
             console.log(`[BotEngine] Bot ${bot.id} (${bot.ticker}): 거래 실행됨 (변동성: ${volatility.toFixed(2)}%)`);
           }
 
-          // 체결된 주문 확인
-          await TradingService.checkFilledOrders(bot.id);
+          // 다음 봇 실행 전 딜레이 (마지막 봇이 아닌 경우만)
+          if (i < botsToExecute.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, this.BOT_EXECUTION_DELAY));
+          }
         } catch (error: any) {
           console.error(`[BotEngine] Error executing bot ${bot.id}:`, error.message);
         }
       }
+
+      // 중앙 집중식 체결 확인 (모든 running 봇의 주문을 사용자별로 묶어서 조회)
+      // 봇 수와 관계없이 사용자 수만큼만 API 호출
+      const allRunningBotIds = runningBots.map(b => b.id);
+      await TradingService.checkAllFilledOrders(allRunningBotIds);
+
     } catch (error: any) {
       console.error('[BotEngine] Error in bot engine:', error.message);
     }
