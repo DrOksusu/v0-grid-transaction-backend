@@ -21,4 +21,25 @@ export const config = {
     maxFileSize: parseInt(process.env.MAX_FILE_SIZE || '10485760'),
     allowedFileTypes: process.env.ALLOWED_FILE_TYPES?.split(',') || [],
   },
+  // TronGrid API (USDT TRC-20 입금 모니터링)
+  tron: {
+    apiKey: process.env.TRON_API_KEY || '',
+    apiBase: process.env.TRON_API_BASE || 'https://api.trongrid.io',
+    depositAddress: process.env.TRON_DEPOSIT_ADDRESS || '',
+    usdtContract: process.env.TRON_USDT_CONTRACT || 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', // 메인넷 USDT
+    pollInterval: parseInt(process.env.TRON_POLL_INTERVAL || '30000'), // 30초
+  },
+  // USDT 구독 설정
+  usdt: {
+    subscriptionAmount: parseFloat(process.env.USDT_SUBSCRIPTION_AMOUNT || '10'), // 월 10 USDT
+    subscriptionDays: parseInt(process.env.USDT_SUBSCRIPTION_DAYS || '30'),
+    depositExpireHours: parseInt(process.env.USDT_DEPOSIT_EXPIRE_HOURS || '24'),
+  },
+  // Stripe (카드 결제)
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY || '',
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+    proPriceId: process.env.STRIPE_PRO_PRICE_ID || '',
+    premiumPriceId: process.env.STRIPE_PREMIUM_PRICE_ID || '',
+  },
 };
