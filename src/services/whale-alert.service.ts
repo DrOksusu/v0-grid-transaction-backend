@@ -161,11 +161,19 @@ class WhaleAlertService {
         return;
       }
 
-      const data = await response.json() as { transactions?: any[]; result?: string };
+      const data = await response.json() as { transactions?: any[]; result?: string; count?: number };
+
+      // API 응답 디버깅 (매 요청마다)
+      const txCount = data.transactions?.length || 0;
+      const supportedCount = data.transactions?.filter((tx: any) =>
+        this.SUPPORTED_SYMBOLS.includes(tx.symbol?.toLowerCase())
+      ).length || 0;
+      console.log(`[WhaleAlert] API 응답: result=${data.result}, 전체=${txCount}건, 지원코인=${supportedCount}건, start=${start} (${new Date(start * 1000).toISOString()})`);
 
       if (!data.transactions || !Array.isArray(data.transactions)) {
         this.lastFetchSuccess = true;
         this.lastError = null;
+        console.log('[WhaleAlert] 거래 데이터 없음');
         return;
       }
 
@@ -173,6 +181,7 @@ class WhaleAlertService {
       this.lastError = null;
 
       // 새로운 거래를 기존 데이터에 병합
+      let newTxCount = 0;
       for (const tx of data.transactions as any[]) {
         const symbol = tx.symbol?.toLowerCase();
         if (!this.SUPPORTED_SYMBOLS.includes(symbol)) continue;
