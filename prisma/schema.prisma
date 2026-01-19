@@ -27,6 +27,9 @@ model User {
   monthlyProfits    MonthlyProfit[]
   profitSnapshots   ProfitSnapshot[]
   pushSubscriptions PushSubscription[]
+  subscription      Subscription?
+  usdtDeposits      UsdtDeposit[]
+  usdtPayments      UsdtPayment[]
 
   @@map("users")
 }
@@ -367,6 +370,91 @@ model SchedulerLog {
   @@index([executedAt])
   @@index([stockId])
   @@map("scheduler_logs")
+}
+
+// ============ 구독 (Subscription) ============
+
+enum PlanType {
+  free
+  pro
+  premium
+}
+
+enum PaymentMethod {
+  stripe
+  usdt
+}
+
+// 사용자 구독
+model Subscription {
+  id                  Int           @id @default(autoincrement())
+  userId              Int           @unique
+  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  plan                PlanType      @default(free)
+  status              String        @default("active")  // active, cancelled, past_due
+  paymentMethod       PaymentMethod?
+
+  // Stripe 관련
+  stripeCustomerId    String?
+  stripeSubscriptionId String?
+
+  // 구독 기간
+  currentPeriodStart  DateTime?
+  currentPeriodEnd    DateTime?
+  cancelAtPeriodEnd   Boolean       @default(false)
+
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([plan])
+  @@map("subscriptions")
+}
+
+// USDT 입금 요청
+model UsdtDeposit {
+  id              Int       @id @default(autoincrement())
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  address         String    // 입금 주소
+  uniqueCode      String    // 6자리 고유 코드
+  expectedAmount  Float     // 예상 금액 (10 USDT)
+  status          String    @default("pending")  // pending, confirmed, expired
+
+  // 확인 정보
+  txHash          String?   // 트랜잭션 해시
+  confirmedAmount Float?    // 실제 입금 금액
+  confirmedAt     DateTime? // 입금 확인 시간
+
+  expiresAt       DateTime  // 만료 시간
+  createdAt       DateTime  @default(now())
+
+  @@index([userId])
+  @@index([status])
+  @@index([uniqueCode, status])
+  @@map("usdt_deposits")
+}
+
+// USDT 결제 내역
+model UsdtPayment {
+  id              Int       @id @default(autoincrement())
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  txHash          String    // 트랜잭션 해시
+  fromAddress     String    // 발신 주소
+  amount          Float     // 입금 금액
+
+  periodStart     DateTime  // 구독 시작일
+  periodEnd       DateTime  // 구독 종료일
+
+  createdAt       DateTime  @default(now())
+
+  @@index([userId])
+  @@index([txHash])
+  @@map("usdt_payments")
 }
 
 // ============ 푸시 알림 (Push Notifications) ============
