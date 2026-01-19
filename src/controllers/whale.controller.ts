@@ -14,7 +14,22 @@ export const getWhaleActivity = async (
   try {
     const { symbol } = req.query;
     const status = whaleAlertService.getStatus();
-    console.log(`[WhaleController] GET /api/whale called - isRunning: ${status.isRunning}, hasApiKey: ${status.hasApiKey}, lastFetchSuccess: ${status.lastFetchSuccess}, lastError: ${status.lastError}, totalTx: ${status.totalTransactions}`);
+
+    // 디버그: 각 심볼별 최신 거래 timestamp 확인
+    const debugInfo: string[] = [];
+    for (const sym of ['btc', 'eth', 'xrp']) {
+      const data = whaleAlertService.getData(sym);
+      if (data.transactions.length > 0) {
+        const latestTx = data.transactions[0];
+        const txDate = new Date(latestTx.timestamp * 1000);
+        const daysAgo = Math.floor((Date.now() - txDate.getTime()) / (1000 * 60 * 60 * 24));
+        debugInfo.push(`${sym.toUpperCase()}: ${data.transactions.length}건, 최신=${daysAgo}일전`);
+      } else {
+        debugInfo.push(`${sym.toUpperCase()}: 0건`);
+      }
+    }
+    console.log(`[WhaleController] GET /api/whale - status: isRunning=${status.isRunning}, hasApiKey=${status.hasApiKey}, lastFetchSuccess=${status.lastFetchSuccess}, lastError=${status.lastError}`);
+    console.log(`[WhaleController] 거래현황: ${debugInfo.join(', ')}`);
 
     // 특정 심볼 요청 시
     if (symbol) {
