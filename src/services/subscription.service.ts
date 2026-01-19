@@ -5,9 +5,7 @@
  */
 
 import prisma from '../config/database';
-import { stripeService } from './stripe.service';
 import { PLAN_LIMITS, PlanType, BotType } from '../config/plans';
-import { SubscriptionPlan, SubscriptionStatus } from '@prisma/client';
 
 export interface BotUsage {
   grid: { current: number; limit: number };
@@ -17,7 +15,7 @@ export interface BotUsage {
 
 export interface SubscriptionInfo {
   plan: PlanType;
-  status: SubscriptionStatus;
+  status: string;
   currentPeriodEnd: Date | null;
   cancelAtPeriodEnd: boolean;
   stripeCustomerId: string | null;
@@ -27,20 +25,16 @@ class SubscriptionService {
   /**
    * 사용자 구독 정보 조회 (없으면 생성)
    */
-  async getOrCreateSubscription(userId: number, email: string) {
+  async getOrCreateSubscription(userId: number) {
     let subscription = await prisma.subscription.findUnique({
       where: { userId },
     });
 
     if (!subscription) {
-      // Stripe Customer 생성
-      const customer = await stripeService.createCustomer(email, userId);
-
       // 구독 레코드 생성 (Free 플랜)
       subscription = await prisma.subscription.create({
         data: {
           userId,
-          stripeCustomerId: customer.id,
           plan: 'free',
           status: 'active',
         },
@@ -70,7 +64,7 @@ class SubscriptionService {
     }
 
     // 구독이 활성 상태가 아니면 free
-    if (subscription.status !== 'active' && subscription.status !== 'trialing') {
+    if (subscription.status !== 'active') {
       return 'free';
     }
 
@@ -161,47 +155,6 @@ class SubscriptionService {
   }
 
   /**
-   * Stripe 구독 상태 동기화
-   */
-  async syncFromStripe(
-    userId: number,
-    stripeSubscription: {
-      id: string;
-      status: string;
-      current_period_start: number;
-      current_period_end: number;
-      cancel_at_period_end: boolean;
-      items: { data: Array<{ price: { id: string } }> };
-    }
-  ) {
-    const priceId = stripeSubscription.items.data[0]?.price?.id;
-    const plan = stripeService.getPlanFromPriceId(priceId || '');
-
-    // Stripe 상태를 우리 상태로 매핑
-    let status: SubscriptionStatus = 'active';
-    if (stripeSubscription.status === 'canceled') {
-      status = 'canceled';
-    } else if (stripeSubscription.status === 'past_due') {
-      status = 'past_due';
-    } else if (stripeSubscription.status === 'trialing') {
-      status = 'trialing';
-    }
-
-    return prisma.subscription.update({
-      where: { userId },
-      data: {
-        stripeSubscriptionId: stripeSubscription.id,
-        stripePriceId: priceId,
-        plan: plan as SubscriptionPlan,
-        status,
-        currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000),
-        currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000),
-        cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
-      },
-    });
-  }
-
-  /**
    * 구독 취소 시 Free로 복귀
    */
   async downgradeToFree(userId: number) {
@@ -209,7 +162,6 @@ class SubscriptionService {
       where: { userId },
       data: {
         stripeSubscriptionId: null,
-        stripePriceId: null,
         plan: 'free',
         status: 'active',
         currentPeriodStart: null,

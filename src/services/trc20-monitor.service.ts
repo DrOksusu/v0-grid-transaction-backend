@@ -7,7 +7,7 @@
 
 import { config } from '../config/env';
 import prisma from '../config/database';
-import { socketService } from './socket.service';
+// import { socketService } from './socket.service';
 
 interface TRC20Transaction {
   transaction_id: string;
@@ -293,12 +293,12 @@ class TRC20MonitorService {
         },
       });
 
-      // Socket.io로 실시간 알림
-      socketService.emitToUser(deposit.userId, 'deposit:confirmed', {
-        txHash: tx.transaction_id,
-        amount,
-        periodEnd,
-      });
+      // TODO: Socket.io로 실시간 알림 (emitToUser 구현 필요)
+      // socketService.emitToUser(deposit.userId, 'deposit:confirmed', {
+      //   txHash: tx.transaction_id,
+      //   amount,
+      //   periodEnd,
+      // });
 
       console.log(`[TRC20Monitor] 구독 활성화 완료: 사용자 ${deposit.userId}, 만료일 ${periodEnd.toISOString()}`);
 
