@@ -513,6 +513,22 @@ export class TradingService {
   ) {
     const botId = grid.botId;
 
+    // 중복 처리 방지: pending 상태인 경우에만 처리 (atomic update)
+    const updateResult = await prisma.gridLevel.updateMany({
+      where: {
+        id: grid.id,
+        status: 'pending',  // 아직 pending 상태인 경우에만
+      },
+      data: {
+        status: 'filled',
+      },
+    });
+
+    // 이미 처리된 그리드면 스킵
+    if (updateResult.count === 0) {
+      return;
+    }
+
     // 업비트 실제 체결 시간 추출
     let actualFilledAt = new Date();
     if (order.trades && order.trades.length > 0) {
@@ -522,13 +538,14 @@ export class TradingService {
       }
     }
 
-    // 그리드 레벨을 filled로 업데이트
-    await GridService.updateGridLevel(
-      grid.id,
-      'filled',
-      grid.orderId!,
-      actualFilledAt
-    );
+    // 그리드 레벨에 체결 시간 업데이트
+    await prisma.gridLevel.update({
+      where: { id: grid.id },
+      data: {
+        orderId: grid.orderId,
+        filledAt: actualFilledAt,
+      },
+    });
 
     // 수익 계산 (매도 체결 시에만)
     let profit = 0;
