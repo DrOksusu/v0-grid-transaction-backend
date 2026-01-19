@@ -621,13 +621,20 @@ export class TradingService {
       if (updatedBot.status === 'running') {
         const botInfo = await this.getCachedBotInfo(botId);
         if (botInfo) {
+          console.log(`[Trading] Bot ${botId}: 체결 후 반대 주문 실행 시도 - grid type: ${grid.type}, sellPrice: ${grid.sellPrice}, buyPrice: ${grid.buyPrice}`);
           await this.executeOppositeOrder(upbit, {
             id: botId,
             ticker: botInfo.ticker,
             orderAmount: botInfo.orderAmount,
           }, grid);
+        } else {
+          console.log(`[Trading] Bot ${botId}: botInfo를 찾을 수 없어 반대 주문 실행 불가`);
         }
+      } else {
+        console.log(`[Trading] Bot ${botId}: 봇 상태가 running이 아님 (${updatedBot.status}), 반대 주문 미실행`);
       }
+    } else {
+      console.log(`[Trading] Bot ${botId}: updatedBot이 null, 반대 주문 미실행`);
     }
   }
 
@@ -917,7 +924,19 @@ export class TradingService {
     retryCount: number = 0
   ): Promise<void> {
     const MAX_RETRIES = 3;
+    console.log(`[Trading] Bot ${bot.id}: executeOppositeOrder 호출 - type: ${filledGrid.type}, sellPrice: ${filledGrid.sellPrice}, buyPrice: ${filledGrid.buyPrice}`);
+
     try {
+      // 유효성 검사
+      if (filledGrid.type === 'buy' && !filledGrid.sellPrice) {
+        console.log(`[Trading] Bot ${bot.id}: 매수 그리드인데 sellPrice가 없음! grid id: ${filledGrid.id}`);
+        return;
+      }
+      if (filledGrid.type === 'sell' && !filledGrid.buyPrice) {
+        console.log(`[Trading] Bot ${bot.id}: 매도 그리드인데 buyPrice가 없음! grid id: ${filledGrid.id}`);
+        return;
+      }
+
       if (filledGrid.type === 'buy' && filledGrid.sellPrice) {
         // 매수 체결 → 즉시 매도 주문
         const sellPrice = filledGrid.sellPrice;
@@ -926,19 +945,37 @@ export class TradingService {
         console.log(`[Trading] Bot ${bot.id}: 매수 체결 후 즉시 매도 주문 - ${sellPrice.toLocaleString()}원`);
 
         // 매도 그리드 레벨 찾기 (inactive 또는 filled 상태 - 사이클 완료 후 재사용)
+        // 부동소수점 오차를 위해 범위 검색
         const sellGrid = await prisma.gridLevel.findFirst({
           where: {
             botId: bot.id,
-            price: sellPrice,
+            price: {
+              gte: sellPrice - 0.01,
+              lte: sellPrice + 0.01,
+            },
             type: 'sell',
             status: { in: ['inactive', 'filled'] },  // 첫 사이클 또는 완료된 사이클
           },
         });
 
         if (!sellGrid) {
-          console.log(`[Trading] Bot ${bot.id}: 매도 그리드 레벨을 찾을 수 없거나 이미 주문 중입니다 (${sellPrice}원, status: pending)`);
+          // 디버깅: 모든 매도 그리드 상태 확인
+          const allSellGrids = await prisma.gridLevel.findMany({
+            where: {
+              botId: bot.id,
+              type: 'sell',
+              price: {
+                gte: sellPrice - 1,
+                lte: sellPrice + 1,
+              },
+            },
+            select: { id: true, price: true, status: true, orderId: true },
+          });
+          console.log(`[Trading] Bot ${bot.id}: 매도 그리드 찾기 실패! sellPrice=${sellPrice}, 근처 매도 그리드:`, allSellGrids);
           return;
         }
+
+        console.log(`[Trading] Bot ${bot.id}: 매도 그리드 찾음 - id: ${sellGrid.id}, price: ${sellGrid.price}, status: ${sellGrid.status}`);
 
         // 매도 주문 실행
         const order = await upbit.sellLimit(bot.ticker, sellPrice, volume);
@@ -981,19 +1018,37 @@ export class TradingService {
         console.log(`[Trading] Bot ${bot.id}: 매도 체결 후 즉시 매수 주문 - ${buyPrice.toLocaleString()}원`);
 
         // 매수 그리드 레벨 찾기 (filled 상태만 - 이전 사이클에서 완료된 것)
+        // 부동소수점 오차를 위해 범위 검색
         const buyGrid = await prisma.gridLevel.findFirst({
           where: {
             botId: bot.id,
-            price: buyPrice,
+            price: {
+              gte: buyPrice - 0.01,
+              lte: buyPrice + 0.01,
+            },
             type: 'buy',
             status: 'filled',  // 이전에 체결 완료된 그리드만
           },
         });
 
         if (!buyGrid) {
-          console.log(`[Trading] Bot ${bot.id}: 재매수할 그리드 레벨을 찾을 수 없거나 이미 주문 중입니다 (${buyPrice}원)`);
+          // 디버깅: 모든 매수 그리드 상태 확인
+          const allBuyGrids = await prisma.gridLevel.findMany({
+            where: {
+              botId: bot.id,
+              type: 'buy',
+              price: {
+                gte: buyPrice - 1,
+                lte: buyPrice + 1,
+              },
+            },
+            select: { id: true, price: true, status: true, orderId: true },
+          });
+          console.log(`[Trading] Bot ${bot.id}: 매수 그리드 찾기 실패! buyPrice=${buyPrice}, 근처 매수 그리드:`, allBuyGrids);
           return;
         }
+
+        console.log(`[Trading] Bot ${bot.id}: 매수 그리드 찾음 - id: ${buyGrid.id}, price: ${buyGrid.price}, status: ${buyGrid.status}`);
 
         // 매수 주문 실행
         const order = await upbit.buyLimit(bot.ticker, buyPrice, volume);
