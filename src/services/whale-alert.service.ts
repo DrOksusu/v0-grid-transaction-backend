@@ -78,7 +78,8 @@ class WhaleAlertService {
   private readonly MIN_VALUE_USD = 250000; // 최소 $250,000 거래만 추적
   private readonly SUPPORTED_SYMBOLS = ['btc', 'eth', 'xrp'];
   private readonly FETCH_INTERVAL = 60000; // 1분마다 조회
-  private readonly QUERY_PERIOD = 604800; // 7일 (유료 API 기준)
+  private readonly QUERY_PERIOD = 3600; // 1시간 (API가 start부터 순차 반환하므로 짧게 설정)
+  private readonly DATA_RETENTION = 604800; // 7일간 데이터 보관
   private readonly MAX_TRANSACTIONS = 1000; // 심볼당 최대 저장 거래 수
 
   private fetchInterval: NodeJS.Timeout | null = null;
