@@ -632,6 +632,18 @@ export const getTrades = async (
         orderBy: { price: 'desc' },
       });
 
+      // 디버그: 전체 pending 상태 그리드도 확인
+      const allPendingGrids = await prisma.gridLevel.findMany({
+        where: { botId, status: 'pending' },
+        select: { id: true, price: true, type: true, orderId: true, status: true },
+      });
+      console.log(`[getTrades] Bot ${botId}: pending grids with orderId: ${pendingGridLevels.length}, all pending grids: ${allPendingGrids.length}`);
+      if (allPendingGrids.length !== pendingGridLevels.length) {
+        console.log(`[getTrades] WARNING: ${allPendingGrids.length - pendingGridLevels.length} pending grids without orderId:`,
+          allPendingGrids.filter(g => !g.orderId).map(g => ({ id: g.id, price: g.price, type: g.type }))
+        );
+      }
+
       return successResponse(res, {
         trades: pendingGridLevels.map(gl => ({
           _id: `grid-${gl.id}`,
