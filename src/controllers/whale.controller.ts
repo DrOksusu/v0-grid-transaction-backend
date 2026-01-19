@@ -13,6 +13,8 @@ export const getWhaleActivity = async (
 ) => {
   try {
     const { symbol } = req.query;
+    const status = whaleAlertService.getStatus();
+    console.log(`[WhaleController] GET /api/whale called - isRunning: ${status.isRunning}, hasApiKey: ${status.hasApiKey}, lastFetchSuccess: ${status.lastFetchSuccess}, lastError: ${status.lastError}, totalTx: ${status.totalTransactions}`);
 
     // 특정 심볼 요청 시
     if (symbol) {
