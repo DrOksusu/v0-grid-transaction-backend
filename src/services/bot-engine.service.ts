@@ -1,7 +1,6 @@
 import prisma from '../config/database';
 import { TradingService } from './trading.service';
 import { priceManager } from './upbit-price-manager';
-import { orderManager } from './upbit-order-manager';
 import { socketService } from './socket.service';
 import { roundToTickSize } from './grid.service';
 
@@ -9,10 +8,10 @@ class BotEngine {
   private isRunning: boolean = false;
   private interval: NodeJS.Timeout | null = null;
   private broadcastInterval: NodeJS.Timeout | null = null;
-  private restFallbackInterval: NodeJS.Timeout | null = null;
+  private orderCheckInterval: NodeJS.Timeout | null = null;
   private readonly BASE_INTERVAL = 3000; // 기본 체크 주기 3초 (가장 빠른 봇 기준)
   private readonly BROADCAST_INTERVAL = 10000; // 10초마다 봇 데이터 브로드캐스트
-  private readonly REST_FALLBACK_INTERVAL = 60000; // REST 폴백 체크 60초 (WebSocket 미스 대비)
+  private readonly ORDER_CHECK_INTERVAL = 15000; // 체결 확인 15초 (UUID 배치 조회로 최적화)
   private readonly BOT_EXECUTION_DELAY = 300; // 봇 간 실행 딜레이 (ms) - 429 에러 방지
 
   // 봇별 마지막 실행 시간 추적
@@ -31,9 +30,6 @@ class BotEngine {
     // WebSocket PriceManager 시작 및 실행 중인 봇 티커 구독
     await this.initializePriceManager();
 
-    // WebSocket OrderManager 시작 (체결 알림 실시간 수신)
-    await this.initializeOrderManager();
-
     // 주기적으로 봇 실행 (동적 간격 - 기본 3초마다 체크)
     this.interval = setInterval(async () => {
       await this.executeBots();
@@ -44,10 +40,11 @@ class BotEngine {
       await this.broadcastBotsToSubscribers();
     }, this.BROADCAST_INTERVAL);
 
-    // REST 폴백: WebSocket 누락 대비 (60초마다)
-    this.restFallbackInterval = setInterval(async () => {
-      await this.runRestFallbackCheck();
-    }, this.REST_FALLBACK_INTERVAL);
+    // 체결 확인 (UUID 배치 조회 - 15초마다)
+    // API 호출 수: 사용자 수 × 1 (마켓 수와 무관)
+    this.orderCheckInterval = setInterval(async () => {
+      await this.checkFilledOrders();
+    }, this.ORDER_CHECK_INTERVAL);
 
     // 즉시 한 번 실행
     this.executeBots();
@@ -80,18 +77,8 @@ class BotEngine {
     }
   }
 
-  // OrderManager 초기화 (Private WebSocket - 체결 알림)
-  private async initializeOrderManager() {
-    try {
-      await orderManager.start();
-      console.log('[BotEngine] OrderManager started (WebSocket for order fills)');
-    } catch (error: any) {
-      console.error('[BotEngine] Failed to initialize OrderManager:', error.message);
-    }
-  }
-
-  // REST 폴백 체크 (WebSocket 누락 대비)
-  private async runRestFallbackCheck() {
+  // 체결 확인 (UUID 배치 조회 - 마켓 수와 무관하게 사용자당 1회 API 호출)
+  private async checkFilledOrders() {
     try {
       const runningBots = await prisma.bot.findMany({
         where: { status: 'running' },
@@ -101,10 +88,9 @@ class BotEngine {
       if (runningBots.length === 0) return;
 
       const allRunningBotIds = runningBots.map(b => b.id);
-      console.log(`[BotEngine] REST fallback check for ${allRunningBotIds.length} bots`);
       await TradingService.checkAllFilledOrders(allRunningBotIds);
     } catch (error: any) {
-      console.error('[BotEngine] REST fallback check failed:', error.message);
+      console.error('[BotEngine] Order check failed:', error.message);
     }
   }
 
@@ -120,29 +106,25 @@ class BotEngine {
       this.broadcastInterval = null;
     }
 
-    if (this.restFallbackInterval) {
-      clearInterval(this.restFallbackInterval);
-      this.restFallbackInterval = null;
+    if (this.orderCheckInterval) {
+      clearInterval(this.orderCheckInterval);
+      this.orderCheckInterval = null;
     }
 
     // PriceManager WebSocket 연결 종료
     priceManager.disconnect();
 
-    // OrderManager WebSocket 연결 종료
-    orderManager.stop();
-
     this.isRunning = false;
     console.log('Bot engine stopped');
   }
 
-  // 봇 시작 시 티커 구독 및 OrderManager 알림
+  // 봇 시작 시 티커 구독
   async onBotStarted(botId: number, userId: number, ticker: string) {
     priceManager.subscribe(ticker);
-    await orderManager.onBotStarted(botId, userId, ticker);
     console.log(`[BotEngine] Bot ${botId} started - subscribed to ${ticker}`);
   }
 
-  // 봇 종료 시 티커 구독 해제 및 OrderManager 알림
+  // 봇 종료 시 티커 구독 해제
   async onBotStopped(botId: number, userId: number, ticker: string) {
     // 해당 티커를 사용하는 다른 running 봇이 있는지 확인
     const otherBots = await prisma.bot.count({
@@ -158,7 +140,6 @@ class BotEngine {
       priceManager.unsubscribe(ticker);
     }
 
-    await orderManager.onBotStopped(botId, userId, ticker);
     console.log(`[BotEngine] Bot ${botId} stopped`);
   }
 

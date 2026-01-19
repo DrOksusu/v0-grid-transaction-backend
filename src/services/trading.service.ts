@@ -4,7 +4,6 @@ import { GridService } from './grid.service';
 import { decrypt } from '../utils/encryption';
 import { socketService } from './socket.service';
 import { priceManager } from './upbit-price-manager';
-import { orderManager } from './upbit-order-manager';
 import { ProfitService } from './profit.service';
 
 // 자격증명 캐시 (5분 TTL)
@@ -227,9 +226,6 @@ export class TradingService {
               data: { orderId: order.uuid },
             });
 
-            // WebSocket OrderManager에 주문 등록 (실시간 체결 감지용)
-            orderManager.registerOrder(order.uuid, botId, executableGrids.buy.id);
-
             const newTrade = await prisma.trade.create({
               data: {
                 botId,
@@ -308,9 +304,6 @@ export class TradingService {
               where: { id: executableGrids.sell.id },
               data: { orderId: order.uuid },
             });
-
-            // WebSocket OrderManager에 주문 등록 (실시간 체결 감지용)
-            orderManager.registerOrder(order.uuid, botId, executableGrids.sell.id);
 
             // 거래 기록 저장
             const newTrade = await prisma.trade.create({
@@ -399,10 +392,10 @@ export class TradingService {
   }
 
   /**
-   * 중앙 집중식 체결 주문 확인 (마켓별 조회 방식)
-   * - 사용자별 + 마켓별로 미체결 주문 조회
-   * - URL 길이 제한 없이 안정적으로 조회 가능
-   * - API 호출 수 = 사용자 수 × 사용 중인 마켓 수
+   * 중앙 집중식 체결 주문 확인 (UUID 배치 조회 방식)
+   * - 사용자별로 모든 pending 주문을 한 번에 조회
+   * - API 호출 수 = 사용자 수 (마켓 수와 무관)
+   * - 429 에러 대폭 감소
    */
   static async checkAllFilledOrders(runningBotIds: number[]) {
     if (runningBotIds.length === 0) return;
@@ -424,35 +417,21 @@ export class TradingService {
 
       if (allPendingGrids.length === 0) return;
 
-      // 2. 사용자별 + 마켓별로 그리드 그룹화
-      // Map<userId, Map<market, grids[]>>
-      const gridsByUserAndMarket = new Map<number, Map<string, typeof allPendingGrids>>();
+      // 2. 사용자별로 그리드 그룹화
+      const gridsByUser = new Map<number, typeof allPendingGrids>();
 
       for (const grid of allPendingGrids) {
         const userId = grid.bot.userId;
-        const market = grid.bot.ticker;
-
-        if (!gridsByUserAndMarket.has(userId)) {
-          gridsByUserAndMarket.set(userId, new Map());
+        if (!gridsByUser.has(userId)) {
+          gridsByUser.set(userId, []);
         }
-
-        const userMarkets = gridsByUserAndMarket.get(userId)!;
-        if (!userMarkets.has(market)) {
-          userMarkets.set(market, []);
-        }
-        userMarkets.get(market)!.push(grid);
+        gridsByUser.get(userId)!.push(grid);
       }
 
-      // 총 마켓 수 계산
-      let totalMarkets = 0;
-      for (const userMarkets of gridsByUserAndMarket.values()) {
-        totalMarkets += userMarkets.size;
-      }
+      console.log(`[Trading] UUID 배치 조회: ${allPendingGrids.length}개 주문, ${gridsByUser.size}명 사용자`);
 
-      console.log(`[Trading] 마켓별 조회: ${allPendingGrids.length}개 주문, ${gridsByUserAndMarket.size}명 사용자, ${totalMarkets}개 마켓`);
-
-      // 3. 사용자별로 마켓별 조회
-      for (const [userId, userMarkets] of gridsByUserAndMarket) {
+      // 3. 사용자별로 배치 조회
+      for (const [userId, grids] of gridsByUser) {
         try {
           // 사용자 자격증명 조회
           const credential = await this.getUserCredential(userId);
@@ -466,46 +445,39 @@ export class TradingService {
             secretKey: credential.secretKey,
           });
 
-          // 각 마켓별로 미체결 주문 조회
-          for (const [market, grids] of userMarkets) {
-            try {
-              // 해당 마켓의 모든 미체결 주문 조회 (state=wait)
-              const waitOrders = await upbit.getOrdersByMarket(market, 'wait');
+          // 해당 사용자의 모든 orderIds
+          const orderIds = grids.map(g => g.orderId as string);
 
-              // 체결된 주문 조회 (state=done) - 최근 체결된 것 확인
-              const doneOrders = await upbit.getOrdersByMarket(market, 'done');
+          // 배치로 모든 주문 상태 조회 (API 호출 1회, 청크당 최대 100개)
+          const orders = await upbit.getOrdersByUuids(orderIds);
 
-              // 우리 봇의 orderId 목록
-              const ourOrderIds = new Set(grids.map(g => g.orderId as string));
+          // orderId로 빠른 조회를 위한 Map
+          const gridByOrderId = new Map(grids.map(g => [g.orderId, g]));
+          const orderMap = new Map(orders.map((o: any) => [o.uuid, o]));
 
-              // 체결된 주문 중 우리 봇의 주문 찾기
-              const filledOrders = doneOrders.filter((o: any) => ourOrderIds.has(o.uuid));
-
-              // orderId로 그리드 찾기 위한 Map
-              const gridByOrderId = new Map(grids.map(g => [g.orderId, g]));
-
-              // 체결된 주문 처리
-              for (const order of filledOrders) {
-                const grid = gridByOrderId.get(order.uuid);
-                if (grid && order.state === 'done') {
-                  await this.processFilledOrder(grid, order, upbit, userId);
-                }
-              }
-
-            } catch (error: any) {
-              console.error(`[Trading] User ${userId}, ${market} 조회 실패:`, error.message);
+          // 체결된 주문 처리
+          let filledCount = 0;
+          for (const grid of grids) {
+            const order = orderMap.get(grid.orderId);
+            if (order && order.state === 'done') {
+              await this.processFilledOrder(grid, order, upbit, userId);
+              filledCount++;
             }
           }
 
+          if (filledCount > 0) {
+            console.log(`[Trading] User ${userId}: ${filledCount}개 주문 체결 처리됨`);
+          }
+
           // 다음 사용자 처리 전 대기
-          await new Promise(resolve => setTimeout(resolve, 200));
+          await new Promise(resolve => setTimeout(resolve, 300));
 
         } catch (error: any) {
           console.error(`[Trading] User ${userId} 체결 확인 실패:`, error.message);
         }
       }
     } catch (error: any) {
-      console.error('[Trading] 마켓별 체결 확인 실패:', error.message);
+      console.error('[Trading] UUID 배치 체결 확인 실패:', error.message);
     }
   }
 
@@ -990,9 +962,6 @@ export class TradingService {
         // 그리드 레벨 상태 업데이트
         await GridService.updateGridLevel(sellGrid.id, 'pending', order.uuid);
 
-        // WebSocket OrderManager에 주문 등록 (실시간 체결 감지용)
-        orderManager.registerOrder(order.uuid, bot.id, sellGrid.id);
-
         // 거래 기록 저장
         const newTrade = await prisma.trade.create({
           data: {
@@ -1065,9 +1034,6 @@ export class TradingService {
 
         // 그리드 레벨 상태 업데이트
         await GridService.updateGridLevel(buyGrid.id, 'pending', order.uuid);
-
-        // WebSocket OrderManager에 주문 등록 (실시간 체결 감지용)
-        orderManager.registerOrder(order.uuid, bot.id, buyGrid.id);
 
         // 거래 기록 저장
         const newTrade = await prisma.trade.create({
