@@ -4,6 +4,7 @@ import { GridService } from './grid.service';
 import { decrypt } from '../utils/encryption';
 import { socketService } from './socket.service';
 import { priceManager } from './upbit-price-manager';
+import { orderManager } from './upbit-order-manager';
 import { ProfitService } from './profit.service';
 
 // 자격증명 캐시 (5분 TTL)
@@ -226,6 +227,9 @@ export class TradingService {
               data: { orderId: order.uuid },
             });
 
+            // WebSocket OrderManager에 주문 등록 (실시간 체결 감지용)
+            orderManager.registerOrder(order.uuid, botId, executableGrids.buy.id);
+
             const newTrade = await prisma.trade.create({
               data: {
                 botId,
@@ -304,6 +308,9 @@ export class TradingService {
               where: { id: executableGrids.sell.id },
               data: { orderId: order.uuid },
             });
+
+            // WebSocket OrderManager에 주문 등록 (실시간 체결 감지용)
+            orderManager.registerOrder(order.uuid, botId, executableGrids.sell.id);
 
             // 거래 기록 저장
             const newTrade = await prisma.trade.create({
@@ -983,6 +990,9 @@ export class TradingService {
         // 그리드 레벨 상태 업데이트
         await GridService.updateGridLevel(sellGrid.id, 'pending', order.uuid);
 
+        // WebSocket OrderManager에 주문 등록 (실시간 체결 감지용)
+        orderManager.registerOrder(order.uuid, bot.id, sellGrid.id);
+
         // 거래 기록 저장
         const newTrade = await prisma.trade.create({
           data: {
@@ -1055,6 +1065,9 @@ export class TradingService {
 
         // 그리드 레벨 상태 업데이트
         await GridService.updateGridLevel(buyGrid.id, 'pending', order.uuid);
+
+        // WebSocket OrderManager에 주문 등록 (실시간 체결 감지용)
+        orderManager.registerOrder(order.uuid, bot.id, buyGrid.id);
 
         // 거래 기록 저장
         const newTrade = await prisma.trade.create({

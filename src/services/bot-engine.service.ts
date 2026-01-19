@@ -1,6 +1,7 @@
 import prisma from '../config/database';
 import { TradingService } from './trading.service';
 import { priceManager } from './upbit-price-manager';
+import { orderManager } from './upbit-order-manager';
 import { socketService } from './socket.service';
 import { roundToTickSize } from './grid.service';
 
@@ -8,8 +9,10 @@ class BotEngine {
   private isRunning: boolean = false;
   private interval: NodeJS.Timeout | null = null;
   private broadcastInterval: NodeJS.Timeout | null = null;
+  private restFallbackInterval: NodeJS.Timeout | null = null;
   private readonly BASE_INTERVAL = 3000; // 기본 체크 주기 3초 (가장 빠른 봇 기준)
   private readonly BROADCAST_INTERVAL = 10000; // 10초마다 봇 데이터 브로드캐스트
+  private readonly REST_FALLBACK_INTERVAL = 60000; // REST 폴백 체크 60초 (WebSocket 미스 대비)
   private readonly BOT_EXECUTION_DELAY = 300; // 봇 간 실행 딜레이 (ms) - 429 에러 방지
 
   // 봇별 마지막 실행 시간 추적
@@ -28,6 +31,9 @@ class BotEngine {
     // WebSocket PriceManager 시작 및 실행 중인 봇 티커 구독
     await this.initializePriceManager();
 
+    // WebSocket OrderManager 시작 (체결 알림 실시간 수신)
+    await this.initializeOrderManager();
+
     // 주기적으로 봇 실행 (동적 간격 - 기본 3초마다 체크)
     this.interval = setInterval(async () => {
       await this.executeBots();
@@ -37,6 +43,11 @@ class BotEngine {
     this.broadcastInterval = setInterval(async () => {
       await this.broadcastBotsToSubscribers();
     }, this.BROADCAST_INTERVAL);
+
+    // REST 폴백: WebSocket 누락 대비 (60초마다)
+    this.restFallbackInterval = setInterval(async () => {
+      await this.runRestFallbackCheck();
+    }, this.REST_FALLBACK_INTERVAL);
 
     // 즉시 한 번 실행
     this.executeBots();
@@ -69,6 +80,34 @@ class BotEngine {
     }
   }
 
+  // OrderManager 초기화 (Private WebSocket - 체결 알림)
+  private async initializeOrderManager() {
+    try {
+      await orderManager.start();
+      console.log('[BotEngine] OrderManager started (WebSocket for order fills)');
+    } catch (error: any) {
+      console.error('[BotEngine] Failed to initialize OrderManager:', error.message);
+    }
+  }
+
+  // REST 폴백 체크 (WebSocket 누락 대비)
+  private async runRestFallbackCheck() {
+    try {
+      const runningBots = await prisma.bot.findMany({
+        where: { status: 'running' },
+        select: { id: true },
+      });
+
+      if (runningBots.length === 0) return;
+
+      const allRunningBotIds = runningBots.map(b => b.id);
+      console.log(`[BotEngine] REST fallback check for ${allRunningBotIds.length} bots`);
+      await TradingService.checkAllFilledOrders(allRunningBotIds);
+    } catch (error: any) {
+      console.error('[BotEngine] REST fallback check failed:', error.message);
+    }
+  }
+
   // 엔진 중지
   stop() {
     if (this.interval) {
@@ -81,19 +120,54 @@ class BotEngine {
       this.broadcastInterval = null;
     }
 
+    if (this.restFallbackInterval) {
+      clearInterval(this.restFallbackInterval);
+      this.restFallbackInterval = null;
+    }
+
     // PriceManager WebSocket 연결 종료
     priceManager.disconnect();
+
+    // OrderManager WebSocket 연결 종료
+    orderManager.stop();
 
     this.isRunning = false;
     console.log('Bot engine stopped');
   }
 
-  // 봇 시작 시 티커 구독
+  // 봇 시작 시 티커 구독 및 OrderManager 알림
+  async onBotStarted(botId: number, userId: number, ticker: string) {
+    priceManager.subscribe(ticker);
+    await orderManager.onBotStarted(botId, userId, ticker);
+    console.log(`[BotEngine] Bot ${botId} started - subscribed to ${ticker}`);
+  }
+
+  // 봇 종료 시 티커 구독 해제 및 OrderManager 알림
+  async onBotStopped(botId: number, userId: number, ticker: string) {
+    // 해당 티커를 사용하는 다른 running 봇이 있는지 확인
+    const otherBots = await prisma.bot.count({
+      where: {
+        ticker,
+        status: 'running',
+        id: { not: botId },
+      },
+    });
+
+    // 다른 봇이 없으면 구독 해제
+    if (otherBots === 0) {
+      priceManager.unsubscribe(ticker);
+    }
+
+    await orderManager.onBotStopped(botId, userId, ticker);
+    console.log(`[BotEngine] Bot ${botId} stopped`);
+  }
+
+  // 봇 시작 시 티커 구독 (하위 호환성)
   subscribeTicker(ticker: string) {
     priceManager.subscribe(ticker);
   }
 
-  // 봇 종료 시 티커 구독 해제 (다른 봇이 사용 중이면 유지)
+  // 봇 종료 시 티커 구독 해제 (하위 호환성)
   async unsubscribeTicker(ticker: string) {
     // 해당 티커를 사용하는 다른 running 봇이 있는지 확인
     const otherBots = await prisma.bot.count({
@@ -185,10 +259,8 @@ class BotEngine {
         }
       }
 
-      // 중앙 집중식 체결 확인 (모든 running 봇의 주문을 사용자별로 묶어서 조회)
-      // 봇 수와 관계없이 사용자 수만큼만 API 호출
-      const allRunningBotIds = runningBots.map(b => b.id);
-      await TradingService.checkAllFilledOrders(allRunningBotIds);
+      // 체결 확인은 WebSocket으로 실시간 처리 (orderManager)
+      // REST 폴백은 별도 interval에서 60초마다 실행
 
     } catch (error: any) {
       console.error('[BotEngine] Error in bot engine:', error.message);

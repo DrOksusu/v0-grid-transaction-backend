@@ -81,8 +81,8 @@ export const createBot = async (
         gridCount,
         priceChangePercent
       );
-      // WebSocket 티커 구독 추가
-      botEngine.subscribeTicker(ticker);
+      // WebSocket 티커 구독 및 OrderManager 알림
+      await botEngine.onBotStarted(bot.id, userId, ticker);
       console.log(`Bot ${bot.id} created with ${gridCount} grid levels (autoStart)`);
     }
 
@@ -326,8 +326,8 @@ export const startBot = async (
       },
     });
 
-    // WebSocket 티커 구독 추가
-    botEngine.subscribeTicker(bot.ticker);
+    // WebSocket 티커 구독 및 OrderManager 알림
+    await botEngine.onBotStarted(botId, userId, bot.ticker);
 
     return successResponse(
       res,
@@ -410,8 +410,8 @@ export const stopBot = async (
       data: { status: 'stopped' },
     });
 
-    // WebSocket 티커 구독 해제 (다른 봇이 사용 중이 아닌 경우)
-    await botEngine.unsubscribeTicker(bot.ticker);
+    // WebSocket 티커 구독 해제 및 OrderManager 알림
+    await botEngine.onBotStopped(botId, userId, bot.ticker);
 
     return successResponse(
       res,
@@ -512,9 +512,9 @@ export const deleteBot = async (
       }
     }
 
-    // WebSocket 티커 구독 해제 (봇이 running 상태였던 경우)
+    // WebSocket 티커 구독 해제 및 OrderManager 알림 (봇이 running 상태였던 경우)
     if (bot.status === 'running') {
-      await botEngine.unsubscribeTicker(bot.ticker);
+      await botEngine.onBotStopped(botId, userId, bot.ticker);
     }
 
     // 수익 스냅샷 저장 (삭제 전)
