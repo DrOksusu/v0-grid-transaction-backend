@@ -20,7 +20,6 @@ export const getWhaleActivity = async (
     if (symbol) {
       const data = whaleAlertService.getData(symbol as string);
       const summaries = whaleAlertService.getAllSummaries();
-      const status = whaleAlertService.getStatus();
 
       return successResponse(res, {
         transactions: data.transactions,
@@ -32,7 +31,6 @@ export const getWhaleActivity = async (
 
     // 전체 요청 시 - WebSocket과 동일한 구조로 반환
     const allSummaries = whaleAlertService.getAllSummaries();
-    const status = whaleAlertService.getStatus();
 
     // 심볼별로 거래 조회
     const transactionsBySymbol: Record<string, any[]> = {};
