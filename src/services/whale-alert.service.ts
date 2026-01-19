@@ -165,10 +165,23 @@ class WhaleAlertService {
 
       // API 응답 디버깅 (매 요청마다)
       const txCount = data.transactions?.length || 0;
-      const supportedCount = data.transactions?.filter((tx: any) =>
+      const supportedTxs = data.transactions?.filter((tx: any) =>
         this.SUPPORTED_SYMBOLS.includes(tx.symbol?.toLowerCase())
-      ).length || 0;
-      console.log(`[WhaleAlert] API 응답: result=${data.result}, 전체=${txCount}건, 지원코인=${supportedCount}건, start=${start} (${new Date(start * 1000).toISOString()})`);
+      ) || [];
+
+      // 지원 코인 거래의 timestamp 확인
+      if (supportedTxs.length > 0) {
+        const latestTx = supportedTxs.reduce((a: any, b: any) => (a.timestamp > b.timestamp) ? a : b);
+        const oldestTx = supportedTxs.reduce((a: any, b: any) => (a.timestamp < b.timestamp) ? a : b);
+        const latestDate = new Date(latestTx.timestamp * 1000).toISOString();
+        const oldestDate = new Date(oldestTx.timestamp * 1000).toISOString();
+        console.log(`[WhaleAlert] API 응답: result=${data.result}, 전체=${txCount}건, 지원코인=${supportedTxs.length}건`);
+        console.log(`[WhaleAlert] 지원코인 거래 범위: ${oldestDate} ~ ${latestDate}`);
+        console.log(`[WhaleAlert] 지원코인 심볼: ${supportedTxs.map((tx: any) => tx.symbol).join(', ')}`);
+      } else {
+        console.log(`[WhaleAlert] API 응답: result=${data.result}, 전체=${txCount}건, 지원코인=0건`);
+      }
+      console.log(`[WhaleAlert] 조회범위: start=${start} (${new Date(start * 1000).toISOString()})`);
 
       if (!data.transactions || !Array.isArray(data.transactions)) {
         this.lastFetchSuccess = true;
