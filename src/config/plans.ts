@@ -5,12 +5,12 @@
 export type PlanType = 'free' | 'pro' | 'premium';
 export type BotType = 'grid' | 'infiniteBuy' | 'vr';
 
-// 플랜별 봇 제한
+// 플랜별 봇 제한 (지인플랜도 무제한)
 export const PLAN_LIMITS: Record<PlanType, Record<BotType, number>> = {
   free: {
-    grid: 3,
-    infiniteBuy: 2,
-    vr: 1,
+    grid: Infinity,
+    infiniteBuy: Infinity,
+    vr: Infinity,
   },
   pro: {
     grid: Infinity,
@@ -39,12 +39,10 @@ export const PLAN_PRICES = {
 // 플랜 기능 목록
 export const PLAN_FEATURES = {
   free: {
-    name: 'Free',
-    description: '무료 플랜',
+    name: '지인',
+    description: '지인 플랜',
     features: [
-      '그리드 봇 3개',
-      '무한매수 봇 2개',
-      'VR 봇 1개',
+      '모든 봇 무제한',
       '실시간 가격 모니터링',
       '수익 랭킹',
       '고래 알림',

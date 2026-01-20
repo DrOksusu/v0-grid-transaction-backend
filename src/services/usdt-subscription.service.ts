@@ -250,9 +250,8 @@ class UsdtSubscriptionService {
       where: { userId, strategy: 'vr' }
     });
 
-    const limits = subscription.plan === 'free'
-      ? { grid: 3, infiniteBuy: 2, vr: 1 }
-      : { grid: Infinity, infiniteBuy: Infinity, vr: Infinity };
+    // 모든 플랜 무제한
+    const limits = { grid: Infinity, infiniteBuy: Infinity, vr: Infinity };
 
     return {
       plan: subscription.plan,
