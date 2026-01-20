@@ -482,3 +482,61 @@ model PushSubscription {
   @@index([userId])
   @@map("push_subscriptions")
 }
+
+// ============ 고래 활동 (Whale Alert) ============
+
+// 고래 거래 유형
+enum WhaleTransactionType {
+  exchange_to_wallet
+  wallet_to_exchange
+  exchange_to_exchange
+  wallet_to_wallet
+  unknown
+}
+
+// 고래 거래 신호
+enum WhaleSignal {
+  bullish
+  bearish
+  neutral
+}
+
+// 고래 거래 기록
+model WhaleTransaction {
+  id              Int       @id @default(autoincrement())
+
+  // 거래 식별
+  txId            String    @unique  // Whale Alert API의 거래 ID
+  txHash          String    // 블록체인 트랜잭션 해시
+
+  // 코인 정보
+  blockchain      String    // bitcoin, ethereum, ripple
+  symbol          String    // BTC, ETH, XRP
+
+  // 금액
+  amount          Float     // 코인 수량
+  amountUsd       Float     // USD 가치
+
+  // 발신자
+  fromAddress     String    @db.Text
+  fromOwner       String    // 거래소명 또는 unknown
+  fromOwnerType   String    // exchange, wallet, unknown
+
+  // 수신자
+  toAddress       String    @db.Text
+  toOwner         String
+  toOwnerType     String
+
+  // 분류
+  transactionType WhaleTransactionType
+  signal          WhaleSignal
+
+  // 타임스탬프
+  timestamp       Int       // Unix timestamp (API 원본)
+  createdAt       DateTime  @default(now())
+
+  @@index([symbol])
+  @@index([timestamp])
+  @@index([symbol, timestamp])
+  @@map("whale_transactions")
+}

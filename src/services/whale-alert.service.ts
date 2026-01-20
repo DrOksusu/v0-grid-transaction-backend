@@ -5,9 +5,11 @@
  * - Whale Alert API를 통해 대형 거래 감지
  * - BTC, ETH, XRP 지원
  * - 다중 시간대 지원: 1h, 24h, 7d
+ * - 데이터베이스에 저장하여 서버 재시작 후에도 유지
  */
 
 import { socketService } from './socket.service';
+import prisma from '../config/database';
 
 // 고래 거래 인터페이스
 export interface WhaleTransaction {
@@ -104,7 +106,7 @@ class WhaleAlertService {
   /**
    * 서비스 시작
    */
-  start(): void {
+  async start(): Promise<void> {
     if (!this.apiKey) {
       console.log('[WhaleAlert] API 키가 설정되지 않음. 서비스 비활성화.');
       return;
@@ -118,6 +120,9 @@ class WhaleAlertService {
     this.isRunning = true;
     console.log('[WhaleAlert] 고래 모니터링 시작 (다중 시간대: 1h, 24h, 7d)');
 
+    // DB에서 7일치 데이터 로드
+    await this.loadFromDatabase();
+
     // 즉시 한 번 실행
     this.fetchAllTransactions();
 
@@ -125,6 +130,73 @@ class WhaleAlertService {
     this.fetchInterval = setInterval(() => {
       this.fetchAllTransactions();
     }, this.FETCH_INTERVAL);
+  }
+
+  /**
+   * DB에서 7일치 데이터 로드
+   */
+  private async loadFromDatabase(): Promise<void> {
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const cutoff = now - PERIODS['7d'];
+
+      const dbTransactions = await prisma.whaleTransaction.findMany({
+        where: {
+          timestamp: { gte: cutoff },
+        },
+        orderBy: { timestamp: 'desc' },
+      });
+
+      // 메모리 캐시에 로드
+      for (const dbTx of dbTransactions) {
+        const symbol = dbTx.symbol.toLowerCase();
+        if (!this.SUPPORTED_SYMBOLS.includes(symbol)) continue;
+
+        const transaction: WhaleTransaction = {
+          id: dbTx.txId,
+          blockchain: dbTx.blockchain,
+          symbol: dbTx.symbol,
+          amount: dbTx.amount,
+          amountUsd: dbTx.amountUsd,
+          from: {
+            address: dbTx.fromAddress,
+            owner: dbTx.fromOwner,
+            ownerType: dbTx.fromOwnerType as 'exchange' | 'wallet' | 'unknown',
+          },
+          to: {
+            address: dbTx.toAddress,
+            owner: dbTx.toOwner,
+            ownerType: dbTx.toOwnerType as 'exchange' | 'wallet' | 'unknown',
+          },
+          timestamp: dbTx.timestamp,
+          hash: dbTx.txHash,
+          transactionType: dbTx.transactionType as WhaleTransaction['transactionType'],
+          signal: dbTx.signal as WhaleTransaction['signal'],
+        };
+
+        const transactions = this.recentTransactions.get(symbol) || [];
+        transactions.push(transaction);
+        this.recentTransactions.set(symbol, transactions);
+      }
+
+      // 정렬
+      for (const symbol of this.SUPPORTED_SYMBOLS) {
+        const transactions = this.recentTransactions.get(symbol) || [];
+        transactions.sort((a, b) => b.timestamp - a.timestamp);
+        this.recentTransactions.set(symbol, transactions);
+      }
+
+      // 요약 계산
+      for (const symbol of this.SUPPORTED_SYMBOLS) {
+        this.calculateMultiPeriodSummary(symbol);
+      }
+
+      const totalLoaded = Array.from(this.recentTransactions.values()).reduce((sum, arr) => sum + arr.length, 0);
+      console.log(`[WhaleAlert] DB에서 ${totalLoaded}개 거래 로드 완료 (7일치)`);
+
+    } catch (error: any) {
+      console.error('[WhaleAlert] DB 로드 실패:', error.message);
+    }
   }
 
   /**
@@ -201,13 +273,18 @@ class WhaleAlertService {
         if (!this.SUPPORTED_SYMBOLS.includes(symbol)) continue;
 
         const transaction = this.parseTransaction(tx);
-        this.addTransaction(symbol, transaction);
+        const added = await this.addTransaction(symbol, transaction);
+        if (added) newTxCount++;
+      }
+
+      if (newTxCount > 0) {
+        console.log(`[WhaleAlert] ${newTxCount}개 새 거래 저장됨`);
       }
 
       // 7일 이전 거래 정리 및 요약 계산
       const cutoffTime = now - PERIODS['7d'];
       for (const symbol of this.SUPPORTED_SYMBOLS) {
-        this.cleanOldTransactions(symbol, cutoffTime);
+        await this.cleanOldTransactions(symbol, cutoffTime);
         this.calculateMultiPeriodSummary(symbol);
       }
 
@@ -228,15 +305,47 @@ class WhaleAlertService {
   }
 
   /**
-   * 거래 추가 (중복 방지)
+   * 거래 추가 (중복 방지, DB 저장)
    */
-  private addTransaction(symbol: string, transaction: WhaleTransaction): void {
+  private async addTransaction(symbol: string, transaction: WhaleTransaction): Promise<boolean> {
     const transactions = this.recentTransactions.get(symbol) || [];
 
     // 중복 확인 (id 또는 hash로)
     const exists = transactions.some(tx => tx.id === transaction.id || tx.hash === transaction.hash);
-    if (exists) return;
+    if (exists) return false;
 
+    // DB에 저장
+    try {
+      await prisma.whaleTransaction.upsert({
+        where: { txId: transaction.id },
+        update: {}, // 이미 존재하면 업데이트 안 함
+        create: {
+          txId: transaction.id,
+          txHash: transaction.hash,
+          blockchain: transaction.blockchain,
+          symbol: transaction.symbol,
+          amount: transaction.amount,
+          amountUsd: transaction.amountUsd,
+          fromAddress: transaction.from.address,
+          fromOwner: transaction.from.owner,
+          fromOwnerType: transaction.from.ownerType,
+          toAddress: transaction.to.address,
+          toOwner: transaction.to.owner,
+          toOwnerType: transaction.to.ownerType,
+          transactionType: transaction.transactionType,
+          signal: transaction.signal,
+          timestamp: transaction.timestamp,
+        },
+      });
+    } catch (error: any) {
+      // 중복 에러 무시
+      if (!error.message.includes('Unique constraint')) {
+        console.error('[WhaleAlert] DB 저장 실패:', error.message);
+      }
+      return false;
+    }
+
+    // 메모리에 추가
     transactions.push(transaction);
 
     // 최신순 정렬
@@ -248,15 +357,32 @@ class WhaleAlertService {
     }
 
     this.recentTransactions.set(symbol, transactions);
+    return true;
   }
 
   /**
-   * 오래된 거래 정리
+   * 오래된 거래 정리 (메모리 + DB)
    */
-  private cleanOldTransactions(symbol: string, cutoffTime: number): void {
+  private async cleanOldTransactions(symbol: string, cutoffTime: number): Promise<void> {
+    // 메모리에서 정리
     const transactions = this.recentTransactions.get(symbol) || [];
     const filtered = transactions.filter(tx => tx.timestamp >= cutoffTime);
     this.recentTransactions.set(symbol, filtered);
+
+    // DB에서 오래된 거래 삭제 (7일 이전)
+    try {
+      const deleted = await prisma.whaleTransaction.deleteMany({
+        where: {
+          symbol: symbol.toUpperCase(),
+          timestamp: { lt: cutoffTime },
+        },
+      });
+      if (deleted.count > 0) {
+        console.log(`[WhaleAlert] ${symbol.toUpperCase()}: ${deleted.count}개 오래된 거래 DB에서 삭제`);
+      }
+    } catch (error: any) {
+      console.error(`[WhaleAlert] DB 정리 실패:`, error.message);
+    }
   }
 
   /**
