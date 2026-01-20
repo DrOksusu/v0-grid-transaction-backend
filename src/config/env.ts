@@ -35,17 +35,4 @@ export const config = {
     subscriptionDays: parseInt(process.env.USDT_SUBSCRIPTION_DAYS || '30'),
     depositExpireHours: parseInt(process.env.USDT_DEPOSIT_EXPIRE_HOURS || '24'),
   },
-  // Stripe (카드 결제)
-  stripe: {
-    secretKey: process.env.STRIPE_SECRET_KEY || '',
-    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
-    successUrl: process.env.STRIPE_SUCCESS_URL || 'http://localhost:3000/settings?success=true',
-    cancelUrl: process.env.STRIPE_CANCEL_URL || 'http://localhost:3000/pricing?canceled=true',
-    prices: {
-      proMonthly: process.env.STRIPE_PRO_MONTHLY_PRICE_ID || '',
-      proYearly: process.env.STRIPE_PRO_YEARLY_PRICE_ID || '',
-      premiumMonthly: process.env.STRIPE_PREMIUM_MONTHLY_PRICE_ID || '',
-      premiumYearly: process.env.STRIPE_PREMIUM_YEARLY_PRICE_ID || '',
-    },
-  },
 };

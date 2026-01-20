@@ -2,6 +2,7 @@
  * 구독 서비스
  *
  * 사용자 구독 상태 관리 및 플랜 제한 체크
+ * USDT 결제만 지원
  */
 
 import prisma from '../config/database';
@@ -18,7 +19,6 @@ export interface SubscriptionInfo {
   status: string;
   currentPeriodEnd: Date | null;
   cancelAtPeriodEnd: boolean;
-  stripeCustomerId: string | null;
 }
 
 class SubscriptionService {
@@ -155,13 +155,12 @@ class SubscriptionService {
   }
 
   /**
-   * 구독 취소 시 Free로 복귀
+   * 구독 만료 시 Free로 복귀
    */
   async downgradeToFree(userId: number) {
     return prisma.subscription.update({
       where: { userId },
       data: {
-        stripeSubscriptionId: null,
         plan: 'free',
         status: 'active',
         currentPeriodStart: null,
@@ -186,7 +185,6 @@ class SubscriptionService {
       status: subscription.status,
       currentPeriodEnd: subscription.currentPeriodEnd,
       cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
-      stripeCustomerId: subscription.stripeCustomerId,
     };
   }
 }
