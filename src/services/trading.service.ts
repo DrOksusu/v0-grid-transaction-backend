@@ -583,6 +583,38 @@ export class TradingService {
         status: 'filled',
         filledAt: actualFilledAt,
       });
+    } else {
+      // Trade 레코드가 없는 경우 - 경고 로그 및 새로 생성
+      console.warn(`[Trading] Bot ${botId}: Trade 레코드 없음 (orderId: ${grid.orderId}), 새로 생성`);
+
+      // Trade 레코드 생성
+      const volume = parseFloat(order.executed_volume);
+      const price = parseFloat(order.price);
+      const newTrade = await prisma.trade.create({
+        data: {
+          botId,
+          gridLevelId: grid.id,
+          type: grid.type as 'buy' | 'sell',
+          price: price,
+          amount: volume,
+          total: price * volume,
+          orderId: grid.orderId!,
+          status: 'filled',
+          filledAt: actualFilledAt,
+          ...(grid.type === 'sell' && profit !== 0 ? { profit } : {}),
+        },
+      });
+
+      socketService.emitTradeFilled(botId, {
+        id: newTrade.id,
+        type: grid.type as 'buy' | 'sell',
+        price: price,
+        amount: volume,
+        total: price * volume,
+        profit: profit !== 0 ? profit : undefined,
+        status: 'filled',
+        filledAt: actualFilledAt,
+      });
     }
 
     // 봇 상태 업데이트 알림
