@@ -629,7 +629,7 @@ export const getTrades = async (
           status: 'pending',
           orderId: { not: null },
         },
-        orderBy: { price: 'desc' },
+        orderBy: { updatedAt: 'desc' }, // 주문 접수 시간순 정렬
       });
 
       // 디버그: 전체 pending 상태 그리드도 확인
@@ -654,7 +654,7 @@ export const getTrades = async (
           profit: null,
           orderId: gl.orderId,
           status: 'pending',
-          executedAt: gl.createdAt,
+          executedAt: gl.updatedAt, // 주문 접수 시간 (orderId 설정 시점)
           filledAt: null,
         })),
         pagination: {
