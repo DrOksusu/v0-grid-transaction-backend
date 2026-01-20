@@ -9,6 +9,8 @@ import profitRoutes from './profits';
 import pushRoutes from './push';
 import whaleRoutes from './whale';
 import metricsRoutes from './metrics';
+import subscriptionRoutes from './subscription';
+import usdtSubscriptionRoutes from './usdt-subscription';
 
 const router = Router();
 
@@ -30,5 +32,7 @@ router.use('/profits', profitRoutes);
 router.use('/push', pushRoutes);
 router.use('/whale', whaleRoutes);
 router.use('/metrics', metricsRoutes);
+router.use('/subscription', subscriptionRoutes);
+router.use('/usdt', usdtSubscriptionRoutes);
 
 export default router;
