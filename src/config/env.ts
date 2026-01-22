@@ -39,6 +39,7 @@ export const config = {
   donation: {
     upbitAccessKey: process.env.DONATION_UPBIT_ACCESS_KEY || process.env.UPBIT_ACCESS_KEY || '',
     upbitSecretKey: process.env.DONATION_UPBIT_SECRET_KEY || process.env.UPBIT_SECRET_KEY || '',
+    upbitTronAddress: process.env.UPBIT_TRON_ADDRESS || '', // 업비트 USDT(TRC-20) 입금 주소
     // 후원 금액 설정
     krwAmount: parseInt(process.env.DONATION_KRW_AMOUNT || '10000'), // 기본 10,000원
     usdtAmount: parseFloat(process.env.DONATION_USDT_AMOUNT || '10'), // 기본 10 USDT

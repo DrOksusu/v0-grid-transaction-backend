@@ -7,13 +7,6 @@ const prisma = new PrismaClient();
 // 운영자 업비트 서비스 (후원금 입금 확인용)
 let adminUpbitService: UpbitService | null = null;
 
-// 입금 주소 캐시
-let depositAddressCache: {
-  KRW?: string;
-  USDT?: string;
-  expireAt?: number;
-} = {};
-
 /**
  * 운영자 업비트 서비스 초기화
  */
@@ -94,7 +87,7 @@ export async function createDonationRequest(userId: number, currency: DonationCu
       currency: existingRequest.currency,
       expectedAmount: existingRequest.expectedAmount,
       expiresAt: existingRequest.expiresAt,
-      depositAddress: await getDepositAddress(currency),
+      depositAddress: getDepositAddress(currency),
     };
   }
 
@@ -120,41 +113,27 @@ export async function createDonationRequest(userId: number, currency: DonationCu
     currency: donation.currency,
     expectedAmount: donation.expectedAmount,
     expiresAt: donation.expiresAt,
-    depositAddress: await getDepositAddress(currency),
+    depositAddress: getDepositAddress(currency),
   };
 }
 
 /**
  * 입금 주소 조회
  */
-async function getDepositAddress(currency: DonationCurrency): Promise<string> {
-  // 캐시 확인 (1시간)
-  if (depositAddressCache[currency] && depositAddressCache.expireAt && depositAddressCache.expireAt > Date.now()) {
-    return depositAddressCache[currency]!;
-  }
-
-  const upbitService = getAdminUpbitService();
-
+function getDepositAddress(currency: DonationCurrency): string {
   if (currency === 'KRW') {
     // KRW는 별도 주소가 없음 (업비트 내부 전송)
     // 운영자 이메일 또는 안내 메시지 반환
     return '업비트 내부 전송';
   }
 
-  // USDT 주소 조회 (TRC-20)
-  try {
-    const addressInfo = await upbitService.getDepositAddress('USDT', 'TRX');
-    const address = addressInfo.deposit_address;
-
-    // 캐시 저장
-    depositAddressCache[currency] = address;
-    depositAddressCache.expireAt = Date.now() + 60 * 60 * 1000; // 1시간
-
-    return address;
-  } catch (error) {
-    console.error('[UpbitDonation] USDT 주소 조회 실패:', error);
-    throw new Error('입금 주소 조회에 실패했습니다');
+  // USDT: 환경변수에 저장된 업비트 트론 주소 사용
+  const usdtAddress = config.donation.upbitTronAddress;
+  if (!usdtAddress) {
+    throw new Error('USDT 입금 주소가 설정되지 않았습니다 (UPBIT_TRON_ADDRESS)');
   }
+
+  return usdtAddress;
 }
 
 /**
