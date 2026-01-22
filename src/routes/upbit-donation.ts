@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { authenticateToken } from '../middlewares/auth';
+import { authenticate } from '../middlewares/auth';
 import {
   createDonationRequest,
   getDonationStatus,
@@ -13,7 +13,7 @@ const router = Router();
  * POST /api/upbit-donation/request
  * 후원 요청 생성
  */
-router.post('/request', authenticateToken, async (req: Request, res: Response) => {
+router.post('/request', authenticate, async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.userId;
     const { currency } = req.body as { currency?: DonationCurrency };
@@ -56,7 +56,7 @@ router.post('/request', authenticateToken, async (req: Request, res: Response) =
  * GET /api/upbit-donation/status
  * 후원 상태 확인
  */
-router.get('/status', authenticateToken, async (req: Request, res: Response) => {
+router.get('/status', authenticate, async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.userId;
     const currency = req.query.currency as DonationCurrency | undefined;
@@ -74,7 +74,7 @@ router.get('/status', authenticateToken, async (req: Request, res: Response) => 
  * POST /api/upbit-donation/check
  * 입금 확인 (수동 트리거)
  */
-router.post('/check', authenticateToken, async (req: Request, res: Response) => {
+router.post('/check', authenticate, async (req: Request, res: Response) => {
   try {
     const result = await checkAndConfirmDeposits();
 
