@@ -15,7 +15,7 @@ const router = Router();
  */
 router.post('/request', authenticate, async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user.userId;
+    const userId = (req as any).userId;
     const { currency } = req.body as { currency?: DonationCurrency };
 
     if (!currency || !['KRW', 'USDT'].includes(currency)) {
@@ -58,7 +58,7 @@ router.post('/request', authenticate, async (req: Request, res: Response) => {
  */
 router.get('/status', authenticate, async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user.userId;
+    const userId = (req as any).userId;
     const currency = req.query.currency as DonationCurrency | undefined;
 
     const result = await getDonationStatus(userId, currency);
