@@ -88,7 +88,7 @@ export async function createDonationRequest(userId: number, currency: DonationCu
       currency: existingRequest.currency,
       expectedAmount: existingRequest.expectedAmount,
       expiresAt: existingRequest.expiresAt,
-      depositAddress: getDepositAddress(currency),
+      depositAddress: getDepositAddress(),
     };
   }
 
@@ -114,26 +114,18 @@ export async function createDonationRequest(userId: number, currency: DonationCu
     currency: donation.currency,
     expectedAmount: donation.expectedAmount,
     expiresAt: donation.expiresAt,
-    depositAddress: getDepositAddress(currency),
+    depositAddress: getDepositAddress(),
   };
 }
 
 /**
- * 입금 주소 조회
+ * 입금 주소 조회 (USDT TRC-20 전용)
  */
-function getDepositAddress(currency: DonationCurrency): string {
-  if (currency === 'KRW') {
-    // KRW는 별도 주소가 없음 (업비트 내부 전송)
-    // 운영자 이메일 또는 안내 메시지 반환
-    return '업비트 내부 전송';
-  }
-
-  // USDT: 환경변수에 저장된 업비트 트론 주소 사용
+function getDepositAddress(): string {
   const usdtAddress = config.donation.upbitTronAddress;
   if (!usdtAddress) {
     throw new Error('USDT 입금 주소가 설정되지 않았습니다 (UPBIT_TRON_ADDRESS)');
   }
-
   return usdtAddress;
 }
 
@@ -188,30 +180,7 @@ export async function checkAndConfirmDeposits() {
 
   let confirmed = 0;
 
-  // KRW 입금 확인
-  const krwPending = pendingDonations.filter(d => d.currency === 'KRW');
-  if (krwPending.length > 0) {
-    try {
-      const krwDeposits = await upbitService.getDeposits('KRW', 'accepted', 100);
-
-      for (const donation of krwPending) {
-        // 금액이 일치하는 입금 찾기
-        const matchingDeposit = krwDeposits.find((deposit: any) =>
-          Math.abs(parseFloat(deposit.amount) - donation.expectedAmount) < 1 && // 1원 오차 허용
-          new Date(deposit.done_at) > donation.createdAt
-        );
-
-        if (matchingDeposit) {
-          await confirmDonation(donation.id, matchingDeposit.uuid, parseFloat(matchingDeposit.amount));
-          confirmed++;
-        }
-      }
-    } catch (error) {
-      console.error('[UpbitDonation] KRW 입금 확인 실패:', error);
-    }
-  }
-
-  // USDT 입금 확인
+  // USDT 입금 확인 (USDT만 지원)
   const usdtPending = pendingDonations.filter(d => d.currency === 'USDT');
   if (usdtPending.length > 0) {
     try {

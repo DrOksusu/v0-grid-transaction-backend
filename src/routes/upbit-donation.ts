@@ -18,29 +18,22 @@ router.post('/request', authenticate, async (req: Request, res: Response) => {
     const userId = (req as any).userId;
     const { currency } = req.body as { currency?: DonationCurrency };
 
-    if (!currency || !['KRW', 'USDT'].includes(currency)) {
-      return res.status(400).json({ error: 'currency는 KRW 또는 USDT여야 합니다' });
+    // USDT만 지원 (원화는 업비트 간 직접 송금 불가)
+    if (currency !== 'USDT') {
+      return res.status(400).json({ error: 'USDT만 지원됩니다' });
     }
 
-    const result = await createDonationRequest(userId, currency);
+    const result = await createDonationRequest(userId, 'USDT');
 
     // 안내 메시지 생성
-    const instructions = currency === 'KRW'
-      ? [
-          '업비트 앱에서 "입출금" → "원화" → "보내기"를 선택하세요',
-          `받는 분: ${result.depositAddress}`,
-          `정확히 ${result.expectedAmount.toLocaleString()}원을 보내주세요`,
-          '금액이 정확해야 자동으로 인식됩니다',
-          `${Math.floor((result.expiresAt.getTime() - Date.now()) / 3600000)}시간 내에 입금해주세요`,
-        ]
-      : [
-          '업비트 앱에서 "입출금" → "USDT" → "보내기"를 선택하세요',
-          `네트워크: TRC-20 (트론)`,
-          `받는 주소: ${result.depositAddress}`,
-          `정확히 ${result.expectedAmount.toFixed(6)} USDT를 보내주세요`,
-          '소수점 금액이 사용자 식별에 사용됩니다',
-          `${Math.floor((result.expiresAt.getTime() - Date.now()) / 3600000)}시간 내에 입금해주세요`,
-        ];
+    const instructions = [
+      '업비트 앱에서 "입출금" → "USDT" → "출금"을 선택하세요',
+      `네트워크: TRC-20 (트론)`,
+      `받는 주소: ${result.depositAddress}`,
+      `정확히 ${result.expectedAmount.toFixed(6)} USDT를 보내주세요`,
+      '소수점 금액이 사용자 식별에 사용됩니다',
+      `${Math.floor((result.expiresAt.getTime() - Date.now()) / 3600000)}시간 내에 입금해주세요`,
+    ];
 
     res.json({
       ...result,
