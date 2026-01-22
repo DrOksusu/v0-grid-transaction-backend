@@ -11,7 +11,7 @@ class BotEngine {
   private orderCheckInterval: NodeJS.Timeout | null = null;
   private readonly BASE_INTERVAL = 3000; // 기본 체크 주기 3초 (가장 빠른 봇 기준)
   private readonly BROADCAST_INTERVAL = 10000; // 10초마다 봇 데이터 브로드캐스트
-  private readonly ORDER_CHECK_INTERVAL = 15000; // 체결 확인 15초 (UUID 배치 조회로 최적화)
+  private readonly ORDER_CHECK_INTERVAL = 3000; // 체결 확인 3초 (state=done API로 최적화)
   private readonly BOT_EXECUTION_DELAY = 300; // 봇 간 실행 딜레이 (ms) - 429 에러 방지
 
   // 봇별 마지막 실행 시간 추적
@@ -40,7 +40,7 @@ class BotEngine {
       await this.broadcastBotsToSubscribers();
     }, this.BROADCAST_INTERVAL);
 
-    // 체결 확인 (UUID 배치 조회 - 15초마다)
+    // 체결 확인 (state=done API - 3초마다)
     // API 호출 수: 사용자 수 × 1 (마켓 수와 무관)
     this.orderCheckInterval = setInterval(async () => {
       await this.checkFilledOrders();

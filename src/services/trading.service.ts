@@ -487,6 +487,7 @@ export class TradingService {
     userId: number
   ) {
     const botId = grid.botId;
+    const processStartTime = Date.now(); // 처리 시작 시간 기록
 
     // 중복 처리 방지: pending 상태인 경우에만 처리 (atomic update)
     const updateResult = await prisma.gridLevel.updateMany({
@@ -512,6 +513,15 @@ export class TradingService {
         actualFilledAt = new Date(lastTrade.created_at);
       }
     }
+
+    // 체결 감지 지연 시간 계산
+    const detectionDelayMs = processStartTime - actualFilledAt.getTime();
+    const detectionDelaySec = (detectionDelayMs / 1000).toFixed(1);
+    console.log(`[Trading] Bot ${botId}: 체결 감지 - 지연 ${detectionDelaySec}초 (실제 체결: ${actualFilledAt.toLocaleTimeString('ko-KR')}, 감지: ${new Date(processStartTime).toLocaleTimeString('ko-KR')})`);
+
+    // 처리 시작 시간을 grid 객체에 저장 (반대 주문 시간 측정용)
+    grid._processStartTime = processStartTime;
+    grid._actualFilledAt = actualFilledAt;
 
     // 그리드 레벨에 체결 시간 업데이트
     await prisma.gridLevel.update({
@@ -902,11 +912,11 @@ export class TradingService {
   private static async executeOppositeOrder(
     upbit: UpbitService,
     bot: { id: number; ticker: string; orderAmount: number },
-    filledGrid: { id: number; type: string; sellPrice: number | null; buyPrice: number | null; botId: number },
+    filledGrid: { id: number; type: string; sellPrice: number | null; buyPrice: number | null; botId: number; _processStartTime?: number; _actualFilledAt?: Date },
     retryCount: number = 0
   ): Promise<void> {
     const MAX_RETRIES = 3;
-    console.log(`[Trading] Bot ${bot.id}: executeOppositeOrder 호출 - type: ${filledGrid.type}, sellPrice: ${filledGrid.sellPrice}, buyPrice: ${filledGrid.buyPrice}`);
+    const oppositeOrderStartTime = Date.now();
 
     try {
       // 유효성 검사
@@ -990,7 +1000,15 @@ export class TradingService {
           createdAt: newTrade.createdAt,
         });
 
-        console.log(`[Trading] Bot ${bot.id}: 즉시 매도 주문 완료 - ${sellPrice.toLocaleString()}원`);
+        // 타이밍 로그
+        const oppositeOrderEndTime = Date.now();
+        if (filledGrid._actualFilledAt) {
+          const totalDelaySec = ((oppositeOrderEndTime - filledGrid._actualFilledAt.getTime()) / 1000).toFixed(1);
+          const orderPlacementMs = oppositeOrderEndTime - oppositeOrderStartTime;
+          console.log(`[Trading] Bot ${bot.id}: ⚡ 반대 주문 완료 - 매도 ${sellPrice.toLocaleString()}원 (체결→주문: ${totalDelaySec}초, 주문처리: ${orderPlacementMs}ms)`);
+        } else {
+          console.log(`[Trading] Bot ${bot.id}: 즉시 매도 주문 완료 - ${sellPrice.toLocaleString()}원`);
+        }
 
       } else if (filledGrid.type === 'sell' && filledGrid.buyPrice) {
         // 매도 체결 → 즉시 매수 주문
@@ -1063,7 +1081,15 @@ export class TradingService {
           createdAt: newTrade.createdAt,
         });
 
-        console.log(`[Trading] Bot ${bot.id}: 즉시 매수 주문 완료 - ${buyPrice.toLocaleString()}원`);
+        // 타이밍 로그
+        const oppositeOrderEndTime = Date.now();
+        if (filledGrid._actualFilledAt) {
+          const totalDelaySec = ((oppositeOrderEndTime - filledGrid._actualFilledAt.getTime()) / 1000).toFixed(1);
+          const orderPlacementMs = oppositeOrderEndTime - oppositeOrderStartTime;
+          console.log(`[Trading] Bot ${bot.id}: ⚡ 반대 주문 완료 - 매수 ${buyPrice.toLocaleString()}원 (체결→주문: ${totalDelaySec}초, 주문처리: ${orderPlacementMs}ms)`);
+        } else {
+          console.log(`[Trading] Bot ${bot.id}: 즉시 매수 주문 완료 - ${buyPrice.toLocaleString()}원`);
+        }
       }
     } catch (error: any) {
       console.error(`[Trading] Bot ${bot.id}: 반대 주문 실행 실패 - ${error.message}`);
