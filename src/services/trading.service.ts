@@ -392,10 +392,10 @@ export class TradingService {
   }
 
   /**
-   * 중앙 집중식 체결 주문 확인 (state=done API 방식)
-   * - 사용자별로 최근 체결된 주문만 조회 (API 1회)
-   * - pending 그리드와 매칭하여 처리
-   * - 기존 UUID 배치 조회 대비 API 호출 90% 이상 감소
+   * 중앙 집중식 체결 주문 확인 (마켓별 state=done API 방식)
+   * - 사용자별 + 마켓별로 체결된 주문 조회
+   * - 마켓별 100건 보장으로 체결 누락 방지
+   * - API 에러 시 봇 자동 중지 및 사용자 알림
    */
   static async checkAllFilledOrders(runningBotIds: number[]) {
     if (runningBotIds.length === 0) return;
@@ -410,7 +410,7 @@ export class TradingService {
         },
         include: {
           bot: {
-            select: { userId: true, ticker: true, orderAmount: true, status: true },
+            select: { id: true, userId: true, ticker: true, orderAmount: true, status: true },
           },
         },
       });
@@ -430,7 +430,7 @@ export class TradingService {
 
       console.log(`[Trading] 체결 확인: ${allPendingGrids.length}개 pending 주문, ${gridsByUser.size}명 사용자`);
 
-      // 3. 사용자별로 최근 체결 주문 조회 (API 1회/사용자)
+      // 3. 사용자별로 마켓별 체결 주문 조회
       for (const [userId, grids] of gridsByUser) {
         try {
           // 사용자 자격증명 조회
@@ -445,31 +445,87 @@ export class TradingService {
             secretKey: credential.secretKey,
           });
 
-          // orderId로 빠른 조회를 위한 Map
-          const gridByOrderId = new Map(grids.map(g => [g.orderId, g]));
+          // 마켓별로 그리드 그룹화
+          const gridsByMarket = new Map<string, typeof grids>();
+          for (const grid of grids) {
+            const market = grid.bot.ticker;
+            if (!gridsByMarket.has(market)) {
+              gridsByMarket.set(market, []);
+            }
+            gridsByMarket.get(market)!.push(grid);
+          }
 
-          // 최근 체결 완료된 주문 조회 (API 1회, 최대 100건)
-          const filledOrders = await upbit.getFilledOrders(undefined, 100);
+          let totalFilledCount = 0;
 
-          // pending 그리드와 매칭
-          let filledCount = 0;
-          for (const order of filledOrders) {
-            const grid = gridByOrderId.get(order.uuid);
-            if (grid && order.state === 'done') {
-              await this.processFilledOrder(grid, order, upbit, userId);
-              filledCount++;
+          // 마켓별로 체결 주문 조회 (각 마켓당 최대 100건 보장)
+          for (const [market, marketGrids] of gridsByMarket) {
+            try {
+              // orderId로 빠른 조회를 위한 Map
+              const gridByOrderId = new Map(marketGrids.map(g => [g.orderId, g]));
+
+              // 해당 마켓의 체결 완료된 주문 조회
+              const filledOrders = await upbit.getFilledOrders(market, 100);
+
+              // pending 그리드와 매칭
+              for (const order of filledOrders) {
+                const grid = gridByOrderId.get(order.uuid);
+                if (grid && order.state === 'done') {
+                  await this.processFilledOrder(grid, order, upbit, userId);
+                  totalFilledCount++;
+                }
+              }
+
+              // 다음 마켓 조회 전 딜레이 (API rate limit 방지)
+              await new Promise(resolve => setTimeout(resolve, 200));
+
+            } catch (marketError: any) {
+              console.error(`[Trading] User ${userId} ${market} 체결 조회 실패:`, marketError.message);
+              // 마켓별 에러는 계속 진행 (다른 마켓은 정상일 수 있음)
             }
           }
 
-          if (filledCount > 0) {
-            console.log(`[Trading] User ${userId}: ${filledCount}개 주문 체결 처리됨`);
+          if (totalFilledCount > 0) {
+            console.log(`[Trading] User ${userId}: ${totalFilledCount}개 주문 체결 처리됨 (${gridsByMarket.size}개 마켓)`);
           }
 
           // 다음 사용자 처리 전 대기
           await new Promise(resolve => setTimeout(resolve, 300));
 
         } catch (error: any) {
-          console.error(`[Trading] User ${userId} 체결 확인 실패:`, error.message);
+          // API 인증 에러 (401, 403) 시 봇 자동 중지 및 알림
+          const isAuthError = error.response?.status === 401 || error.response?.status === 403 ||
+                              error.message?.includes('401') || error.message?.includes('Unauthorized');
+
+          if (isAuthError) {
+            console.error(`[Trading] User ${userId} API 인증 실패 - 봇 자동 중지:`, error.message);
+
+            // 해당 사용자의 모든 봇 중지
+            const userBotIds = [...new Set(grids.map(g => g.bot.id))];
+            for (const botId of userBotIds) {
+              try {
+                await prisma.bot.update({
+                  where: { id: botId },
+                  data: { status: 'stopped' },
+                });
+
+                // 소켓으로 에러 알림
+                socketService.emitError(botId, {
+                  type: 'api_error',
+                  message: 'API 인증 실패로 봇이 자동 중지되었습니다.',
+                  details: 'API 키를 확인하고 재설정해주세요.',
+                });
+
+                // 봇 상태 변경 알림
+                socketService.emitBotUpdate(botId, { status: 'stopped' });
+
+                console.log(`[Trading] Bot ${botId} 자동 중지됨 (API 인증 실패)`);
+              } catch (stopError: any) {
+                console.error(`[Trading] Bot ${botId} 중지 실패:`, stopError.message);
+              }
+            }
+          } else {
+            console.error(`[Trading] User ${userId} 체결 확인 실패:`, error.message);
+          }
         }
       }
     } catch (error: any) {
