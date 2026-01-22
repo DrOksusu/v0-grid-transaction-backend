@@ -387,6 +387,40 @@ export class UpbitService {
     }, `getOrdersByMarket(${market}, ${state})`);
   }
 
+  /**
+   * 최근 체결 완료된 주문 조회 (state=done)
+   * - 마켓 전체 또는 특정 마켓의 최근 체결 주문을 조회
+   * - UUID 배치 조회보다 훨씬 효율적 (API 1회 호출로 최대 100건)
+   * @param market 특정 마켓만 조회 (예: 'KRW-BTC'), undefined면 전체
+   * @param limit 조회 개수 (기본 100, 최대 100)
+   */
+  async getFilledOrders(market?: string, limit: number = 100): Promise<any[]> {
+    return executeWithRetry(async () => {
+      await throttleOrderApi();
+
+      const params: Record<string, string> = {
+        state: 'done',
+        limit: Math.min(limit, 100).toString(),
+        order_by: 'desc',  // 최신순
+      };
+
+      if (market) {
+        params.market = market;
+      }
+
+      const queryString = new URLSearchParams(params).toString();
+
+      const response = await axios.get(
+        `${UPBIT_API_URL}/orders?${queryString}`,
+        {
+          headers: this.getHeaders(queryString),
+        }
+      );
+
+      return response.data;
+    }, `getFilledOrders(${market || 'all'})`);
+  }
+
   // 여러 마켓의 미체결 주문 일괄 조회
   async getWaitingOrdersByMarkets(markets: string[]): Promise<Map<string, any[]>> {
     const result = new Map<string, any[]>();

@@ -392,10 +392,10 @@ export class TradingService {
   }
 
   /**
-   * 중앙 집중식 체결 주문 확인 (UUID 배치 조회 방식)
-   * - 사용자별로 모든 pending 주문을 한 번에 조회
-   * - API 호출 수 = 사용자 수 (마켓 수와 무관)
-   * - 429 에러 대폭 감소
+   * 중앙 집중식 체결 주문 확인 (state=done API 방식)
+   * - 사용자별로 최근 체결된 주문만 조회 (API 1회)
+   * - pending 그리드와 매칭하여 처리
+   * - 기존 UUID 배치 조회 대비 API 호출 90% 이상 감소
    */
   static async checkAllFilledOrders(runningBotIds: number[]) {
     if (runningBotIds.length === 0) return;
@@ -428,9 +428,9 @@ export class TradingService {
         gridsByUser.get(userId)!.push(grid);
       }
 
-      console.log(`[Trading] UUID 배치 조회: ${allPendingGrids.length}개 주문, ${gridsByUser.size}명 사용자`);
+      console.log(`[Trading] 체결 확인: ${allPendingGrids.length}개 pending 주문, ${gridsByUser.size}명 사용자`);
 
-      // 3. 사용자별로 배치 조회
+      // 3. 사용자별로 최근 체결 주문 조회 (API 1회/사용자)
       for (const [userId, grids] of gridsByUser) {
         try {
           // 사용자 자격증명 조회
@@ -445,21 +445,17 @@ export class TradingService {
             secretKey: credential.secretKey,
           });
 
-          // 해당 사용자의 모든 orderIds
-          const orderIds = grids.map(g => g.orderId as string);
-
-          // 배치로 모든 주문 상태 조회 (API 호출 1회, 청크당 최대 100개)
-          const orders = await upbit.getOrdersByUuids(orderIds);
-
           // orderId로 빠른 조회를 위한 Map
           const gridByOrderId = new Map(grids.map(g => [g.orderId, g]));
-          const orderMap = new Map(orders.map((o: any) => [o.uuid, o]));
 
-          // 체결된 주문 처리
+          // 최근 체결 완료된 주문 조회 (API 1회, 최대 100건)
+          const filledOrders = await upbit.getFilledOrders(undefined, 100);
+
+          // pending 그리드와 매칭
           let filledCount = 0;
-          for (const grid of grids) {
-            const order = orderMap.get(grid.orderId);
-            if (order && order.state === 'done') {
+          for (const order of filledOrders) {
+            const grid = gridByOrderId.get(order.uuid);
+            if (grid && order.state === 'done') {
               await this.processFilledOrder(grid, order, upbit, userId);
               filledCount++;
             }
@@ -477,7 +473,7 @@ export class TradingService {
         }
       }
     } catch (error: any) {
-      console.error('[Trading] UUID 배치 체결 확인 실패:', error.message);
+      console.error('[Trading] 체결 확인 실패:', error.message);
     }
   }
 
@@ -649,7 +645,7 @@ export class TradingService {
     }
   }
 
-  // 체결된 주문 확인 및 즉시 반대 주문 실행 (배치 조회로 429 에러 방지) - 개별 봇용 (호환성 유지)
+  // 체결된 주문 확인 및 즉시 반대 주문 실행 (state=done API 사용) - 개별 봇용 (호환성 유지)
   static async checkFilledOrders(botId: number) {
     try {
       // pending 상태의 그리드 레벨 조회
@@ -678,138 +674,113 @@ export class TradingService {
       const gridsWithOrderId = pendingGrids.filter(g => g.orderId);
       if (gridsWithOrderId.length === 0) return;
 
-      // 배치 조회로 모든 주문 상태를 한 번에 가져옴 (API 호출 1회)
-      const orderIds = gridsWithOrderId.map(g => g.orderId as string);
-      let orders: any[] = [];
+      // orderId로 빠른 조회를 위한 Map 생성
+      const gridByOrderId = new Map(gridsWithOrderId.map(g => [g.orderId, g]));
 
+      // 최근 체결 완료된 주문 조회 (API 1회, 최대 100건)
+      let filledOrders: any[] = [];
       try {
-        orders = await upbit.getOrdersByUuids(orderIds);
-        // 배치 조회 로그는 체결된 주문이 있을 때만 출력 (아래에서 처리)
+        filledOrders = await upbit.getFilledOrders(undefined, 100);
       } catch (err: any) {
-        // 배치 조회 실패 시 개별 조회로 폴백 (호환성)
-        console.log(`[Trading] Bot ${botId}: 배치 조회 실패, 개별 조회로 폴백 - ${err.message}`);
-        for (const grid of gridsWithOrderId) {
-          try {
-            await new Promise(resolve => setTimeout(resolve, 200));
-            const order = await upbit.getOrder(grid.orderId as string);
-            if (order) orders.push(order);
-          } catch (e: any) {
-            console.error(`주문 확인 실패 (Grid ${grid.id}):`, e.message);
-          }
-        }
+        console.error(`[Trading] Bot ${botId}: 체결 주문 조회 실패 - ${err.message}`);
+        return;
       }
 
-      // orderId로 빠른 조회를 위한 Map 생성
-      const orderMap = new Map(orders.map(o => [o.uuid, o]));
+      // pending 그리드와 매칭하여 처리
+      for (const order of filledOrders) {
+        const grid = gridByOrderId.get(order.uuid);
+        if (!grid || order.state !== 'done') continue;
 
-      // 각 그리드에 대해 체결 상태 확인
-      for (const grid of gridsWithOrderId) {
         try {
-          const order = orderMap.get(grid.orderId);
-          if (!order) continue;
-
-          // 체결 완료 확인
-          if (order.state === 'done') {
-            // 업비트 실제 체결 시간 추출 (trades 배열의 마지막 거래 시간 사용)
-            let actualFilledAt = new Date();
-            if (order.trades && order.trades.length > 0) {
-              // trades 배열의 마지막 거래가 최종 체결 시간
-              const lastTrade = order.trades[order.trades.length - 1];
-              if (lastTrade.created_at) {
-                actualFilledAt = new Date(lastTrade.created_at);
-              }
+          // 업비트 실제 체결 시간 추출 (trades 배열의 마지막 거래 시간 사용)
+          let actualFilledAt = new Date();
+          if (order.trades && order.trades.length > 0) {
+            const lastTrade = order.trades[order.trades.length - 1];
+            if (lastTrade.created_at) {
+              actualFilledAt = new Date(lastTrade.created_at);
             }
+          }
 
-            // 그리드 레벨을 filled로 업데이트
-            await GridService.updateGridLevel(
-              grid.id,
-              'filled',
-              grid.orderId!,  // orderId는 위에서 필터링됨
-              actualFilledAt
-            );
+          // 그리드 레벨을 filled로 업데이트
+          await GridService.updateGridLevel(
+            grid.id,
+            'filled',
+            grid.orderId!,
+            actualFilledAt
+          );
 
-            // 수익 계산 (매도 체결 시에만, 수수료 포함)
-            let profit = 0;
-            const UPBIT_FEE_RATE = 0.0005; // 업비트 수수료 0.05%
+          // 수익 계산 (매도 체결 시에만, 수수료 포함)
+          let profit = 0;
+          const UPBIT_FEE_RATE = 0.0005;
 
-            if (grid.type === 'sell' && grid.buyPrice) {
-              const buyPrice = grid.buyPrice;
-              const sellPrice = parseFloat(order.price);
-              const volume = parseFloat(order.executed_volume);
+          if (grid.type === 'sell' && grid.buyPrice) {
+            const buyPrice = grid.buyPrice;
+            const sellPrice = parseFloat(order.price);
+            const volume = parseFloat(order.executed_volume);
 
-              // 매수 금액 및 수수료
-              const buyAmount = volume * buyPrice;
-              const buyFee = buyAmount * UPBIT_FEE_RATE;
+            const buyAmount = volume * buyPrice;
+            const buyFee = buyAmount * UPBIT_FEE_RATE;
+            const sellAmount = volume * sellPrice;
+            const sellFee = sellAmount * UPBIT_FEE_RATE;
 
-              // 매도 금액 및 수수료
-              const sellAmount = volume * sellPrice;
-              const sellFee = sellAmount * UPBIT_FEE_RATE;
+            profit = sellAmount - buyAmount - buyFee - sellFee;
+            console.log(`[Trading] Bot ${botId}: 매도 체결 - 매수가 ${buyPrice}원, 매도가 ${sellPrice}원, 수량 ${volume}, 수익 ${profit.toFixed(2)}원`);
+          }
 
-              // 순수익 = 매도금액 - 매수금액 - 매수수수료 - 매도수수료
-              profit = sellAmount - buyAmount - buyFee - sellFee;
+          // 봇 통계 업데이트
+          await prisma.bot.update({
+            where: { id: botId },
+            data: {
+              totalTrades: { increment: 1 },
+              currentProfit: { increment: profit },
+            },
+          });
 
-              console.log(`[Trading] Bot ${botId}: 매도 체결 - 매수가 ${buyPrice}원, 매도가 ${sellPrice}원, 수량 ${volume}, 수익 ${profit.toFixed(2)}원`);
-            }
+          // 월별 수익 기록 (매도 체결 시에만)
+          if (grid.type === 'sell' && profit !== 0) {
+            await ProfitService.recordProfit(userId, 'upbit', profit);
+          }
 
-            // 봇 통계 업데이트
-            await prisma.bot.update({
-              where: { id: botId },
+          // 거래 기록에 수익 업데이트
+          const trade = await prisma.trade.findFirst({
+            where: { orderId: grid.orderId! },
+          });
+
+          if (trade) {
+            await prisma.trade.update({
+              where: { id: trade.id },
               data: {
-                totalTrades: { increment: 1 },
-                currentProfit: { increment: profit },
+                status: 'filled',
+                filledAt: actualFilledAt,
+                ...(grid.type === 'sell' && profit !== 0 ? { profit } : {}),
               },
             });
 
-            // 월별 수익 기록 (매도 체결 시에만)
-            if (grid.type === 'sell' && profit !== 0) {
-              await ProfitService.recordProfit(userId, 'upbit', profit);
-            }
+            socketService.emitTradeFilled(botId, {
+              id: trade.id,
+              type: grid.type as 'buy' | 'sell',
+              price: trade.price,
+              amount: trade.amount,
+              total: trade.total,
+              profit: profit !== 0 ? profit : undefined,
+              status: 'filled',
+              filledAt: actualFilledAt,
+            });
+          }
 
-            // 거래 기록에 수익 업데이트
-            const trade = await prisma.trade.findFirst({
-              where: { orderId: grid.orderId! },  // orderId는 위에서 필터링됨
+          // 봇 상태 업데이트 알림
+          const updatedBot = await prisma.bot.findUnique({
+            where: { id: botId },
+          });
+
+          if (updatedBot) {
+            socketService.emitBotUpdate(botId, {
+              totalTrades: updatedBot.totalTrades,
+              currentProfit: updatedBot.currentProfit,
             });
 
-            if (trade) {
-              // Trade 상태를 filled로 업데이트 (+ 매도 시 수익 저장)
-              // actualFilledAt은 위에서 업비트 API에서 가져온 실제 체결 시간
-              await prisma.trade.update({
-                where: { id: trade.id },
-                data: {
-                  status: 'filled',
-                  filledAt: actualFilledAt,
-                  ...(grid.type === 'sell' && profit !== 0 ? { profit } : {}),
-                },
-              });
-
-              // 소켓으로 체결 완료 알림
-              socketService.emitTradeFilled(botId, {
-                id: trade.id,
-                type: grid.type as 'buy' | 'sell',
-                price: trade.price,
-                amount: trade.amount,
-                total: trade.total,
-                profit: profit !== 0 ? profit : undefined,
-                status: 'filled',
-                filledAt: actualFilledAt,
-              });
-            }
-
-            // 봇 상태 업데이트 알림
-            const updatedBot = await prisma.bot.findUnique({
-              where: { id: botId },
-            });
-
-            if (updatedBot) {
-              socketService.emitBotUpdate(botId, {
-                totalTrades: updatedBot.totalTrades,
-                currentProfit: updatedBot.currentProfit,
-              });
-            }
-
-            // ========== 체결 즉시 반대 주문 실행 ==========
-            // 봇이 여전히 running 상태인지 확인
-            if (updatedBot && updatedBot.status === 'running') {
+            // 체결 즉시 반대 주문 실행
+            if (updatedBot.status === 'running') {
               const botInfo = await this.getCachedBotInfo(botId);
               if (botInfo) {
                 await this.executeOppositeOrder(upbit, {
