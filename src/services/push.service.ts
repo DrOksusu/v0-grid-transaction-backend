@@ -232,4 +232,44 @@ export class PushService {
 
     return this.sendToUser(userId, payload);
   }
+
+  // 관리자에게 후원 알림 전송
+  static async sendDonationNotificationToAdmin(
+    donorEmail: string,
+    currency: 'KRW' | 'USDT',
+    amount: number
+  ) {
+    // 관리자 이메일로 사용자 찾기
+    const adminEmail = 'ok4192@hanmail.net';
+    const admin = await prisma.user.findUnique({
+      where: { email: adminEmail },
+    });
+
+    if (!admin) {
+      console.warn('[PushService] 관리자를 찾을 수 없음:', adminEmail);
+      return [];
+    }
+
+    const formattedAmount = currency === 'KRW'
+      ? `${amount.toLocaleString()}원`
+      : `${amount.toFixed(6)} USDT`;
+
+    const payload: PushPayload = {
+      title: '새로운 후원이 확인되었습니다!',
+      body: `${donorEmail}님이 ${formattedAmount}를 후원했습니다`,
+      icon: '/apple-icon.png',
+      badge: '/apple-icon.png',
+      tag: `donation-${Date.now()}`,
+      data: {
+        type: 'donation_confirmed',
+        donorEmail,
+        currency,
+        amount,
+        url: '/admin/donations',
+      },
+    };
+
+    console.log(`[PushService] 관리자에게 후원 알림 전송: ${formattedAmount} from ${donorEmail}`);
+    return this.sendToUser(admin.id, payload);
+  }
 }

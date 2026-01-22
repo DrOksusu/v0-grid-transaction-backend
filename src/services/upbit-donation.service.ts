@@ -1,6 +1,7 @@
 import { PrismaClient, DonationCurrency, DonationStatus } from '@prisma/client';
 import { UpbitService } from './upbit.service';
 import { config } from '../config/env';
+import { PushService } from './push.service';
 
 const prisma = new PrismaClient();
 
@@ -301,6 +302,17 @@ async function confirmDonation(donationId: number, txId: string, confirmedAmount
   ]);
 
   console.log(`[UpbitDonation] 후원 확인됨: userId=${donation.userId}, amount=${confirmedAmount}, txId=${txId}`);
+
+  // 관리자에게 푸시 알림 전송
+  try {
+    await PushService.sendDonationNotificationToAdmin(
+      donation.user.email,
+      donation.currency,
+      confirmedAmount
+    );
+  } catch (error) {
+    console.error('[UpbitDonation] 관리자 알림 전송 실패:', error);
+  }
 }
 
 /**
