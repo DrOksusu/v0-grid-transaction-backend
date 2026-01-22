@@ -35,4 +35,18 @@ export const config = {
     subscriptionDays: parseInt(process.env.USDT_SUBSCRIPTION_DAYS || '30'),
     depositExpireHours: parseInt(process.env.USDT_DEPOSIT_EXPIRE_HOURS || '24'),
   },
+  // 업비트 후원 설정 (운영자 계정 - 기존 업비트 키 fallback)
+  donation: {
+    upbitAccessKey: process.env.DONATION_UPBIT_ACCESS_KEY || process.env.UPBIT_ACCESS_KEY || '',
+    upbitSecretKey: process.env.DONATION_UPBIT_SECRET_KEY || process.env.UPBIT_SECRET_KEY || '',
+    // 후원 금액 설정
+    krwAmount: parseInt(process.env.DONATION_KRW_AMOUNT || '10000'), // 기본 10,000원
+    usdtAmount: parseFloat(process.env.DONATION_USDT_AMOUNT || '10'), // 기본 10 USDT
+    // 구독 기간 (일)
+    subscriptionDays: parseInt(process.env.DONATION_SUBSCRIPTION_DAYS || '30'),
+    // 입금 대기 만료 시간 (시간)
+    depositExpireHours: parseInt(process.env.DONATION_DEPOSIT_EXPIRE_HOURS || '24'),
+    // 입금 확인 폴링 간격 (ms)
+    pollInterval: parseInt(process.env.DONATION_POLL_INTERVAL || '30000'), // 30초
+  },
 };

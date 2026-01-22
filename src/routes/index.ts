@@ -11,6 +11,7 @@ import whaleRoutes from './whale';
 import metricsRoutes from './metrics';
 import subscriptionRoutes from './subscription';
 import usdtSubscriptionRoutes from './usdt-subscription';
+import upbitDonationRoutes from './upbit-donation';
 
 const router = Router();
 
@@ -34,5 +35,6 @@ router.use('/whale', whaleRoutes);
 router.use('/metrics', metricsRoutes);
 router.use('/subscription', subscriptionRoutes);
 router.use('/usdt', usdtSubscriptionRoutes);
+router.use('/upbit-donation', upbitDonationRoutes);
 
 export default router;

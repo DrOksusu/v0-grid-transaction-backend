@@ -30,6 +30,7 @@ model User {
   subscription      Subscription?
   usdtDeposits      UsdtDeposit[]
   usdtPayments      UsdtPayment[]
+  upbitDonations    UpbitDonation[]
 
   @@map("users")
 }
@@ -455,6 +456,48 @@ model UsdtPayment {
   @@index([userId])
   @@index([txHash])
   @@map("usdt_payments")
+}
+
+// ============ 업비트 후원 (Upbit Donation) ============
+
+enum DonationCurrency {
+  KRW
+  USDT
+}
+
+enum DonationStatus {
+  pending     // 입금 대기
+  confirmed   // 입금 확인됨
+  expired     // 만료됨
+}
+
+// 업비트 후원 요청
+model UpbitDonation {
+  id              Int       @id @default(autoincrement())
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  currency        DonationCurrency  // KRW 또는 USDT
+  expectedAmount  Float     // 예상 금액 (고유 금액)
+  status          DonationStatus @default(pending)
+
+  // 확인 정보
+  txId            String?   // 업비트 입금 UUID
+  confirmedAmount Float?    // 실제 입금 금액
+  confirmedAt     DateTime? // 입금 확인 시간
+
+  // 구독 기간
+  periodStart     DateTime? // 구독 시작일
+  periodEnd       DateTime? // 구독 종료일
+
+  expiresAt       DateTime  // 입금 대기 만료 시간
+  createdAt       DateTime  @default(now())
+
+  @@index([userId])
+  @@index([status])
+  @@index([currency, status])
+  @@index([expectedAmount, currency, status])
+  @@map("upbit_donations")
 }
 
 // ============ 푸시 알림 (Push Notifications) ============

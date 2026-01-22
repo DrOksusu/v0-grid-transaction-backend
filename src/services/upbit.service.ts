@@ -409,6 +409,73 @@ export class UpbitService {
     return result;
   }
 
+  // 입금 리스트 조회 (currency: KRW, USDT 등)
+  async getDeposits(currency?: string, state?: 'submitting' | 'submitted' | 'almost_accepted' | 'rejected' | 'accepted' | 'processing', limit: number = 100) {
+    return executeWithRetry(async () => {
+      await throttleOrderApi();
+
+      const params: Record<string, string> = {};
+      if (currency) params.currency = currency;
+      if (state) params.state = state;
+      params.limit = limit.toString();
+
+      const queryString = new URLSearchParams(params).toString();
+
+      const response = await axios.get(
+        `${UPBIT_API_URL}/deposits?${queryString}`,
+        {
+          headers: this.getHeaders(queryString),
+        }
+      );
+
+      return response.data;
+    }, `getDeposits(${currency || 'all'})`);
+  }
+
+  // 개별 입금 조회 (uuid 또는 txid)
+  async getDeposit(params: { uuid?: string; txid?: string; currency?: string }) {
+    return executeWithRetry(async () => {
+      await throttleOrderApi();
+
+      const queryParams: Record<string, string> = {};
+      if (params.uuid) queryParams.uuid = params.uuid;
+      if (params.txid) queryParams.txid = params.txid;
+      if (params.currency) queryParams.currency = params.currency;
+
+      const queryString = new URLSearchParams(queryParams).toString();
+
+      const response = await axios.get(
+        `${UPBIT_API_URL}/deposit?${queryString}`,
+        {
+          headers: this.getHeaders(queryString),
+        }
+      );
+
+      return response.data;
+    }, `getDeposit`);
+  }
+
+  // 입금 주소 조회 (특정 화폐의 입금 주소)
+  async getDepositAddress(currency: string, netType?: string) {
+    return executeWithRetry(async () => {
+      await throttleOrderApi();
+
+      const params: Record<string, string> = { currency };
+      if (netType) params.net_type = netType;
+
+      const queryString = new URLSearchParams(params).toString();
+
+      const response = await axios.get(
+        `${UPBIT_API_URL}/deposits/coin_address?${queryString}`,
+        {
+          headers: this.getHeaders(queryString),
+        }
+      );
+
+      return response.data;
+    }, `getDepositAddress(${currency})`);
+  }
+
   // 현재가 조회 (공개 API)
   static async getCurrentPrice(market: string, retries = 3) {
     for (let i = 0; i < retries; i++) {

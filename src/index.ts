@@ -7,6 +7,7 @@ import { socketService } from './services/socket.service';
 import { infiniteBuyScheduler } from './services/infinite-buy-scheduler.service';
 import { whaleAlertService } from './services/whale-alert.service';
 import { metricsService } from './services/metrics.service';
+import { upbitDonationMonitor } from './services/upbit-donation-monitor.service';
 
 const startServer = async () => {
   try {
@@ -85,6 +86,10 @@ const startServer = async () => {
 
         // 고래 알림 서비스 시작
         whaleAlertService.start();
+
+        // 업비트 후원 모니터 시작
+        upbitDonationMonitor.start();
+        console.log('Upbit donation monitor started');
       } else {
         console.log('⚠️  Development mode: Schedulers disabled to prevent duplicate orders');
         console.log('   To enable schedulers, set NODE_ENV=production');
@@ -103,6 +108,7 @@ process.on('SIGINT', async () => {
   botEngine.stop();
   infiniteBuyScheduler.stop();
   whaleAlertService.stop();
+  upbitDonationMonitor.stop();
   await prisma.$disconnect();
   process.exit(0);
 });
@@ -112,6 +118,7 @@ process.on('SIGTERM', async () => {
   botEngine.stop();
   infiniteBuyScheduler.stop();
   whaleAlertService.stop();
+  upbitDonationMonitor.stop();
   await prisma.$disconnect();
   process.exit(0);
 });
