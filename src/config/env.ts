@@ -27,7 +27,7 @@ export const config = {
     apiBase: process.env.TRON_API_BASE || 'https://api.trongrid.io',
     depositAddress: process.env.TRON_DEPOSIT_ADDRESS || '',
     usdtContract: process.env.TRON_USDT_CONTRACT || 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', // 메인넷 USDT
-    pollInterval: parseInt(process.env.TRON_POLL_INTERVAL || '30000'), // 30초
+    pollInterval: parseInt(process.env.TRON_POLL_INTERVAL || '180000'), // 3분
   },
   // USDT 구독 설정
   usdt: {
@@ -48,6 +48,6 @@ export const config = {
     // 입금 대기 만료 시간 (시간)
     depositExpireHours: parseInt(process.env.DONATION_DEPOSIT_EXPIRE_HOURS || '24'),
     // 입금 확인 폴링 간격 (ms)
-    pollInterval: parseInt(process.env.DONATION_POLL_INTERVAL || '30000'), // 30초
+    pollInterval: parseInt(process.env.DONATION_POLL_INTERVAL || '180000'), // 3분
   },
 };
