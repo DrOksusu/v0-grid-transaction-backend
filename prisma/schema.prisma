@@ -45,6 +45,7 @@ enum BotStatus {
   running
   stopped
   error
+  deleting
 }
 
 model Bot {
