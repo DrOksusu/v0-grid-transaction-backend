@@ -512,6 +512,12 @@ export class TradingService {
                     where: { id: grid.id },
                     data: { status: 'available', orderId: null },
                   });
+                } else if (order.state === 'wait') {
+                  // wait 상태: updatedAt 갱신하여 다음 30분 동안 재조회 방지
+                  await prisma.gridLevel.update({
+                    where: { id: grid.id },
+                    data: { updatedAt: new Date() },
+                  });
                 }
               }
             } catch (staleError: any) {
