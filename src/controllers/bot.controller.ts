@@ -438,14 +438,6 @@ export const deleteBot = async (
     // cancelType: 'all' = 매수+매도 모두 취소, 'buy' = 매수만 취소, 'none' = 취소 안함
     const cancelType = (req.query.cancelType as string) || 'all';
 
-    // cancelType에 따라 다른 필터 적용
-    let gridLevelFilter: any = { status: 'pending' };
-    if (cancelType === 'buy') {
-      gridLevelFilter = { status: 'pending', type: 'buy' };
-    } else if (cancelType === 'none') {
-      gridLevelFilter = { id: -1 }; // 아무것도 선택 안함
-    }
-
     const bot = await prisma.bot.findFirst({
       where: { id: botId, userId },
       include: {
@@ -456,9 +448,6 @@ export const deleteBot = async (
             },
           },
         },
-        gridLevels: {
-          where: gridLevelFilter,
-        },
       },
     });
 
@@ -466,94 +455,101 @@ export const deleteBot = async (
       return errorResponse(res, 'BOT_NOT_FOUND', '봇을 찾을 수 없습니다', 404);
     }
 
-    // 대기 중인 주문 취소
-    let cancelledBuyOrders = 0;
-    let cancelledSellOrders = 0;
-    let failedBuyOrders = 0;
-    let failedSellOrders = 0;
+    // 봇 상태를 'deleting'으로 변경하고 즉시 응답
+    await prisma.bot.update({
+      where: { id: botId },
+      data: { status: 'deleting' },
+    });
 
-    if (cancelType !== 'none' && bot.gridLevels.length > 0 && bot.user.credentials[0]) {
-      const credential = bot.user.credentials[0];
-      const apiKey = decrypt(credential.apiKey);
-      const secretKey = decrypt(credential.secretKey);
-
-      const upbit = new UpbitService({
-        accessKey: apiKey,
-        secretKey: secretKey,
-      });
-
-      const cancelTypeLabel = cancelType === 'buy' ? '매수' : '모든';
-      console.log(`[DeleteBot] Cancelling ${bot.gridLevels.length} ${cancelTypeLabel} pending orders for bot ${botId}...`);
-
-      for (let i = 0; i < bot.gridLevels.length; i++) {
-        const grid = bot.gridLevels[i];
-        if (grid.orderId) {
-          try {
-            await upbit.cancelOrder(grid.orderId);
-            if (grid.type === 'buy') {
-              cancelledBuyOrders++;
-            } else {
-              cancelledSellOrders++;
-            }
-            console.log(`[DeleteBot] Cancelled ${grid.type} order ${grid.orderId}`);
-          } catch (error: any) {
-            if (grid.type === 'buy') {
-              failedBuyOrders++;
-            } else {
-              failedSellOrders++;
-            }
-            console.error(`[DeleteBot] Failed to cancel order ${grid.orderId}:`, error.message);
-          }
-          // 업비트 API Rate Limit 방지를 위한 딜레이 (100ms)
-          if (i < bot.gridLevels.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-          }
-        }
-      }
-    }
-
-    // WebSocket 티커 구독 해제 및 OrderManager 알림 (봇이 running 상태였던 경우)
+    // WebSocket 티커 구독 해제 (봇이 running 상태였던 경우)
     if (bot.status === 'running') {
       await botEngine.onBotStopped(botId, userId, bot.ticker);
     }
 
-    // 수익 스냅샷 저장 (삭제 전)
-    await ProfitService.createBotSnapshot({
-      id: bot.id,
-      userId: bot.userId,
-      exchange: bot.exchange,
-      ticker: bot.ticker,
-      currentProfit: bot.currentProfit,
-      totalTrades: bot.totalTrades,
-      investmentAmount: bot.investmentAmount,
-      createdAt: bot.createdAt,
-    });
-
-    // 봇 삭제 (관련 gridLevels와 trades도 cascade로 삭제됨)
-    await prisma.bot.delete({
-      where: { id: botId },
-    });
-
-    return successResponse(
+    // 즉시 응답 반환
+    successResponse(
       res,
-      {
-        cancelledOrders: {
-          buy: cancelledBuyOrders,
-          sell: cancelledSellOrders,
-          total: cancelledBuyOrders + cancelledSellOrders,
-        },
-        failedOrders: {
-          buy: failedBuyOrders,
-          sell: failedSellOrders,
-          total: failedBuyOrders + failedSellOrders,
-        },
-        snapshot: {
-          profit: bot.currentProfit,
-          trades: bot.totalTrades,
-        },
-      },
-      `봇이 삭제되었습니다. 수익 기록이 저장되었습니다.`
+      { message: '봇 삭제가 시작되었습니다.' },
+      '봇 삭제 요청이 접수되었습니다.'
     );
+
+    // 비동기로 주문 취소 및 삭제 진행
+    setImmediate(async () => {
+      try {
+        // cancelType에 따라 다른 필터 적용
+        let gridLevelFilter: any = { status: 'pending' };
+        if (cancelType === 'buy') {
+          gridLevelFilter = { status: 'pending', type: 'buy' };
+        } else if (cancelType === 'none') {
+          gridLevelFilter = { id: -1 }; // 아무것도 선택 안함
+        }
+
+        const gridLevels = await prisma.gridLevel.findMany({
+          where: { botId, ...gridLevelFilter },
+        });
+
+        // 대기 중인 주문 취소
+        if (cancelType !== 'none' && gridLevels.length > 0 && bot.user.credentials[0]) {
+          const credential = bot.user.credentials[0];
+          const apiKey = decrypt(credential.apiKey);
+          const secretKey = decrypt(credential.secretKey);
+
+          const upbit = new UpbitService({
+            accessKey: apiKey,
+            secretKey: secretKey,
+          });
+
+          const cancelTypeLabel = cancelType === 'buy' ? '매수' : '모든';
+          console.log(`[DeleteBot] Cancelling ${gridLevels.length} ${cancelTypeLabel} pending orders for bot ${botId}...`);
+
+          for (let i = 0; i < gridLevels.length; i++) {
+            const grid = gridLevels[i];
+            if (grid.orderId) {
+              try {
+                await upbit.cancelOrder(grid.orderId);
+                console.log(`[DeleteBot] Cancelled ${grid.type} order ${grid.orderId}`);
+              } catch (error: any) {
+                console.error(`[DeleteBot] Failed to cancel order ${grid.orderId}:`, error.message);
+              }
+              // 업비트 API Rate Limit 방지를 위한 딜레이 (100ms)
+              if (i < gridLevels.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+              }
+            }
+          }
+        }
+
+        // 수익 스냅샷 저장 (삭제 전)
+        await ProfitService.createBotSnapshot({
+          id: bot.id,
+          userId: bot.userId,
+          exchange: bot.exchange,
+          ticker: bot.ticker,
+          currentProfit: bot.currentProfit,
+          totalTrades: bot.totalTrades,
+          investmentAmount: bot.investmentAmount,
+          createdAt: bot.createdAt,
+        });
+
+        // 봇 삭제 (관련 gridLevels와 trades도 cascade로 삭제됨)
+        await prisma.bot.delete({
+          where: { id: botId },
+        });
+
+        console.log(`[DeleteBot] Bot ${botId} deleted successfully`);
+      } catch (error: any) {
+        console.error(`[DeleteBot] Failed to delete bot ${botId}:`, error.message);
+        // 삭제 실패 시 상태를 stopped로 복구
+        try {
+          await prisma.bot.update({
+            where: { id: botId },
+            data: { status: 'stopped' },
+          });
+        } catch (e) {
+          // 이미 삭제되었을 수 있음
+        }
+      }
+    });
   } catch (error) {
     next(error);
   }
