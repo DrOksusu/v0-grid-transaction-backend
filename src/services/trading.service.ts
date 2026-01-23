@@ -458,25 +458,21 @@ export class TradingService {
           let totalFilledCount = 0;
           const processedGridIds = new Set<number>();
 
-          // ===== 1단계: 마켓별 최근 체결 100건으로 빠르게 확인 (효율적) =====
-          for (const [market, marketGrids] of gridsByMarket) {
-            try {
-              const gridByOrderId = new Map(marketGrids.map(g => [g.orderId, g]));
-              const filledOrders = await upbit.getFilledOrders(market, 100);
+          // ===== 1단계: 전체 마켓 최근 체결 100건 조회 (API 1회로 최적화) =====
+          try {
+            const gridByOrderId = new Map(grids.filter(g => g.orderId).map(g => [g.orderId, g]));
+            const filledOrders = await upbit.getFilledOrders(undefined, 100); // 전체 마켓
 
-              for (const order of filledOrders) {
-                const grid = gridByOrderId.get(order.uuid);
-                if (grid && order.state === 'done') {
-                  await this.processFilledOrder(grid, order, upbit, userId);
-                  processedGridIds.add(grid.id);
-                  totalFilledCount++;
-                }
+            for (const order of filledOrders) {
+              const grid = gridByOrderId.get(order.uuid);
+              if (grid && order.state === 'done') {
+                await this.processFilledOrder(grid, order, upbit, userId);
+                processedGridIds.add(grid.id);
+                totalFilledCount++;
               }
-
-              await new Promise(resolve => setTimeout(resolve, 200));
-            } catch (marketError: any) {
-              console.error(`[Trading] User ${userId} ${market} 체결 조회 실패:`, marketError.message);
             }
+          } catch (error: any) {
+            console.error(`[Trading] User ${userId} 체결 조회 실패:`, error.message);
           }
 
           // ===== 2단계: 30분 이상 오래된 pending만 orderId로 직접 조회 (누락 방지) =====
