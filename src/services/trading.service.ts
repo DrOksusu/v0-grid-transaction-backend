@@ -456,36 +456,71 @@ export class TradingService {
           }
 
           let totalFilledCount = 0;
+          const processedGridIds = new Set<number>();
 
-          // 마켓별로 체결 주문 조회 (각 마켓당 최대 100건 보장)
+          // ===== 1단계: 마켓별 최근 체결 100건으로 빠르게 확인 (효율적) =====
           for (const [market, marketGrids] of gridsByMarket) {
             try {
-              // orderId로 빠른 조회를 위한 Map
               const gridByOrderId = new Map(marketGrids.map(g => [g.orderId, g]));
-
-              // 해당 마켓의 체결 완료된 주문 조회
               const filledOrders = await upbit.getFilledOrders(market, 100);
 
-              // pending 그리드와 매칭
               for (const order of filledOrders) {
                 const grid = gridByOrderId.get(order.uuid);
                 if (grid && order.state === 'done') {
                   await this.processFilledOrder(grid, order, upbit, userId);
+                  processedGridIds.add(grid.id);
                   totalFilledCount++;
                 }
               }
 
-              // 다음 마켓 조회 전 딜레이 (API rate limit 방지)
               await new Promise(resolve => setTimeout(resolve, 200));
-
             } catch (marketError: any) {
               console.error(`[Trading] User ${userId} ${market} 체결 조회 실패:`, marketError.message);
-              // 마켓별 에러는 계속 진행 (다른 마켓은 정상일 수 있음)
+            }
+          }
+
+          // ===== 2단계: 5분 이상 오래된 pending만 orderId로 직접 조회 (누락 방지) =====
+          const STALE_THRESHOLD = 5 * 60 * 1000; // 5분
+          const now = Date.now();
+
+          const staleGrids = grids.filter(g =>
+            g.orderId &&
+            !processedGridIds.has(g.id) &&
+            (now - new Date(g.updatedAt).getTime()) > STALE_THRESHOLD
+          );
+
+          if (staleGrids.length > 0) {
+            console.log(`[Trading] User ${userId}: ${staleGrids.length}개 오래된 pending 주문 직접 확인`);
+
+            const staleOrderIds = staleGrids.map(g => g.orderId!);
+
+            try {
+              const orders = await upbit.getOrdersByUuids(staleOrderIds);
+              const orderMap = new Map(orders.map(o => [o.uuid, o]));
+
+              for (const grid of staleGrids) {
+                const order = orderMap.get(grid.orderId!);
+                if (!order) continue;
+
+                if (order.state === 'done') {
+                  console.log(`[Trading] User ${userId}: 오래된 체결 감지 - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
+                  await this.processFilledOrder(grid, order, upbit, userId);
+                  totalFilledCount++;
+                } else if (order.state === 'cancel') {
+                  console.log(`[Trading] User ${userId}: 취소된 주문 감지 - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
+                  await prisma.gridLevel.update({
+                    where: { id: grid.id },
+                    data: { status: 'available', orderId: null },
+                  });
+                }
+              }
+            } catch (staleError: any) {
+              console.error(`[Trading] User ${userId} 오래된 주문 조회 실패:`, staleError.message);
             }
           }
 
           if (totalFilledCount > 0) {
-            console.log(`[Trading] User ${userId}: ${totalFilledCount}개 주문 체결 처리됨 (${gridsByMarket.size}개 마켓)`);
+            console.log(`[Trading] User ${userId}: ${totalFilledCount}개 주문 체결 처리됨`);
           }
 
           // 다음 사용자 처리 전 대기
