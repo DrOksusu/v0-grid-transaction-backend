@@ -479,18 +479,22 @@ export class TradingService {
             }
           }
 
-          // ===== 2단계: 5분 이상 오래된 pending만 orderId로 직접 조회 (누락 방지) =====
-          const STALE_THRESHOLD = 5 * 60 * 1000; // 5분
+          // ===== 2단계: 30분 이상 오래된 pending만 orderId로 직접 조회 (누락 방지) =====
+          // API rate limit 방지를 위해 사용자당 최대 20개만 처리
+          const STALE_THRESHOLD = 30 * 60 * 1000; // 30분
+          const MAX_STALE_CHECK_PER_USER = 20;
           const now = Date.now();
 
-          const staleGrids = grids.filter(g =>
-            g.orderId &&
-            !processedGridIds.has(g.id) &&
-            (now - new Date(g.updatedAt).getTime()) > STALE_THRESHOLD
-          );
+          const staleGrids = grids
+            .filter(g =>
+              g.orderId &&
+              !processedGridIds.has(g.id) &&
+              (now - new Date(g.updatedAt).getTime()) > STALE_THRESHOLD
+            )
+            .slice(0, MAX_STALE_CHECK_PER_USER); // 최대 20개만
 
           if (staleGrids.length > 0) {
-            console.log(`[Trading] User ${userId}: ${staleGrids.length}개 오래된 pending 주문 직접 확인`);
+            console.log(`[Trading] User ${userId}: ${staleGrids.length}개 오래된 pending 주문 직접 확인 (30분+)`);
 
             const staleOrderIds = staleGrids.map(g => g.orderId!);
 
