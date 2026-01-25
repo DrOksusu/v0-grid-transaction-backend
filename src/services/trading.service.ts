@@ -1034,13 +1034,15 @@ export class TradingService {
         console.log(`[Trading] Bot ${bot.id}: 매수 체결 후 즉시 매도 주문 - ${sellPrice.toLocaleString()}원`);
 
         // 매도 그리드 레벨 찾기 (inactive 또는 filled 상태 - 사이클 완료 후 재사용)
-        // 부동소수점 오차를 위해 범위 검색
+        // 부동소수점 오차를 위해 범위 검색 (가격 기반 동적 범위 사용)
+        // 저가 코인(PEPE 등)은 가격 차이가 매우 작으므로 범위를 좁게 설정
+        const priceMargin = Math.max(sellPrice * 0.001, 0.000001); // 0.1% 또는 최소 0.000001
         const sellGrid = await prisma.gridLevel.findFirst({
           where: {
             botId: bot.id,
             price: {
-              gte: sellPrice - 0.01,
-              lte: sellPrice + 0.01,
+              gte: sellPrice - priceMargin,
+              lte: sellPrice + priceMargin,
             },
             type: 'sell',
             status: { in: ['inactive', 'filled'] },  // 첫 사이클 또는 완료된 사이클
@@ -1053,14 +1055,11 @@ export class TradingService {
             where: {
               botId: bot.id,
               type: 'sell',
-              price: {
-                gte: sellPrice - 1,
-                lte: sellPrice + 1,
-              },
             },
             select: { id: true, price: true, status: true, orderId: true },
+            orderBy: { price: 'asc' },
           });
-          console.log(`[Trading] Bot ${bot.id}: 매도 그리드 찾기 실패! sellPrice=${sellPrice}, 근처 매도 그리드:`, allSellGrids);
+          console.log(`[Trading] Bot ${bot.id}: 매도 그리드 찾기 실패! sellPrice=${sellPrice}, margin=${priceMargin}, 모든 매도 그리드:`, allSellGrids.map(g => ({ id: g.id, price: g.price, status: g.status })));
           return;
         }
 
@@ -1115,13 +1114,15 @@ export class TradingService {
         console.log(`[Trading] Bot ${bot.id}: 매도 체결 후 즉시 매수 주문 - ${buyPrice.toLocaleString()}원`);
 
         // 매수 그리드 레벨 찾기 (filled 상태만 - 이전 사이클에서 완료된 것)
-        // 부동소수점 오차를 위해 범위 검색
+        // 부동소수점 오차를 위해 범위 검색 (가격 기반 동적 범위 사용)
+        // 저가 코인(PEPE 등)은 가격 차이가 매우 작으므로 범위를 좁게 설정
+        const priceMargin = Math.max(buyPrice * 0.001, 0.000001); // 0.1% 또는 최소 0.000001
         const buyGrid = await prisma.gridLevel.findFirst({
           where: {
             botId: bot.id,
             price: {
-              gte: buyPrice - 0.01,
-              lte: buyPrice + 0.01,
+              gte: buyPrice - priceMargin,
+              lte: buyPrice + priceMargin,
             },
             type: 'buy',
             status: 'filled',  // 이전에 체결 완료된 그리드만
@@ -1134,14 +1135,11 @@ export class TradingService {
             where: {
               botId: bot.id,
               type: 'buy',
-              price: {
-                gte: buyPrice - 1,
-                lte: buyPrice + 1,
-              },
             },
             select: { id: true, price: true, status: true, orderId: true },
+            orderBy: { price: 'asc' },
           });
-          console.log(`[Trading] Bot ${bot.id}: 매수 그리드 찾기 실패! buyPrice=${buyPrice}, 근처 매수 그리드:`, allBuyGrids);
+          console.log(`[Trading] Bot ${bot.id}: 매수 그리드 찾기 실패! buyPrice=${buyPrice}, margin=${priceMargin}, 모든 매수 그리드:`, allBuyGrids.map(g => ({ id: g.id, price: g.price, status: g.status })));
           return;
         }
 
