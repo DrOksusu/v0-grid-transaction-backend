@@ -823,6 +823,95 @@ export class ProfitService {
   }
 
   /**
+   * 일별 수익 조회 (특정 월의 날짜별 수익)
+   * @param userId 사용자 ID
+   * @param month 조회할 월 (YYYY-MM 형식)
+   * @param exchange 거래소 (optional)
+   */
+  static async getDailyProfits(
+    userId: number,
+    month: string,
+    exchange?: Exchange
+  ) {
+    // 해당 월의 시작/끝 날짜 계산
+    const [year, monthNum] = month.split('-').map(Number);
+    const startDate = new Date(year, monthNum - 1, 1);
+    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+    const daysInMonth = endDate.getDate();
+
+    // 사용자의 봇 조회 (exchange 필터 적용)
+    const bots = await prisma.bot.findMany({
+      where: {
+        userId,
+        ...(exchange && { exchange }),
+      },
+      select: { id: true },
+    });
+
+    const botIds = bots.map(b => b.id);
+
+    // 해당 월의 매도 거래 조회 (수익이 있는 것만)
+    const trades = await prisma.trade.findMany({
+      where: {
+        botId: { in: botIds },
+        type: 'sell',
+        status: 'filled',
+        profit: { not: null },
+        filledAt: {
+          gte: startDate,
+          lte: endDate,
+        },
+      },
+      select: {
+        profit: true,
+        filledAt: true,
+      },
+    });
+
+    // 날짜별로 그룹핑 (1일부터 마지막 날까지 모든 날짜 포함)
+    const dailyMap = new Map<number, { profit: number; trades: number }>();
+
+    // 모든 날짜를 0으로 초기화
+    for (let day = 1; day <= daysInMonth; day++) {
+      dailyMap.set(day, { profit: 0, trades: 0 });
+    }
+
+    // 거래 데이터 집계
+    for (const trade of trades) {
+      if (!trade.filledAt || trade.profit === null) continue;
+      const day = trade.filledAt.getDate();
+      const existing = dailyMap.get(day) || { profit: 0, trades: 0 };
+      dailyMap.set(day, {
+        profit: existing.profit + trade.profit,
+        trades: existing.trades + 1,
+      });
+    }
+
+    // 배열로 변환 (날짜순 정렬)
+    const dailyProfits = Array.from(dailyMap.entries())
+      .map(([day, data]) => ({
+        day,
+        date: `${month}-${String(day).padStart(2, '0')}`,
+        profit: Math.round(data.profit),
+        trades: data.trades,
+      }))
+      .sort((a, b) => a.day - b.day);
+
+    // 총계 계산
+    const totalProfit = dailyProfits.reduce((sum, d) => sum + d.profit, 0);
+    const totalTrades = dailyProfits.reduce((sum, d) => sum + d.trades, 0);
+    const tradingDays = dailyProfits.filter(d => d.trades > 0).length;
+
+    return {
+      month,
+      totalProfit,
+      totalTrades,
+      tradingDays,
+      dailyProfits,
+    };
+  }
+
+  /**
    * 무한매수 랭킹 사용자 상세 조회 (종목별 수익)
    * @param displayName 표시 이름 (닉네임 또는 마스킹된 이름)
    * @param month 조회할 월 (YYYY-MM 형식)

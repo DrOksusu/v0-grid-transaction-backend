@@ -3,6 +3,7 @@ import {
   getProfitSummary,
   getMonthlyProfits,
   getMonthlyDetails,
+  getDailyProfits,
   getDeletedBots,
   getMonthlyRanking,
   getInfiniteBuyRanking,
@@ -36,6 +37,9 @@ router.get('/monthly', getMonthlyProfits);
 
 // 특정 월 상세 수익 (봇별)
 router.get('/monthly/:month', getMonthlyDetails);
+
+// 일별 수익 조회
+router.get('/daily/:month', getDailyProfits);
 
 // 삭제된 봇 성과 목록
 router.get('/deleted-bots', getDeletedBots);
