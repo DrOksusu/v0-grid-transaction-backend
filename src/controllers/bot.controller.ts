@@ -617,45 +617,40 @@ export const getTrades = async (
       return errorResponse(res, 'BOT_NOT_FOUND', '봇을 찾을 수 없습니다', 404);
     }
 
-    // 미체결 주문은 GridLevel에서 조회 (실제 업비트에 걸린 주문)
+    // 미체결 주문은 Trade에서 조회 (pending 상태의 Trade - 원본 주문 시간 보존)
     if (status === 'pending') {
-      const pendingGridLevels = await prisma.gridLevel.findMany({
+      const pendingTrades = await prisma.trade.findMany({
         where: {
           botId,
           status: 'pending',
-          orderId: { not: null },
         },
-        orderBy: { updatedAt: 'desc' }, // 주문 접수 시간순 정렬
+        orderBy: { createdAt: 'desc' }, // 원본 주문 생성 시간순 정렬
       });
 
-      // 디버그: 전체 pending 상태 그리드도 확인
-      const allPendingGrids = await prisma.gridLevel.findMany({
+      // 디버그: GridLevel pending 상태도 확인
+      const pendingGridCount = await prisma.gridLevel.count({
         where: { botId, status: 'pending' },
-        select: { id: true, price: true, type: true, orderId: true, status: true },
       });
-      console.log(`[getTrades] Bot ${botId}: pending grids with orderId: ${pendingGridLevels.length}, all pending grids: ${allPendingGrids.length}`);
-      if (allPendingGrids.length !== pendingGridLevels.length) {
-        console.log(`[getTrades] WARNING: ${allPendingGrids.length - pendingGridLevels.length} pending grids without orderId:`,
-          allPendingGrids.filter(g => !g.orderId).map(g => ({ id: g.id, price: g.price, type: g.type }))
-        );
+      if (pendingGridCount !== pendingTrades.length) {
+        console.log(`[getTrades] Bot ${botId}: Trade pending: ${pendingTrades.length}, GridLevel pending: ${pendingGridCount}`);
       }
 
       return successResponse(res, {
-        trades: pendingGridLevels.map(gl => ({
-          _id: `grid-${gl.id}`,
-          type: gl.type,
-          price: gl.price,
-          amount: bot.orderAmount / gl.price, // 예상 수량
-          total: bot.orderAmount,
+        trades: pendingTrades.map(t => ({
+          _id: t.id.toString(),
+          type: t.type,
+          price: t.price,
+          amount: t.amount,
+          total: t.total,
           profit: null,
-          orderId: gl.orderId,
+          orderId: t.orderId,
           status: 'pending',
-          executedAt: gl.updatedAt, // 주문 접수 시간 (orderId 설정 시점)
+          executedAt: t.createdAt, // Trade 생성 시간 = 원본 주문 시간
           filledAt: null,
         })),
         pagination: {
-          total: pendingGridLevels.length,
-          limit: pendingGridLevels.length,
+          total: pendingTrades.length,
+          limit: pendingTrades.length,
           offset: 0,
           hasMore: false,
         },
