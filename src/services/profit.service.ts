@@ -833,11 +833,14 @@ export class ProfitService {
     month: string,
     exchange?: Exchange
   ) {
-    // 해당 월의 시작/끝 날짜 계산
+    // 해당 월의 시작/끝 날짜 계산 (한국 시간 기준 UTC+9)
     const [year, monthNum] = month.split('-').map(Number);
-    const startDate = new Date(year, monthNum - 1, 1);
-    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
-    const daysInMonth = endDate.getDate();
+    // 한국 시간 기준 해당 월 1일 00:00:00 = UTC로 변환 (9시간 빼기)
+    const startDate = new Date(Date.UTC(year, monthNum - 1, 1, -9, 0, 0, 0));
+    // 한국 시간 기준 해당 월 말일 23:59:59 = UTC로 변환
+    const lastDayOfMonth = new Date(year, monthNum, 0).getDate();
+    const endDate = new Date(Date.UTC(year, monthNum - 1, lastDayOfMonth, 14, 59, 59, 999)); // 23:59:59 KST = 14:59:59 UTC
+    const daysInMonth = lastDayOfMonth;
 
     // 사용자의 봇 조회 (exchange 필터 적용)
     const bots = await prisma.bot.findMany({
@@ -876,10 +879,12 @@ export class ProfitService {
       dailyMap.set(day, { profit: 0, trades: 0 });
     }
 
-    // 거래 데이터 집계
+    // 거래 데이터 집계 (한국 시간 기준으로 날짜 계산)
     for (const trade of trades) {
       if (!trade.filledAt || trade.profit === null) continue;
-      const day = trade.filledAt.getDate();
+      // UTC 시간에 9시간 더해서 한국 시간으로 변환 후 날짜 추출
+      const kstDate = new Date(trade.filledAt.getTime() + 9 * 60 * 60 * 1000);
+      const day = kstDate.getDate();
       const existing = dailyMap.get(day) || { profit: 0, trades: 0 };
       dailyMap.set(day, {
         profit: existing.profit + trade.profit,
