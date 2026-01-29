@@ -373,10 +373,13 @@ export class TradingService {
     } catch (error: any) {
       console.error(`거래 실행 실패 (Bot ${botId}):`, error.message);
 
-      // 429 에러나 현재가 조회 실패는 일시적인 문제이므로 상태를 error로 변경하지 않음
+      // 일시적인 에러는 상태를 error로 변경하지 않음
       const isTemporaryError = error.message.includes('429') ||
                                error.message.includes('현재가 조회 실패') ||
-                               error.message.includes('Too Many Requests');
+                               error.message.includes('Too Many Requests') ||
+                               error.message.includes('connection pool') ||
+                               error.message.includes('Timed out fetching') ||
+                               error.message.includes('P2024');
 
       if (isTemporaryError) {
         // 에러 메시지만 저장하고 상태는 유지
