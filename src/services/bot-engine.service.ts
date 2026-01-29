@@ -1,4 +1,4 @@
-import prisma from '../config/database';
+import prisma, { withRetry } from '../config/database';
 import { TradingService } from './trading.service';
 import { priceManager } from './upbit-price-manager';
 import { socketService } from './socket.service';
@@ -16,6 +16,11 @@ class BotEngine {
 
   // 봇별 마지막 실행 시간 추적
   private lastExecutionTime: Map<number, number> = new Map();
+
+  // 동시 실행 방지 락
+  private isExecutingBots: boolean = false;
+  private isBroadcasting: boolean = false;
+  private isCheckingOrders: boolean = false;
 
   // 엔진 시작
   async start() {
@@ -60,10 +65,13 @@ class BotEngine {
       const defaultTickers = ['KRW-BTC', 'KRW-ETH', 'KRW-USDT'];
 
       // 실행 중인 봇들의 티커 조회
-      const runningBots = await prisma.bot.findMany({
-        where: { status: 'running' },
-        select: { ticker: true },
-      });
+      const runningBots = await withRetry(
+        () => prisma.bot.findMany({
+          where: { status: 'running' },
+          select: { ticker: true },
+        }),
+        { operationName: 'BotEngine.initializePriceManager' }
+      );
 
       // 기본 종목 + 봇 종목 합쳐서 유니크하게 구독
       const allTickers = [...new Set([...defaultTickers, ...runningBots.map(bot => bot.ticker)])];
@@ -79,11 +87,21 @@ class BotEngine {
 
   // 체결 확인 (UUID 배치 조회 - 마켓 수와 무관하게 사용자당 1회 API 호출)
   private async checkFilledOrders() {
+    // 동시 실행 방지
+    if (this.isCheckingOrders) {
+      console.log('[BotEngine] checkFilledOrders 이미 실행 중 - 스킵');
+      return;
+    }
+
+    this.isCheckingOrders = true;
     try {
-      const runningBots = await prisma.bot.findMany({
-        where: { status: 'running' },
-        select: { id: true },
-      });
+      const runningBots = await withRetry(
+        () => prisma.bot.findMany({
+          where: { status: 'running' },
+          select: { id: true },
+        }),
+        { operationName: 'BotEngine.checkFilledOrders' }
+      );
 
       if (runningBots.length === 0) return;
 
@@ -91,6 +109,8 @@ class BotEngine {
       await TradingService.checkAllFilledOrders(allRunningBotIds);
     } catch (error: any) {
       console.error('[BotEngine] Order check failed:', error.message);
+    } finally {
+      this.isCheckingOrders = false;
     }
   }
 
@@ -127,13 +147,16 @@ class BotEngine {
   // 봇 종료 시 티커 구독 해제
   async onBotStopped(botId: number, userId: number, ticker: string) {
     // 해당 티커를 사용하는 다른 running 봇이 있는지 확인
-    const otherBots = await prisma.bot.count({
-      where: {
-        ticker,
-        status: 'running',
-        id: { not: botId },
-      },
-    });
+    const otherBots = await withRetry(
+      () => prisma.bot.count({
+        where: {
+          ticker,
+          status: 'running',
+          id: { not: botId },
+        },
+      }),
+      { operationName: 'BotEngine.onBotStopped' }
+    );
 
     // 다른 봇이 없으면 구독 해제
     if (otherBots === 0) {
@@ -151,12 +174,15 @@ class BotEngine {
   // 봇 종료 시 티커 구독 해제 (하위 호환성)
   async unsubscribeTicker(ticker: string) {
     // 해당 티커를 사용하는 다른 running 봇이 있는지 확인
-    const otherBots = await prisma.bot.count({
-      where: {
-        ticker,
-        status: 'running',
-      },
-    });
+    const otherBots = await withRetry(
+      () => prisma.bot.count({
+        where: {
+          ticker,
+          status: 'running',
+        },
+      }),
+      { operationName: 'BotEngine.unsubscribeTicker' }
+    );
 
     // 다른 봇이 없으면 구독 해제
     if (otherBots === 0) {
@@ -171,14 +197,23 @@ class BotEngine {
 
   // 모든 실행 중인 봇 처리 (동적 간격 적용)
   private async executeBots() {
+    // 동시 실행 방지
+    if (this.isExecutingBots) {
+      return; // 조용히 스킵 (너무 자주 발생할 수 있음)
+    }
+
+    this.isExecutingBots = true;
     try {
       const now = Date.now();
 
       // 실행 중인 봇 ID + 티커만 조회 (gridLevels include 제거로 성능 개선)
-      const runningBots = await prisma.bot.findMany({
-        where: { status: 'running' },
-        select: { id: true, ticker: true },
-      });
+      const runningBots = await withRetry(
+        () => prisma.bot.findMany({
+          where: { status: 'running' },
+          select: { id: true, ticker: true },
+        }),
+        { operationName: 'BotEngine.executeBots.findRunningBots' }
+      );
 
       // 실행 중인 봇 수는 주기적으로만 로깅 (10분마다)
       if (runningBots.length > 0 && now % 600000 < this.BASE_INTERVAL) {
@@ -203,13 +238,16 @@ class BotEngine {
       if (botsToExecute.length === 0) return;
 
       // available 그리드가 있는 봇 ID들을 한 번에 조회
-      const botsWithAvailableGrids = await prisma.gridLevel.groupBy({
-        by: ['botId'],
-        where: {
-          botId: { in: botsToExecute.map(b => b.id) },
-          status: 'available',
-        },
-      });
+      const botsWithAvailableGrids = await withRetry(
+        () => prisma.gridLevel.groupBy({
+          by: ['botId'],
+          where: {
+            botId: { in: botsToExecute.map(b => b.id) },
+            status: 'available',
+          },
+        }),
+        { operationName: 'BotEngine.executeBots.findAvailableGrids' }
+      );
       const botsWithGridsSet = new Set(botsWithAvailableGrids.map(g => g.botId));
 
       // 각 봇에 대해 거래 실행 (429 에러 방지를 위해 순차 실행 + 딜레이)
@@ -245,6 +283,8 @@ class BotEngine {
 
     } catch (error: any) {
       console.error('[BotEngine] Error in bot engine:', error.message);
+    } finally {
+      this.isExecutingBots = false;
     }
   }
 
@@ -259,16 +299,25 @@ class BotEngine {
 
   // 구독 중인 유저들에게 봇 데이터 브로드캐스트
   private async broadcastBotsToSubscribers() {
+    // 동시 실행 방지
+    if (this.isBroadcasting) {
+      return;
+    }
+
+    this.isBroadcasting = true;
     try {
       // socketService에서 구독 중인 유저 ID 직접 가져오기 (DB 조회 없음)
       const subscribedUserIds = socketService.getSubscribedUserIds();
       if (subscribedUserIds.length === 0) return;
 
       // 구독 중인 유저들의 봇을 한 번에 조회 (N+1 문제 해결)
-      const allBots = await prisma.bot.findMany({
-        where: { userId: { in: subscribedUserIds } },
-        orderBy: { createdAt: 'desc' },
-      });
+      const allBots = await withRetry(
+        () => prisma.bot.findMany({
+          where: { userId: { in: subscribedUserIds } },
+          orderBy: { createdAt: 'desc' },
+        }),
+        { operationName: 'BotEngine.broadcastBotsToSubscribers' }
+      );
 
       // 유저별로 그룹화
       const botsByUser = new Map<number, typeof allBots>();
@@ -348,6 +397,8 @@ class BotEngine {
       if (error.message !== 'No subscribers') {
         console.error('[BotEngine] Broadcast error:', error.message);
       }
+    } finally {
+      this.isBroadcasting = false;
     }
   }
 }
