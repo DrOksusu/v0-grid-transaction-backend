@@ -1,4 +1,4 @@
-import prisma from '../config/database';
+import prisma, { withRetry } from '../config/database';
 import { UpbitService } from './upbit.service';
 import { GridService } from './grid.service';
 import { decrypt } from '../utils/encryption';
@@ -74,20 +74,23 @@ export class TradingService {
       return { apiKey: cached.apiKey, secretKey: cached.secretKey, userId: cachedBot.userId };
     }
 
-    // 캐시 미스 - DB에서 조회
-    const bot = await prisma.bot.findUnique({
-      where: { id: botId },
-      include: {
-        user: {
-          include: {
-            credentials: {
-              where: { exchange: 'upbit' },
-              select: { apiKey: true, secretKey: true },
+    // 캐시 미스 - DB에서 조회 (재시도 로직 포함)
+    const bot = await withRetry(
+      () => prisma.bot.findUnique({
+        where: { id: botId },
+        include: {
+          user: {
+            include: {
+              credentials: {
+                where: { exchange: 'upbit' },
+                select: { apiKey: true, secretKey: true },
+              },
             },
           },
         },
-      },
-    });
+      }),
+      { operationName: `getCachedCredential(botId=${botId})` }
+    );
 
     if (!bot || !bot.user.credentials[0]) return null;
 
@@ -120,10 +123,13 @@ export class TradingService {
       return cached;
     }
 
-    const bot = await prisma.bot.findUnique({
-      where: { id: botId },
-      select: { userId: true, ticker: true, orderAmount: true },
-    });
+    const bot = await withRetry(
+      () => prisma.bot.findUnique({
+        where: { id: botId },
+        select: { userId: true, ticker: true, orderAmount: true },
+      }),
+      { operationName: `getCachedBotInfo(botId=${botId})` }
+    );
 
     if (!bot) return null;
 
@@ -140,11 +146,14 @@ export class TradingService {
   // 특정 봇에 대한 거래 실행
   static async executeTrade(botId: number) {
     try {
-      // 봇 상태만 간단히 조회 (캐시된 정보는 별도)
-      const bot = await prisma.bot.findUnique({
-        where: { id: botId },
-        select: { id: true, status: true, ticker: true, orderAmount: true, errorMessage: true },
-      });
+      // 봇 상태만 간단히 조회 (캐시된 정보는 별도, 재시도 로직 포함)
+      const bot = await withRetry(
+        () => prisma.bot.findUnique({
+          where: { id: botId },
+          select: { id: true, status: true, ticker: true, orderAmount: true, errorMessage: true },
+        }),
+        { operationName: `executeTrade.findBot(botId=${botId})` }
+      );
 
       if (!bot || bot.status !== 'running') {
         return { success: false, message: '봇이 실행 중이 아닙니다' };
@@ -720,10 +729,13 @@ export class TradingService {
       });
     }
 
-    // 봇 상태 업데이트 알림
-    const updatedBot = await prisma.bot.findUnique({
-      where: { id: botId },
-    });
+    // 봇 상태 업데이트 알림 (재시도 로직 포함)
+    const updatedBot = await withRetry(
+      () => prisma.bot.findUnique({
+        where: { id: botId },
+      }),
+      { operationName: `processFilled.findBot(botId=${botId})` }
+    );
 
     if (updatedBot) {
       socketService.emitBotUpdate(botId, {
@@ -875,10 +887,13 @@ export class TradingService {
             });
           }
 
-          // 봇 상태 업데이트 알림
-          const updatedBot = await prisma.bot.findUnique({
-            where: { id: botId },
-          });
+          // 봇 상태 업데이트 알림 (재시도 로직 포함)
+          const updatedBot = await withRetry(
+            () => prisma.bot.findUnique({
+              where: { id: botId },
+            }),
+            { operationName: `checkFilledOrders.findBot(botId=${botId})` }
+          );
 
           if (updatedBot) {
             socketService.emitBotUpdate(botId, {
