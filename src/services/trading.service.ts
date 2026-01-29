@@ -673,17 +673,26 @@ export class TradingService {
       await ProfitService.recordProfit(userId, 'upbit', profit);
     }
 
+    // 실제 체결가 및 체결량 추출
+    const filledPrice = parseFloat(order.price);
+    const filledVolume = parseFloat(order.executed_volume);
+    const filledTotal = filledPrice * filledVolume;
+
     // 거래 기록 업데이트
     const trade = await prisma.trade.findFirst({
       where: { orderId: grid.orderId! },
     });
 
     if (trade) {
+      // 실제 체결가로 업데이트
       await prisma.trade.update({
         where: { id: trade.id },
         data: {
           status: 'filled',
           filledAt: actualFilledAt,
+          price: filledPrice,
+          amount: filledVolume,
+          total: filledTotal,
           ...(grid.type === 'sell' && profit !== 0 ? { profit } : {}),
         },
       });
@@ -691,9 +700,9 @@ export class TradingService {
       socketService.emitTradeFilled(botId, {
         id: trade.id,
         type: grid.type as 'buy' | 'sell',
-        price: trade.price,
-        amount: trade.amount,
-        total: trade.total,
+        price: filledPrice,
+        amount: filledVolume,
+        total: filledTotal,
         profit: profit !== 0 ? profit : undefined,
         status: 'filled',
         filledAt: actualFilledAt,
@@ -863,7 +872,12 @@ export class TradingService {
             await ProfitService.recordProfit(userId, 'upbit', profit);
           }
 
-          // 거래 기록에 수익 업데이트
+          // 실제 체결가 및 체결량 추출
+          const filledPrice = parseFloat(order.price);
+          const filledVolume = parseFloat(order.executed_volume);
+          const filledTotal = filledPrice * filledVolume;
+
+          // 거래 기록에 실제 체결가로 업데이트
           const trade = await prisma.trade.findFirst({
             where: { orderId: grid.orderId! },
           });
@@ -874,6 +888,9 @@ export class TradingService {
               data: {
                 status: 'filled',
                 filledAt: actualFilledAt,
+                price: filledPrice,
+                amount: filledVolume,
+                total: filledTotal,
                 ...(grid.type === 'sell' && profit !== 0 ? { profit } : {}),
               },
             });
@@ -881,9 +898,9 @@ export class TradingService {
             socketService.emitTradeFilled(botId, {
               id: trade.id,
               type: grid.type as 'buy' | 'sell',
-              price: trade.price,
-              amount: trade.amount,
-              total: trade.total,
+              price: filledPrice,
+              amount: filledVolume,
+              total: filledTotal,
               profit: profit !== 0 ? profit : undefined,
               status: 'filled',
               filledAt: actualFilledAt,
