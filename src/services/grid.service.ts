@@ -1,6 +1,31 @@
 import prisma from '../config/database';
 
 /**
+ * 매수 가격 배열 계산 (등비수열, 중복 제거)
+ * 모든 곳에서 이 함수를 사용하여 일관성 유지
+ */
+export function calculateBuyPrices(
+  lowerPrice: number,
+  upperPrice: number,
+  priceChangePercent: number
+): number[] {
+  const prices: number[] = [];
+  const multiplier = 1 + priceChangePercent / 100;
+  let price = lowerPrice;
+
+  while (price <= upperPrice) {
+    const roundedPrice = roundToTickSize(price);
+    // 중복 가격 방지: 이전 가격과 같으면 스킵
+    if (prices.length === 0 || roundedPrice > prices[prices.length - 1]) {
+      prices.push(roundedPrice);
+    }
+    price *= multiplier;
+  }
+
+  return prices;
+}
+
+/**
  * Upbit KRW 마켓 주문가격 단위 (호가 단위)
  * 가격대별 틱 사이즈에 맞게 가격을 반올림
  * https://docs.upbit.com/kr/docs/krw-market-info
@@ -59,28 +84,20 @@ export class GridService {
         where: { botId },
       });
 
-      const prices: number[] = [];
+      // 공통 유틸리티 함수로 매수 가격 계산 (등비수열, 중복 제거)
+      let prices: number[];
 
-      // 등비수열로 가격 계산 (호가 단위에 맞게 반올림)
       if (priceChangePercent && priceChangePercent > 0) {
-        const changeRatio = 1 + priceChangePercent / 100;
-        let currentPrice = lowerPrice;
-
-        while (currentPrice <= upperPrice) {
-          const roundedPrice = roundToTickSize(currentPrice);
-          // 중복 가격 방지: 이전 가격과 같으면 스킵
-          if (prices.length === 0 || roundedPrice > prices[prices.length - 1]) {
-            prices.push(roundedPrice);
-          }
-          currentPrice = currentPrice * changeRatio;
-        }
+        prices = calculateBuyPrices(lowerPrice, upperPrice, priceChangePercent);
         // 마지막 매도가를 위해 upperPrice 초과 가격도 추가
-        const lastSellPrice = roundToTickSize(prices[prices.length - 1] * changeRatio);
+        const multiplier = 1 + priceChangePercent / 100;
+        const lastSellPrice = roundToTickSize(prices[prices.length - 1] * multiplier);
         if (lastSellPrice > prices[prices.length - 1]) {
           prices.push(lastSellPrice);
         }
       } else {
         // 폴백: 등차수열
+        prices = [];
         const priceRange = upperPrice - lowerPrice;
         const gridSpacing = priceRange / gridCount;
 

@@ -2,7 +2,7 @@ import prisma, { withRetry } from '../config/database';
 import { TradingService } from './trading.service';
 import { priceManager } from './upbit-price-manager';
 import { socketService } from './socket.service';
-import { roundToTickSize } from './grid.service';
+import { calculateBuyPrices } from './grid.service';
 
 class BotEngine {
   private isRunning: boolean = false;
@@ -352,18 +352,8 @@ class BotEngine {
         };
 
         const botsData = bots.map(bot => {
-          const buyPrices: number[] = [];
-          const multiplier = 1 + bot.priceChangePercent / 100;
-          let price = bot.lowerPrice;
-
-          while (price <= bot.upperPrice) {
-            const roundedPrice = roundToTickSize(price);
-            // 중복 가격 방지
-            if (buyPrices.length === 0 || roundedPrice > buyPrices[buyPrices.length - 1]) {
-              buyPrices.push(roundedPrice);
-            }
-            price *= multiplier;
-          }
+          // 매수 가격 배열 계산 (공통 유틸리티 함수 사용)
+          const buyPrices = calculateBuyPrices(bot.lowerPrice, bot.upperPrice, bot.priceChangePercent);
 
           let currentPrice = 0;
           if (bot.exchange === 'upbit') {

@@ -2,7 +2,7 @@ import { Response, NextFunction } from 'express';
 import prisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
-import { GridService, roundToTickSize } from '../services/grid.service';
+import { GridService, calculateBuyPrices } from '../services/grid.service';
 import { UpbitService } from '../services/upbit.service';
 import { priceManager } from '../services/upbit-price-manager';
 import { decrypt } from '../utils/encryption';
@@ -145,19 +145,8 @@ export const getAllBots = async (
     };
 
     const botsData = bots.map(bot => {
-      // 매수 가격 배열 계산 (등비수열: lowerPrice * (1 + percent)^n)
-      const buyPrices: number[] = [];
-      const multiplier = 1 + bot.priceChangePercent / 100;
-      let price = bot.lowerPrice;
-
-      while (price <= bot.upperPrice) {
-        const roundedPrice = roundToTickSize(price);
-        // 중복 가격 방지
-        if (buyPrices.length === 0 || roundedPrice > buyPrices[buyPrices.length - 1]) {
-          buyPrices.push(roundedPrice);
-        }
-        price *= multiplier;
-      }
+      // 매수 가격 배열 계산 (공통 유틸리티 함수 사용)
+      const buyPrices = calculateBuyPrices(bot.lowerPrice, bot.upperPrice, bot.priceChangePercent);
 
       // 현재가 조회 (업비트의 경우 일괄 조회 결과에서 가져옴)
       let currentPrice = 0;
@@ -217,19 +206,8 @@ export const getBotById = async (
       return errorResponse(res, 'BOT_NOT_FOUND', '봇을 찾을 수 없습니다', 404);
     }
 
-    // 매수 가격 배열 계산 (호가 단위에 맞게)
-    const buyPrices: number[] = [];
-    const multiplier = 1 + bot.priceChangePercent / 100;
-    let price = bot.lowerPrice;
-
-    while (price <= bot.upperPrice) {
-      const roundedPrice = roundToTickSize(price);
-      // 중복 가격 방지
-      if (buyPrices.length === 0 || roundedPrice > buyPrices[buyPrices.length - 1]) {
-        buyPrices.push(roundedPrice);
-      }
-      price *= multiplier;
-    }
+    // 매수 가격 배열 계산 (공통 유틸리티 함수 사용)
+    const buyPrices = calculateBuyPrices(bot.lowerPrice, bot.upperPrice, bot.priceChangePercent);
 
     return successResponse(res, {
       _id: bot.id.toString(),
