@@ -476,21 +476,8 @@ export class ProfitService {
       },
     });
 
-    // 2. 해당 월에 삭제된 봇의 수익 (ProfitSnapshot)
-    const deletedBotSnapshots = await prisma.profitSnapshot.findMany({
-      where: {
-        exchange: 'upbit',
-        botType: 'grid',
-        deletedAt: {
-          gte: startDate,
-          lte: endDate,
-        },
-      },
-      select: {
-        userId: true,
-        finalProfit: true,
-      },
-    });
+    // 참고: ProfitSnapshot.finalProfit은 봇의 "누적 총 수익"이므로 월별 랭킹에 포함하면 안 됨
+    // 삭제된 봇의 거래 기록은 Trade 테이블에 보존됨 (botId=null, onDelete: SetNull)
 
     // 사용자별로 수익 집계
     const userProfitMap = new Map<number, number>();
@@ -518,12 +505,6 @@ export class ProfitService {
 
       const existing = userProfitMap.get(userId) || 0;
       userProfitMap.set(userId, existing + profit);
-    }
-
-    // 삭제된 봇 수익도 추가 (ProfitSnapshot)
-    for (const snapshot of deletedBotSnapshots) {
-      const existing = userProfitMap.get(snapshot.userId) || 0;
-      userProfitMap.set(snapshot.userId, existing + snapshot.finalProfit);
     }
 
     // 사용자 정보 조회
@@ -656,23 +637,8 @@ export class ProfitService {
       },
     });
 
-    // 해당 월에 삭제된 봇 조회 (ProfitSnapshot)
-    const deletedBots = await prisma.profitSnapshot.findMany({
-      where: {
-        userId: targetUserId,
-        exchange: 'upbit',
-        botType: 'grid',
-        deletedAt: {
-          gte: startDate,
-          lte: endDate,
-        },
-      },
-      select: {
-        ticker: true,
-        finalProfit: true,
-        totalTrades: true,
-      },
-    });
+    // 참고: ProfitSnapshot.finalProfit은 봇의 "누적 총 수익"이므로 월별 상세에 포함하면 안 됨
+    // 삭제된 봇의 거래 기록은 Trade 테이블에 보존됨 (botId=null, onDelete: SetNull)
 
     // 봇(종목)별로 수익 집계
     const tickerProfitMap = new Map<string, { profit: number; trades: number }>();
@@ -703,16 +669,6 @@ export class ProfitService {
       tickerProfitMap.set(key, {
         profit: existing.profit + profit,
         trades: existing.trades + 1,
-      });
-    }
-
-    // 삭제된 봇 수익도 추가
-    for (const deleted of deletedBots) {
-      const key = deleted.ticker;
-      const existing = tickerProfitMap.get(key) || { profit: 0, trades: 0 };
-      tickerProfitMap.set(key, {
-        profit: existing.profit + deleted.finalProfit,
-        trades: existing.trades + deleted.totalTrades,
       });
     }
 
