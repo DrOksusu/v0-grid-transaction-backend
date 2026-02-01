@@ -356,8 +356,12 @@ class BotEngine {
           const multiplier = 1 + bot.priceChangePercent / 100;
           let price = bot.lowerPrice;
 
-          for (let i = 0; i < bot.gridCount; i++) {
-            buyPrices.push(roundToTickSize(price));
+          while (price <= bot.upperPrice) {
+            const roundedPrice = roundToTickSize(price);
+            // 중복 가격 방지
+            if (buyPrices.length === 0 || roundedPrice > buyPrices[buyPrices.length - 1]) {
+              buyPrices.push(roundedPrice);
+            }
             price *= multiplier;
           }
 
