@@ -239,6 +239,8 @@ export class TradingService {
               data: {
                 botId,
                 gridLevelId: executableGrids.buy.id,
+                ticker: bot.ticker,
+                exchange: 'upbit',
                 type: 'buy',
                 price: executableGrids.buy.price,
                 amount: volume,
@@ -319,6 +321,8 @@ export class TradingService {
               data: {
                 botId,
                 gridLevelId: executableGrids.sell.id,
+                ticker: bot.ticker,
+                exchange: 'upbit',
                 type: 'sell',
                 price: executableGrids.sell.price,
                 amount: volume,
@@ -711,6 +715,9 @@ export class TradingService {
       // Trade 레코드가 없는 경우 - 경고 로그 및 새로 생성
       console.warn(`[Trading] Bot ${botId}: Trade 레코드 없음 (orderId: ${grid.orderId}), 새로 생성`);
 
+      // 봇 정보 조회 (ticker, exchange 저장용)
+      const botInfo = await this.getCachedBotInfo(botId);
+
       // Trade 레코드 생성
       const volume = parseFloat(order.executed_volume);
       const price = parseFloat(order.price);
@@ -718,6 +725,8 @@ export class TradingService {
         data: {
           botId,
           gridLevelId: grid.id,
+          ticker: botInfo?.ticker,
+          exchange: 'upbit',
           type: grid.type as 'buy' | 'sell',
           price: price,
           amount: volume,
@@ -1111,6 +1120,8 @@ export class TradingService {
           data: {
             botId: bot.id,
             gridLevelId: sellGrid.id,
+            ticker: bot.ticker,
+            exchange: 'upbit',
             type: 'sell',
             price: sellPrice,
             amount: volume,
@@ -1191,6 +1202,8 @@ export class TradingService {
           data: {
             botId: bot.id,
             gridLevelId: buyGrid.id,
+            ticker: bot.ticker,
+            exchange: 'upbit',
             type: 'buy',
             price: buyPrice,
             amount: volume,

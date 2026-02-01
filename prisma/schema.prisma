@@ -134,10 +134,15 @@ enum TradeStatus {
 
 model Trade {
   id           Int         @id @default(autoincrement())
-  botId        Int
-  bot          Bot         @relation(fields: [botId], references: [id], onDelete: Cascade)
+  botId        Int?        // nullable - 봇 삭제 시에도 거래 기록 보존
+  bot          Bot?        @relation(fields: [botId], references: [id], onDelete: SetNull)
   gridLevelId  Int?
   gridLevel    GridLevel?  @relation(fields: [gridLevelId], references: [id], onDelete: SetNull)
+
+  // 봇 삭제 후에도 조회 가능하도록 직접 저장
+  ticker       String?     // 종목 티커 (예: KRW-BTC)
+  exchange     String?     // 거래소 (예: upbit)
+
   type         TradeType
   price        Float
   amount       Float
@@ -152,6 +157,7 @@ model Trade {
   @@index([botId])
   @@index([botId, status])
   @@index([gridLevelId])
+  @@index([ticker])        // 종목별 조회용
   @@map("trades")
 }
 
