@@ -41,7 +41,7 @@ COPY prisma ./prisma/
 
 
 # Install production dependencies only
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 # Copy generated Prisma client from builder (instead of regenerating)
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
