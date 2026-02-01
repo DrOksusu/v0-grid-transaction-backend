@@ -328,7 +328,7 @@ export class ProfitService {
     }>();
 
     for (const trade of trades) {
-      if (trade.profit === null) continue;
+      if (trade.profit === null || trade.botId === null) continue;
       const existing = botProfitMap.get(trade.botId) || { trades: 0, profit: 0, tradeDetails: [] };
       botProfitMap.set(trade.botId, {
         trades: existing.trades + 1,

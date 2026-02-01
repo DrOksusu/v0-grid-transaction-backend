@@ -849,8 +849,8 @@ export const getAllTrades = async (
     return successResponse(res, {
       trades: trades.map(t => ({
         _id: t.id.toString(),
-        botId: t.botId.toString(),
-        ticker: botMap.get(t.botId) || 'Unknown',
+        botId: t.botId?.toString() || null,
+        ticker: t.botId ? (botMap.get(t.botId) || 'Unknown') : (t.ticker || 'Unknown'),
         type: t.type,
         price: t.price,
         amount: t.amount,
