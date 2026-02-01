@@ -10,12 +10,15 @@ import prisma from '../config/database';
 import { Exchange } from '@prisma/client';
 
 /**
- * 현재 월 문자열 반환 (YYYY-MM)
+ * 현재 월 문자열 반환 (YYYY-MM) - 한국 시간 기준
  */
 function getCurrentMonth(): string {
+  // 한국 시간 (UTC+9) 기준으로 현재 월 계산
   const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const kstOffset = 9 * 60 * 60 * 1000; // 9시간 (밀리초)
+  const kstNow = new Date(now.getTime() + kstOffset);
+  const year = kstNow.getUTCFullYear();
+  const month = String(kstNow.getUTCMonth() + 1).padStart(2, '0');
   return `${year}-${month}`;
 }
 
@@ -189,11 +192,14 @@ export class ProfitService {
       },
     });
 
-    // 월별로 그룹핑
+    // 월별로 그룹핑 (한국 시간 기준)
     const monthlyMap = new Map<string, { profit: number; trades: number }>();
+    const kstOffset = 9 * 60 * 60 * 1000; // 9시간 (밀리초)
     for (const trade of trades) {
       if (!trade.filledAt || trade.profit === null) continue;
-      const month = `${trade.filledAt.getFullYear()}-${String(trade.filledAt.getMonth() + 1).padStart(2, '0')}`;
+      // UTC 시간을 한국 시간으로 변환
+      const kstDate = new Date(trade.filledAt.getTime() + kstOffset);
+      const month = `${kstDate.getUTCFullYear()}-${String(kstDate.getUTCMonth() + 1).padStart(2, '0')}`;
       const existing = monthlyMap.get(month) || { profit: 0, trades: 0 };
       monthlyMap.set(month, {
         profit: existing.profit + trade.profit,
@@ -201,9 +207,10 @@ export class ProfitService {
       });
     }
 
-    // 삭제된 봇의 수익도 월별로 추가 (deletedAt 월 기준)
+    // 삭제된 봇의 수익도 월별로 추가 (deletedAt 월 기준, 한국 시간)
     for (const snapshot of snapshots) {
-      const deletedMonth = `${snapshot.deletedAt.getFullYear()}-${String(snapshot.deletedAt.getMonth() + 1).padStart(2, '0')}`;
+      const kstDeletedAt = new Date(snapshot.deletedAt.getTime() + kstOffset);
+      const deletedMonth = `${kstDeletedAt.getUTCFullYear()}-${String(kstDeletedAt.getUTCMonth() + 1).padStart(2, '0')}`;
       const existing = monthlyMap.get(deletedMonth) || { profit: 0, trades: 0 };
       monthlyMap.set(deletedMonth, {
         profit: existing.profit + snapshot.finalProfit,
@@ -265,10 +272,13 @@ export class ProfitService {
    * 특정 월의 봇별 상세 수익 조회
    */
   static async getMonthlyDetails(userId: number, month: string, exchange?: Exchange) {
-    // 해당 월의 시작/끝 날짜 계산
+    // 해당 월의 시작/끝 날짜 계산 (한국 시간 기준 UTC+9)
     const [year, monthNum] = month.split('-').map(Number);
-    const startDate = new Date(year, monthNum - 1, 1);
-    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+    // 한국 시간 기준 해당 월 1일 00:00:00 = UTC로 변환 (9시간 빼기)
+    const startDate = new Date(Date.UTC(year, monthNum - 1, 1, -9, 0, 0, 0));
+    // 한국 시간 기준 해당 월 말일 23:59:59 = UTC로 변환
+    const lastDayOfMonth = new Date(year, monthNum, 0).getDate();
+    const endDate = new Date(Date.UTC(year, monthNum - 1, lastDayOfMonth, 14, 59, 59, 999));
 
     // 사용자의 활성 봇 조회
     const bots = await prisma.bot.findMany({
@@ -428,10 +438,13 @@ export class ProfitService {
   static async getMonthlyRanking(limit: number = 5, month?: string) {
     const targetMonth = month || getCurrentMonth();
 
-    // 해당 월의 시작/끝 날짜 계산
+    // 해당 월의 시작/끝 날짜 계산 (한국 시간 기준 UTC+9)
     const [year, monthNum] = targetMonth.split('-').map(Number);
-    const startDate = new Date(year, monthNum - 1, 1);
-    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+    // 한국 시간 기준 해당 월 1일 00:00:00 = UTC로 변환 (9시간 빼기)
+    const startDate = new Date(Date.UTC(year, monthNum - 1, 1, -9, 0, 0, 0));
+    // 한국 시간 기준 해당 월 말일 23:59:59 = UTC로 변환
+    const lastDayOfMonth = new Date(year, monthNum, 0).getDate();
+    const endDate = new Date(Date.UTC(year, monthNum - 1, lastDayOfMonth, 14, 59, 59, 999));
 
     // 1. 해당 월의 매도 체결 기록에서 수익 계산 (활성/중지된 봇)
     const trades = await prisma.trade.findMany({
@@ -562,10 +575,13 @@ export class ProfitService {
    * @param displayName 표시 이름 (닉네임 또는 마스킹된 이름)
    */
   static async getRankingUserDetail(displayName: string, month: string) {
-    // 해당 월의 시작/끝 날짜 계산
+    // 해당 월의 시작/끝 날짜 계산 (한국 시간 기준 UTC+9)
     const [year, monthNum] = month.split('-').map(Number);
-    const startDate = new Date(year, monthNum - 1, 1);
-    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+    // 한국 시간 기준 해당 월 1일 00:00:00 = UTC로 변환 (9시간 빼기)
+    const startDate = new Date(Date.UTC(year, monthNum - 1, 1, -9, 0, 0, 0));
+    // 한국 시간 기준 해당 월 말일 23:59:59 = UTC로 변환
+    const lastDayOfMonth = new Date(year, monthNum, 0).getDate();
+    const endDate = new Date(Date.UTC(year, monthNum - 1, lastDayOfMonth, 14, 59, 59, 999));
 
     // displayName으로 사용자 찾기
     // 랭킹 표시 로직과 동일하게:
@@ -730,10 +746,13 @@ export class ProfitService {
   static async getInfiniteBuyRanking(limit: number = 5, month?: string) {
     const targetMonth = month || getCurrentMonth();
 
-    // 해당 월의 시작/끝 날짜 계산
+    // 해당 월의 시작/끝 날짜 계산 (한국 시간 기준 UTC+9)
     const [year, monthNum] = targetMonth.split('-').map(Number);
-    const startDate = new Date(year, monthNum - 1, 1);
-    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+    // 한국 시간 기준 해당 월 1일 00:00:00 = UTC로 변환 (9시간 빼기)
+    const startDate = new Date(Date.UTC(year, monthNum - 1, 1, -9, 0, 0, 0));
+    // 한국 시간 기준 해당 월 말일 23:59:59 = UTC로 변환
+    const lastDayOfMonth = new Date(year, monthNum, 0).getDate();
+    const endDate = new Date(Date.UTC(year, monthNum - 1, lastDayOfMonth, 14, 59, 59, 999));
 
     // 무한매수 종목을 보유한 모든 사용자 조회
     const stockUsers = await prisma.infiniteBuyStock.findMany({
@@ -853,13 +872,12 @@ export class ProfitService {
 
     const botIds = bots.map(b => b.id);
 
-    // 해당 월의 매도 거래 조회 (수익이 있는 것만)
+    // 해당 월의 매도 거래 조회 (profit null 포함 - 직접 계산 위해)
     const trades = await prisma.trade.findMany({
       where: {
         botId: { in: botIds },
         type: 'sell',
         status: 'filled',
-        profit: { not: null },
         filledAt: {
           gte: startDate,
           lte: endDate,
@@ -867,12 +885,39 @@ export class ProfitService {
       },
       select: {
         profit: true,
+        price: true,
+        amount: true,
         filledAt: true,
+        gridLevel: {
+          select: {
+            buyPrice: true,
+          },
+        },
+      },
+    });
+
+    // 해당 월에 삭제된 봇 조회 (ProfitSnapshot)
+    const deletedBotSnapshots = await prisma.profitSnapshot.findMany({
+      where: {
+        userId,
+        ...(exchange && { exchange }),
+        botType: 'grid',
+        deletedAt: {
+          gte: startDate,
+          lte: endDate,
+        },
+      },
+      select: {
+        finalProfit: true,
+        totalTrades: true,
+        deletedAt: true,
       },
     });
 
     // 날짜별로 그룹핑 (1일부터 마지막 날까지 모든 날짜 포함)
     const dailyMap = new Map<number, { profit: number; trades: number }>();
+    const UPBIT_FEE_RATE = 0.0005; // 업비트 수수료 0.05%
+    const kstOffset = 9 * 60 * 60 * 1000; // 9시간 (밀리초)
 
     // 모든 날짜를 0으로 초기화
     for (let day = 1; day <= daysInMonth; day++) {
@@ -881,14 +926,41 @@ export class ProfitService {
 
     // 거래 데이터 집계 (한국 시간 기준으로 날짜 계산)
     for (const trade of trades) {
-      if (!trade.filledAt || trade.profit === null) continue;
+      if (!trade.filledAt) continue;
+
+      let profit = trade.profit;
+      // profit이 null이면 gridLevel.buyPrice로 직접 계산
+      if (profit === null && trade.gridLevel?.buyPrice) {
+        const buyPrice = trade.gridLevel.buyPrice;
+        const sellPrice = trade.price;
+        const volume = trade.amount;
+        const buyAmount = volume * buyPrice;
+        const sellAmount = volume * sellPrice;
+        const buyFee = buyAmount * UPBIT_FEE_RATE;
+        const sellFee = sellAmount * UPBIT_FEE_RATE;
+        profit = sellAmount - buyAmount - buyFee - sellFee;
+      }
+
+      if (profit === null || profit === undefined) continue;
+
       // UTC 시간에 9시간 더해서 한국 시간으로 변환 후 날짜 추출
-      const kstDate = new Date(trade.filledAt.getTime() + 9 * 60 * 60 * 1000);
-      const day = kstDate.getDate();
+      const kstDate = new Date(trade.filledAt.getTime() + kstOffset);
+      const day = kstDate.getUTCDate();
       const existing = dailyMap.get(day) || { profit: 0, trades: 0 };
       dailyMap.set(day, {
-        profit: existing.profit + trade.profit,
+        profit: existing.profit + profit,
         trades: existing.trades + 1,
+      });
+    }
+
+    // 삭제된 봇 수익도 해당 날짜에 추가
+    for (const snapshot of deletedBotSnapshots) {
+      const kstDeletedAt = new Date(snapshot.deletedAt.getTime() + kstOffset);
+      const day = kstDeletedAt.getUTCDate();
+      const existing = dailyMap.get(day) || { profit: 0, trades: 0 };
+      dailyMap.set(day, {
+        profit: existing.profit + snapshot.finalProfit,
+        trades: existing.trades + snapshot.totalTrades,
       });
     }
 
@@ -922,10 +994,13 @@ export class ProfitService {
    * @param month 조회할 월 (YYYY-MM 형식)
    */
   static async getInfiniteBuyRankingUserDetail(displayName: string, month: string) {
-    // 해당 월의 시작/끝 날짜 계산
+    // 해당 월의 시작/끝 날짜 계산 (한국 시간 기준 UTC+9)
     const [year, monthNum] = month.split('-').map(Number);
-    const startDate = new Date(year, monthNum - 1, 1);
-    const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+    // 한국 시간 기준 해당 월 1일 00:00:00 = UTC로 변환 (9시간 빼기)
+    const startDate = new Date(Date.UTC(year, monthNum - 1, 1, -9, 0, 0, 0));
+    // 한국 시간 기준 해당 월 말일 23:59:59 = UTC로 변환
+    const lastDayOfMonth = new Date(year, monthNum, 0).getDate();
+    const endDate = new Date(Date.UTC(year, monthNum - 1, lastDayOfMonth, 14, 59, 59, 999));
 
     // displayName으로 사용자 찾기
     // 랭킹 표시 로직과 동일하게:
