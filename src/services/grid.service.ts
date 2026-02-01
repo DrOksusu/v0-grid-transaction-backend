@@ -67,12 +67,17 @@ export class GridService {
         let currentPrice = lowerPrice;
 
         while (currentPrice <= upperPrice) {
-          prices.push(roundToTickSize(currentPrice));
+          const roundedPrice = roundToTickSize(currentPrice);
+          // 중복 가격 방지: 이전 가격과 같으면 스킵
+          if (prices.length === 0 || roundedPrice > prices[prices.length - 1]) {
+            prices.push(roundedPrice);
+          }
           currentPrice = currentPrice * changeRatio;
         }
         // 마지막 매도가를 위해 upperPrice 초과 가격도 추가
-        if (prices[prices.length - 1] < upperPrice * changeRatio) {
-          prices.push(roundToTickSize(prices[prices.length - 1] * changeRatio));
+        const lastSellPrice = roundToTickSize(prices[prices.length - 1] * changeRatio);
+        if (lastSellPrice > prices[prices.length - 1]) {
+          prices.push(lastSellPrice);
         }
       } else {
         // 폴백: 등차수열
