@@ -477,7 +477,7 @@ export class ProfitService {
     });
 
     // 참고: ProfitSnapshot.finalProfit은 봇의 "누적 총 수익"이므로 월별 랭킹에 포함하면 안 됨
-    // 삭제된 봇의 거래 기록은 Trade 테이블에 보존됨 (botId=null, onDelete: SetNull)
+    // Soft Delete: 삭제된 봇의 거래도 월별 수익에 포함됨 (모든 Trade 기록 보존)
 
     // 사용자별로 수익 집계
     const userProfitMap = new Map<number, number>();
@@ -600,13 +600,14 @@ export class ProfitService {
       return null;
     }
 
-    // 해당 사용자의 봇 조회 (Soft delete 제외)
+    // 해당 사용자의 모든 봇 조회 (Soft delete 포함 - 수익 랭킹과 일치시키기 위해)
     const bots = await prisma.bot.findMany({
-      where: { userId: targetUserId, exchange: 'upbit', deletedAt: null },
+      where: { userId: targetUserId, exchange: 'upbit' },
       select: {
         id: true,
         ticker: true,
         exchange: true,
+        deletedAt: true,
       },
     });
 
@@ -638,7 +639,7 @@ export class ProfitService {
     });
 
     // 참고: ProfitSnapshot.finalProfit은 봇의 "누적 총 수익"이므로 월별 상세에 포함하면 안 됨
-    // Soft Delete: 봇이 실제 삭제되지 않으므로 모든 Trade 기록이 botId와 함께 보존됨
+    // Soft Delete 포함: 삭제된 봇의 거래도 월별 수익에 포함 (getMonthlyRanking과 일치)
 
     // 봇(종목)별로 수익 집계
     const tickerProfitMap = new Map<string, { profit: number; trades: number }>();
