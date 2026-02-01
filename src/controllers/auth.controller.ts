@@ -1,10 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import prisma from '../config/database';
 import { config } from '../config/env';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
+import { EmailService } from '../services/email.service';
 
 export const register = async (
   req: Request,
@@ -226,6 +228,225 @@ export const updateNickname = async (
     }
 
     return errorResponse(res, 'VALIDATION_ERROR', '닉네임을 입력해주세요', 400);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 비밀번호 찾기 (재설정 이메일 발송)
+ * POST /api/auth/forgot-password
+ */
+export const forgotPassword = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return errorResponse(res, 'VALIDATION_ERROR', '이메일을 입력해주세요', 400);
+    }
+
+    // 이메일 설정 확인
+    if (!EmailService.isConfigured()) {
+      return errorResponse(
+        res,
+        'EMAIL_NOT_CONFIGURED',
+        '이메일 서비스가 설정되지 않았습니다. 관리자에게 문의하세요.',
+        500
+      );
+    }
+
+    // 사용자 조회
+    const user = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    // 보안상 사용자 존재 여부와 관계없이 동일한 응답
+    if (!user) {
+      return successResponse(
+        res,
+        null,
+        '해당 이메일로 비밀번호 재설정 링크를 발송했습니다.'
+      );
+    }
+
+    // 기존 미사용 토큰 무효화
+    await prisma.passwordReset.updateMany({
+      where: {
+        userId: user.id,
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      data: {
+        expiresAt: new Date(), // 즉시 만료
+      },
+    });
+
+    // 새 토큰 생성
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1시간
+
+    await prisma.passwordReset.create({
+      data: {
+        userId: user.id,
+        token,
+        expiresAt,
+      },
+    });
+
+    // 재설정 링크 생성
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const resetLink = `${frontendUrl}/reset-password?token=${token}`;
+
+    // 이메일 발송
+    const sent = await EmailService.sendPasswordResetEmail(
+      email,
+      resetLink,
+      user.name || undefined
+    );
+
+    if (!sent) {
+      return errorResponse(
+        res,
+        'EMAIL_SEND_FAILED',
+        '이메일 발송에 실패했습니다. 잠시 후 다시 시도해주세요.',
+        500
+      );
+    }
+
+    return successResponse(
+      res,
+      null,
+      '해당 이메일로 비밀번호 재설정 링크를 발송했습니다.'
+    );
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 비밀번호 재설정
+ * POST /api/auth/reset-password
+ */
+export const resetPassword = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { token, password } = req.body;
+
+    if (!token || !password) {
+      return errorResponse(
+        res,
+        'VALIDATION_ERROR',
+        '토큰과 새 비밀번호를 입력해주세요',
+        400
+      );
+    }
+
+    if (password.length < 6) {
+      return errorResponse(
+        res,
+        'VALIDATION_ERROR',
+        '비밀번호는 6자 이상이어야 합니다',
+        400
+      );
+    }
+
+    // 토큰 조회
+    const resetRecord = await prisma.passwordReset.findUnique({
+      where: { token },
+      include: { user: true },
+    });
+
+    if (!resetRecord) {
+      return errorResponse(
+        res,
+        'INVALID_TOKEN',
+        '유효하지 않은 토큰입니다',
+        400
+      );
+    }
+
+    if (resetRecord.usedAt) {
+      return errorResponse(
+        res,
+        'TOKEN_USED',
+        '이미 사용된 토큰입니다',
+        400
+      );
+    }
+
+    if (resetRecord.expiresAt < new Date()) {
+      return errorResponse(
+        res,
+        'TOKEN_EXPIRED',
+        '만료된 토큰입니다. 비밀번호 찾기를 다시 시도해주세요.',
+        400
+      );
+    }
+
+    // 비밀번호 업데이트
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: resetRecord.userId },
+        data: { password: hashedPassword },
+      }),
+      prisma.passwordReset.update({
+        where: { id: resetRecord.id },
+        data: { usedAt: new Date() },
+      }),
+    ]);
+
+    return successResponse(
+      res,
+      null,
+      '비밀번호가 성공적으로 변경되었습니다. 새 비밀번호로 로그인해주세요.'
+    );
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 토큰 유효성 검사
+ * GET /api/auth/verify-reset-token
+ */
+export const verifyResetToken = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { token } = req.query;
+
+    if (!token || typeof token !== 'string') {
+      return errorResponse(res, 'VALIDATION_ERROR', '토큰이 필요합니다', 400);
+    }
+
+    const resetRecord = await prisma.passwordReset.findUnique({
+      where: { token },
+    });
+
+    if (!resetRecord) {
+      return errorResponse(res, 'INVALID_TOKEN', '유효하지 않은 토큰입니다', 400);
+    }
+
+    if (resetRecord.usedAt) {
+      return errorResponse(res, 'TOKEN_USED', '이미 사용된 토큰입니다', 400);
+    }
+
+    if (resetRecord.expiresAt < new Date()) {
+      return errorResponse(res, 'TOKEN_EXPIRED', '만료된 토큰입니다', 400);
+    }
+
+    return successResponse(res, { valid: true }, '유효한 토큰입니다');
   } catch (error) {
     next(error);
   }

@@ -31,8 +31,24 @@ model User {
   usdtDeposits      UsdtDeposit[]
   usdtPayments      UsdtPayment[]
   upbitDonations    UpbitDonation[]
+  passwordResets    PasswordReset[]
 
   @@map("users")
+}
+
+// 비밀번호 재설정 토큰
+model PasswordReset {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([token])
+  @@index([userId])
+  @@map("password_resets")
 }
 
 enum Exchange {

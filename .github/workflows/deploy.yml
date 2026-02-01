@@ -100,6 +100,9 @@ jobs:
               -e "UPBIT_ACCESS_KEY=${{ secrets.UPBIT_ACCESS_KEY }}" \
               -e "UPBIT_SECRET_KEY=${{ secrets.UPBIT_SECRET_KEY }}" \
               -e "UPBIT_TRON_ADDRESS=${{ secrets.UPBIT_TRON_ADDRESS }}" \
+              -e "GMAIL_USER=${{ secrets.GMAIL_USER }}" \
+              -e "GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}" \
+              -e "FRONTEND_URL=${{ secrets.FRONTEND_URL }}" \
               827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest
 
             # 상태 확인
