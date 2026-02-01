@@ -64,10 +64,10 @@ class BotEngine {
       // 대시보드 기본 종목 (항상 구독)
       const defaultTickers = ['KRW-BTC', 'KRW-ETH', 'KRW-USDT'];
 
-      // 실행 중인 봇들의 티커 조회
+      // 실행 중인 봇들의 티커 조회 (Soft delete 제외)
       const runningBots = await withRetry(
         () => prisma.bot.findMany({
-          where: { status: 'running' },
+          where: { status: 'running', deletedAt: null },
           select: { ticker: true },
         }),
         { operationName: 'BotEngine.initializePriceManager' }
@@ -97,7 +97,7 @@ class BotEngine {
     try {
       const runningBots = await withRetry(
         () => prisma.bot.findMany({
-          where: { status: 'running' },
+          where: { status: 'running', deletedAt: null },
           select: { id: true },
         }),
         { operationName: 'BotEngine.checkFilledOrders' }
@@ -206,10 +206,10 @@ class BotEngine {
     try {
       const now = Date.now();
 
-      // 실행 중인 봇 ID + 티커만 조회 (gridLevels include 제거로 성능 개선)
+      // 실행 중인 봇 ID + 티커만 조회 (gridLevels include 제거로 성능 개선, Soft delete 제외)
       const runningBots = await withRetry(
         () => prisma.bot.findMany({
-          where: { status: 'running' },
+          where: { status: 'running', deletedAt: null },
           select: { id: true, ticker: true },
         }),
         { operationName: 'BotEngine.executeBots.findRunningBots' }
@@ -310,10 +310,10 @@ class BotEngine {
       const subscribedUserIds = socketService.getSubscribedUserIds();
       if (subscribedUserIds.length === 0) return;
 
-      // 구독 중인 유저들의 봇을 한 번에 조회 (N+1 문제 해결)
+      // 구독 중인 유저들의 봇을 한 번에 조회 (N+1 문제 해결, Soft delete 제외)
       const allBots = await withRetry(
         () => prisma.bot.findMany({
-          where: { userId: { in: subscribedUserIds } },
+          where: { userId: { in: subscribedUserIds }, deletedAt: null },
           orderBy: { createdAt: 'desc' },
         }),
         { operationName: 'BotEngine.broadcastBotsToSubscribers' }

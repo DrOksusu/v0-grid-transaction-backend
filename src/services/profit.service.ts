@@ -166,9 +166,9 @@ export class ProfitService {
       orderBy: { deletedAt: 'desc' },
     });
 
-    // 현재 실행 중인 봇들의 수익 및 ID
+    // 현재 활성 봇들의 수익 및 ID (Soft delete 제외)
     const activeBots = await prisma.bot.findMany({
-      where: { userId, ...(exchange && { exchange }) },
+      where: { userId, deletedAt: null, ...(exchange && { exchange }) },
       select: {
         id: true,
         currentProfit: true,
@@ -280,9 +280,9 @@ export class ProfitService {
     const lastDayOfMonth = new Date(year, monthNum, 0).getDate();
     const endDate = new Date(Date.UTC(year, monthNum - 1, lastDayOfMonth, 14, 59, 59, 999));
 
-    // 사용자의 활성 봇 조회
+    // 사용자의 봇 조회 (Soft delete 제외)
     const bots = await prisma.bot.findMany({
-      where: { userId, ...(exchange && { exchange }) },
+      where: { userId, deletedAt: null, ...(exchange && { exchange }) },
       select: {
         id: true,
         ticker: true,
@@ -328,7 +328,7 @@ export class ProfitService {
     }>();
 
     for (const trade of trades) {
-      if (trade.profit === null || trade.botId === null) continue;
+      if (trade.profit === null) continue;
       const existing = botProfitMap.get(trade.botId) || { trades: 0, profit: 0, tradeDetails: [] };
       botProfitMap.set(trade.botId, {
         trades: existing.trades + 1,
@@ -600,9 +600,9 @@ export class ProfitService {
       return null;
     }
 
-    // 해당 사용자의 봇 조회 (활성/중지된 봇)
+    // 해당 사용자의 봇 조회 (Soft delete 제외)
     const bots = await prisma.bot.findMany({
-      where: { userId: targetUserId, exchange: 'upbit' },
+      where: { userId: targetUserId, exchange: 'upbit', deletedAt: null },
       select: {
         id: true,
         ticker: true,
@@ -638,7 +638,7 @@ export class ProfitService {
     });
 
     // 참고: ProfitSnapshot.finalProfit은 봇의 "누적 총 수익"이므로 월별 상세에 포함하면 안 됨
-    // 삭제된 봇의 거래 기록은 Trade 테이블에 보존됨 (botId=null, onDelete: SetNull)
+    // Soft Delete: 봇이 실제 삭제되지 않으므로 모든 Trade 기록이 botId와 함께 보존됨
 
     // 봇(종목)별로 수익 집계
     const tickerProfitMap = new Map<string, { profit: number; trades: number }>();
@@ -817,10 +817,11 @@ export class ProfitService {
     const endDate = new Date(Date.UTC(year, monthNum - 1, lastDayOfMonth, 14, 59, 59, 999)); // 23:59:59 KST = 14:59:59 UTC
     const daysInMonth = lastDayOfMonth;
 
-    // 사용자의 봇 조회 (exchange 필터 적용)
+    // 사용자의 봇 조회 (exchange 필터 적용, Soft delete 제외)
     const bots = await prisma.bot.findMany({
       where: {
         userId,
+        deletedAt: null,
         ...(exchange && { exchange }),
       },
       select: { id: true },

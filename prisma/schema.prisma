@@ -82,6 +82,7 @@ model Bot {
   totalTrades        Int        @default(0)
   lastExecutedAt     DateTime?
   errorMessage       String?    @db.Text
+  deletedAt          DateTime?  // Soft delete - null이면 활성, 값이 있으면 삭제됨
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
   gridLevels         GridLevel[]
@@ -90,6 +91,7 @@ model Bot {
   @@index([userId])
   @@index([status])
   @@index([userId, status])
+  @@index([deletedAt])          // 삭제 여부 필터링용
   @@map("bots")
 }
 
@@ -134,15 +136,10 @@ enum TradeStatus {
 
 model Trade {
   id           Int         @id @default(autoincrement())
-  botId        Int?        // nullable - 봇 삭제 시에도 거래 기록 보존
-  bot          Bot?        @relation(fields: [botId], references: [id], onDelete: SetNull)
+  botId        Int         // Soft delete로 봇이 실제 삭제되지 않으므로 NOT NULL 유지
+  bot          Bot         @relation(fields: [botId], references: [id])
   gridLevelId  Int?
   gridLevel    GridLevel?  @relation(fields: [gridLevelId], references: [id], onDelete: SetNull)
-
-  // 봇 삭제 후에도 조회 가능하도록 직접 저장
-  ticker       String?     // 종목 티커 (예: KRW-BTC)
-  exchange     String?     // 거래소 (예: upbit)
-
   type         TradeType
   price        Float
   amount       Float
@@ -157,7 +154,6 @@ model Trade {
   @@index([botId])
   @@index([botId, status])
   @@index([gridLevelId])
-  @@index([ticker])        // 종목별 조회용
   @@map("trades")
 }
 

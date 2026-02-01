@@ -115,7 +115,7 @@ export const getAllBots = async (
     const userId = req.userId!;
     const { status, exchange } = req.query;
 
-    const where: any = { userId };
+    const where: any = { userId, deletedAt: null };  // Soft delete 제외
     if (status) where.status = status;
     if (exchange) where.exchange = exchange;
 
@@ -199,7 +199,7 @@ export const getBotById = async (
     const botId = parseInt(req.params.id);
 
     const bot = await prisma.bot.findFirst({
-      where: { id: botId, userId },
+      where: { id: botId, userId, deletedAt: null },
     });
 
     if (!bot) {
@@ -247,7 +247,7 @@ export const updateBot = async (
     const { orderAmount, stopAtMax } = req.body;
 
     const bot = await prisma.bot.findFirst({
-      where: { id: botId, userId },
+      where: { id: botId, userId, deletedAt: null },
     });
 
     if (!bot) {
@@ -287,7 +287,7 @@ export const startBot = async (
     const botId = parseInt(req.params.id);
 
     const bot = await prisma.bot.findFirst({
-      where: { id: botId, userId },
+      where: { id: botId, userId, deletedAt: null },
     });
 
     if (!bot) {
@@ -339,7 +339,7 @@ export const stopBot = async (
     const botId = parseInt(req.params.id);
 
     const bot = await prisma.bot.findFirst({
-      where: { id: botId, userId },
+      where: { id: botId, userId, deletedAt: null },
       include: {
         user: {
           include: {
@@ -425,7 +425,7 @@ export const deleteBot = async (
     const cancelType = (req.query.cancelType as string) || 'all';
 
     const bot = await prisma.bot.findFirst({
-      where: { id: botId, userId },
+      where: { id: botId, userId, deletedAt: null },
       include: {
         user: {
           include: {
@@ -505,24 +505,17 @@ export const deleteBot = async (
           }
         }
 
-        // 수익 스냅샷 저장 (삭제 전)
-        await ProfitService.createBotSnapshot({
-          id: bot.id,
-          userId: bot.userId,
-          exchange: bot.exchange,
-          ticker: bot.ticker,
-          currentProfit: bot.currentProfit,
-          totalTrades: bot.totalTrades,
-          investmentAmount: bot.investmentAmount,
-          createdAt: bot.createdAt,
-        });
-
-        // 봇 삭제 (관련 gridLevels와 trades도 cascade로 삭제됨)
-        await prisma.bot.delete({
+        // Soft delete: deletedAt 설정 (실제 삭제하지 않음)
+        // 봇 데이터와 Trade 기록이 모두 보존되어 수익 계산 검증 가능
+        await prisma.bot.update({
           where: { id: botId },
+          data: {
+            status: 'stopped',
+            deletedAt: new Date(),
+          },
         });
 
-        console.log(`[DeleteBot] Bot ${botId} deleted successfully`);
+        console.log(`[DeleteBot] Bot ${botId} soft deleted successfully`);
       } catch (error: any) {
         console.error(`[DeleteBot] Failed to delete bot ${botId}:`, error.message);
         // 삭제 실패 시 상태를 stopped로 복구
@@ -552,7 +545,7 @@ export const getGridLevels = async (
     const { status } = req.query;
 
     const bot = await prisma.bot.findFirst({
-      where: { id: botId, userId },
+      where: { id: botId, userId, deletedAt: null },
     });
 
     if (!bot) {
@@ -596,7 +589,7 @@ export const getTrades = async (
     const status = req.query.status as string; // 'pending' | 'filled' 필터
 
     const bot = await prisma.bot.findFirst({
-      where: { id: botId, userId },
+      where: { id: botId, userId, deletedAt: null },
     });
 
     if (!bot) {
@@ -694,7 +687,7 @@ export const getPerformance = async (
     const botId = parseInt(req.params.id);
 
     const bot = await prisma.bot.findFirst({
-      where: { id: botId, userId },
+      where: { id: botId, userId, deletedAt: null },
       include: {
         trades: true,
       },
@@ -768,9 +761,9 @@ export const getAllTrades = async (
     const startDate = req.query.startDate as string;
     const endDate = req.query.endDate as string;
 
-    // 사용자의 모든 봇 ID 조회
+    // 사용자의 모든 봇 ID 조회 (Soft delete 제외)
     const userBots = await prisma.bot.findMany({
-      where: { userId },
+      where: { userId, deletedAt: null },
       select: { id: true, ticker: true },
     });
 
@@ -849,8 +842,8 @@ export const getAllTrades = async (
     return successResponse(res, {
       trades: trades.map(t => ({
         _id: t.id.toString(),
-        botId: t.botId?.toString() || null,
-        ticker: t.botId ? (botMap.get(t.botId) || 'Unknown') : (t.ticker || 'Unknown'),
+        botId: t.botId.toString(),
+        ticker: botMap.get(t.botId) || 'Unknown',
         type: t.type,
         price: t.price,
         amount: t.amount,

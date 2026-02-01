@@ -239,8 +239,6 @@ export class TradingService {
               data: {
                 botId,
                 gridLevelId: executableGrids.buy.id,
-                ticker: bot.ticker,
-                exchange: 'upbit',
                 type: 'buy',
                 price: executableGrids.buy.price,
                 amount: volume,
@@ -321,8 +319,6 @@ export class TradingService {
               data: {
                 botId,
                 gridLevelId: executableGrids.sell.id,
-                ticker: bot.ticker,
-                exchange: 'upbit',
                 type: 'sell',
                 price: executableGrids.sell.price,
                 amount: volume,
@@ -725,8 +721,6 @@ export class TradingService {
         data: {
           botId,
           gridLevelId: grid.id,
-          ticker: botInfo?.ticker,
-          exchange: 'upbit',
           type: grid.type as 'buy' | 'sell',
           price: price,
           amount: volume,
@@ -1120,8 +1114,6 @@ export class TradingService {
           data: {
             botId: bot.id,
             gridLevelId: sellGrid.id,
-            ticker: bot.ticker,
-            exchange: 'upbit',
             type: 'sell',
             price: sellPrice,
             amount: volume,
@@ -1202,8 +1194,6 @@ export class TradingService {
           data: {
             botId: bot.id,
             gridLevelId: buyGrid.id,
-            ticker: bot.ticker,
-            exchange: 'upbit',
             type: 'buy',
             price: buyPrice,
             amount: volume,
