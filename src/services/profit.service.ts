@@ -815,11 +815,10 @@ export class ProfitService {
     const endDate = new Date(Date.UTC(year, monthNum - 1, lastDayOfMonth, 14, 59, 59, 999)); // 23:59:59 KST = 14:59:59 UTC
     const daysInMonth = lastDayOfMonth;
 
-    // 사용자의 봇 조회 (exchange 필터 적용, Soft delete 제외)
+    // 사용자의 모든 봇 조회 (Soft delete 포함 - 일별 수익은 모든 봇의 Trade 기준)
     const bots = await prisma.bot.findMany({
       where: {
         userId,
-        deletedAt: null,
         ...(exchange && { exchange }),
       },
       select: { id: true },
@@ -851,23 +850,8 @@ export class ProfitService {
       },
     });
 
-    // 해당 월에 삭제된 봇 조회 (ProfitSnapshot)
-    const deletedBotSnapshots = await prisma.profitSnapshot.findMany({
-      where: {
-        userId,
-        ...(exchange && { exchange }),
-        botType: 'grid',
-        deletedAt: {
-          gte: startDate,
-          lte: endDate,
-        },
-      },
-      select: {
-        finalProfit: true,
-        totalTrades: true,
-        deletedAt: true,
-      },
-    });
+    // 참고: ProfitSnapshot.finalProfit은 봇의 "누적 총 수익"이므로 일별 수익에 추가하면 안 됨
+    // Soft Delete로 봇의 Trade 기록이 보존되므로 위 Trade 조회에서 이미 포함됨
 
     // 날짜별로 그룹핑 (1일부터 마지막 날까지 모든 날짜 포함)
     const dailyMap = new Map<number, { profit: number; trades: number }>();
@@ -905,17 +889,6 @@ export class ProfitService {
       dailyMap.set(day, {
         profit: existing.profit + profit,
         trades: existing.trades + 1,
-      });
-    }
-
-    // 삭제된 봇 수익도 해당 날짜에 추가
-    for (const snapshot of deletedBotSnapshots) {
-      const kstDeletedAt = new Date(snapshot.deletedAt.getTime() + kstOffset);
-      const day = kstDeletedAt.getUTCDate();
-      const existing = dailyMap.get(day) || { profit: 0, trades: 0 };
-      dailyMap.set(day, {
-        profit: existing.profit + snapshot.finalProfit,
-        trades: existing.trades + snapshot.totalTrades,
       });
     }
 
