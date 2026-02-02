@@ -160,7 +160,7 @@ export class ProfitService {
     const where: any = { userId };
     if (exchange) where.exchange = exchange;
 
-    // 삭제된 봇 스냅샷
+    // 삭제된 봇 스냅샷 (참고용 - 기존 hard delete 봇 기록)
     const snapshots = await prisma.profitSnapshot.findMany({
       where,
       orderBy: { deletedAt: 'desc' },
@@ -176,12 +176,17 @@ export class ProfitService {
       },
     });
 
-    const activeBotIds = activeBots.map(b => b.id);
+    // 모든 봇 ID (Soft delete 포함 - 월별 수익 계산용)
+    const allBots = await prisma.bot.findMany({
+      where: { userId, ...(exchange && { exchange }) },
+      select: { id: true },
+    });
+    const allBotIds = allBots.map(b => b.id);
 
-    // Trade 테이블에서 직접 월별 수익 계산 (매도 거래만, profit이 있는 것만)
+    // Trade 테이블에서 직접 월별 수익 계산 (모든 봇의 매도 거래, profit이 있는 것만)
     const trades = await prisma.trade.findMany({
       where: {
-        botId: { in: activeBotIds },
+        botId: { in: allBotIds },
         type: 'sell',
         status: 'filled',
         profit: { not: null },
@@ -207,16 +212,8 @@ export class ProfitService {
       });
     }
 
-    // 삭제된 봇의 수익도 월별로 추가 (deletedAt 월 기준, 한국 시간)
-    for (const snapshot of snapshots) {
-      const kstDeletedAt = new Date(snapshot.deletedAt.getTime() + kstOffset);
-      const deletedMonth = `${kstDeletedAt.getUTCFullYear()}-${String(kstDeletedAt.getUTCMonth() + 1).padStart(2, '0')}`;
-      const existing = monthlyMap.get(deletedMonth) || { profit: 0, trades: 0 };
-      monthlyMap.set(deletedMonth, {
-        profit: existing.profit + snapshot.finalProfit,
-        trades: existing.trades + snapshot.totalTrades,
-      });
-    }
+    // 참고: ProfitSnapshot.finalProfit은 봇의 "누적 총 수익"이므로 월별 수익에 추가하면 안 됨
+    // Soft Delete로 봇의 Trade 기록이 보존되므로 위 Trade 조회에서 이미 포함됨
 
     // 정렬된 월별 수익 배열
     const monthlyProfits = Array.from(monthlyMap.entries())
