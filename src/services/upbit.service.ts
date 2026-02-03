@@ -8,8 +8,14 @@ const UPBIT_API_URL = 'https://api.upbit.com/v1';
 const ORDER_API_MIN_INTERVAL = 500; // 주문 API 최소 간격 (ms) - 초당 2건으로 안전하게 설정
 const PUBLIC_API_MIN_INTERVAL = 200; // 공개 API 최소 간격 (ms) - 초당 5건
 const MAX_RETRIES = 3; // 429 에러 시 최대 재시도 횟수
+const API_TIMEOUT = 10000; // API 타임아웃 (10초)
 let lastOrderApiCall = 0;
 let lastPublicApiCall = 0;
+
+// 타임아웃이 설정된 axios 인스턴스
+const axiosInstance = axios.create({
+  timeout: API_TIMEOUT,
+});
 
 /**
  * 주문 API 호출 전 딜레이 (429 에러 방지)
@@ -173,7 +179,7 @@ export class UpbitService {
   // 계좌 조회
   async getAccounts() {
     try {
-      const response = await axios.get(`${UPBIT_API_URL}/accounts`, {
+      const response = await axiosInstance.get(`${UPBIT_API_URL}/accounts`, {
         headers: this.getHeaders(),
       });
       return response.data;
@@ -186,7 +192,7 @@ export class UpbitService {
   async getOrdersChance(market: string) {
     try {
       const queryString = `market=${market}`;
-      const response = await axios.get(
+      const response = await axiosInstance.get(
         `${UPBIT_API_URL}/orders/chance?${queryString}`,
         {
           headers: this.getHeaders(queryString),
@@ -213,7 +219,7 @@ export class UpbitService {
 
       const queryString = new URLSearchParams(params as any).toString();
 
-      const response = await axios.post(
+      const response = await axiosInstance.post(
         `${UPBIT_API_URL}/orders`,
         params,
         {
@@ -241,7 +247,7 @@ export class UpbitService {
 
       const queryString = new URLSearchParams(params as any).toString();
 
-      const response = await axios.post(
+      const response = await axiosInstance.post(
         `${UPBIT_API_URL}/orders`,
         params,
         {
@@ -270,7 +276,7 @@ export class UpbitService {
 
       const queryString = new URLSearchParams(params as any).toString();
 
-      const response = await axios.post(
+      const response = await axiosInstance.post(
         `${UPBIT_API_URL}/orders`,
         params,
         {
@@ -290,7 +296,7 @@ export class UpbitService {
       await throttleOrderApi();  // ← 여기 추가
       const queryString = `uuid=${uuid}`;
 
-      const response = await axios.delete(
+      const response = await axiosInstance.delete(
         `${UPBIT_API_URL}/order?${queryString}`,
         {
           headers: this.getHeaders(queryString),
@@ -309,7 +315,7 @@ export class UpbitService {
       await throttleOrderApi();
       const queryString = `uuid=${uuid}`;
 
-      const response = await axios.get(
+      const response = await axiosInstance.get(
         `${UPBIT_API_URL}/order?${queryString}`,
         {
           headers: this.getHeaders(queryString),
@@ -347,7 +353,7 @@ export class UpbitService {
         // URLSearchParams는 []를 %5B%5D로 인코딩하므로 수동으로 query string 생성
         const queryString = chunk.map(uuid => `uuids[]=${uuid}`).join('&');
 
-        const response = await axios.get(
+        const response = await axiosInstance.get(
           `${UPBIT_API_URL}/orders/uuids?${queryString}`,
           {
             headers: this.getHeaders(queryString),
@@ -376,7 +382,7 @@ export class UpbitService {
 
       const queryString = `market=${market}&state=${state}&order_by=desc`;
 
-      const response = await axios.get(
+      const response = await axiosInstance.get(
         `${UPBIT_API_URL}/orders?${queryString}`,
         {
           headers: this.getHeaders(queryString),
@@ -410,7 +416,7 @@ export class UpbitService {
 
       const queryString = new URLSearchParams(params).toString();
 
-      const response = await axios.get(
+      const response = await axiosInstance.get(
         `${UPBIT_API_URL}/orders?${queryString}`,
         {
           headers: this.getHeaders(queryString),
@@ -455,7 +461,7 @@ export class UpbitService {
 
       const queryString = new URLSearchParams(params).toString();
 
-      const response = await axios.get(
+      const response = await axiosInstance.get(
         `${UPBIT_API_URL}/deposits?${queryString}`,
         {
           headers: this.getHeaders(queryString),
@@ -478,7 +484,7 @@ export class UpbitService {
 
       const queryString = new URLSearchParams(queryParams).toString();
 
-      const response = await axios.get(
+      const response = await axiosInstance.get(
         `${UPBIT_API_URL}/deposit?${queryString}`,
         {
           headers: this.getHeaders(queryString),
@@ -499,7 +505,7 @@ export class UpbitService {
 
       const queryString = new URLSearchParams(params).toString();
 
-      const response = await axios.get(
+      const response = await axiosInstance.get(
         `${UPBIT_API_URL}/deposits/coin_address?${queryString}`,
         {
           headers: this.getHeaders(queryString),
@@ -515,7 +521,7 @@ export class UpbitService {
     for (let i = 0; i < retries; i++) {
       try {
         await throttlePublicApi();
-        const response = await axios.get(
+        const response = await axiosInstance.get(
           `${UPBIT_API_URL}/ticker?markets=${market}`
         );
         return response.data[0];
@@ -545,7 +551,7 @@ export class UpbitService {
     for (let i = 0; i < retries; i++) {
       try {
         await throttlePublicApi();
-        const response = await axios.get(
+        const response = await axiosInstance.get(
           `${UPBIT_API_URL}/ticker?markets=${uniqueMarkets.join(',')}`
         );
 
