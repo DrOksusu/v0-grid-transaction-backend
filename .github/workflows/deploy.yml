@@ -62,22 +62,27 @@ jobs:
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           envs: ECR_TOKEN
           script: |
-            # ECR 로그인 (GitHub Actions에서 받은 토큰 사용)
-            echo "$ECR_TOKEN" | docker login --username AWS --password-stdin 827899252497.dkr.ecr.ap-northeast-1.amazonaws.com
+            set -e  # 에러 발생 시 즉시 중단
 
-            # 기존 컨테이너 중지 및 삭제
-            docker stop grid-bot 2>/dev/null || true
-            docker rm grid-bot 2>/dev/null || true
+            ECR_REGISTRY="827899252497.dkr.ecr.ap-northeast-1.amazonaws.com"
+            IMAGE_NAME="grid-transaction-backend"
+            CONTAINER_NAME="grid-bot"
 
-            # 기존 이미지 삭제 (캐시 무효화)
-            docker rmi 827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest 2>/dev/null || true
+            echo "=== Step 1: ECR 로그인 ==="
+            echo "$ECR_TOKEN" | docker login --username AWS --password-stdin $ECR_REGISTRY
 
-            # 최신 이미지 pull (강제)
-            docker pull 827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest
+            echo "=== Step 2: 새 이미지 pull (기존 컨테이너 유지) ==="
+            # 새 이미지를 먼저 pull - 실패하면 여기서 중단되고 기존 컨테이너 유지
+            docker pull $ECR_REGISTRY/$IMAGE_NAME:latest
 
-            # 새 컨테이너 실행
+            echo "=== Step 3: Pull 성공 - 기존 컨테이너 교체 ==="
+            # pull 성공한 경우에만 기존 컨테이너 중지/삭제
+            docker stop $CONTAINER_NAME 2>/dev/null || true
+            docker rm $CONTAINER_NAME 2>/dev/null || true
+
+            echo "=== Step 4: 새 컨테이너 실행 ==="
             docker run -d \
-              --name grid-bot \
+              --name $CONTAINER_NAME \
               --restart unless-stopped \
               -p 3010:3010 \
               -e NODE_ENV=production \
@@ -103,12 +108,16 @@ jobs:
               -e "GMAIL_USER=${{ secrets.GMAIL_USER }}" \
               -e "GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}" \
               -e "FRONTEND_URL=${{ secrets.FRONTEND_URL }}" \
-              827899252497.dkr.ecr.ap-northeast-1.amazonaws.com/grid-transaction-backend:latest
+              $ECR_REGISTRY/$IMAGE_NAME:latest
 
-            # 상태 확인
+            echo "=== Step 5: 상태 확인 ==="
             sleep 10
-            docker ps | grep grid-bot
+            docker ps | grep $CONTAINER_NAME
             echo "=== Container Logs ==="
-            docker logs grid-bot --tail 50
+            docker logs $CONTAINER_NAME --tail 50
             echo "=== Health Check ==="
             curl -s http://localhost:3010/api/health || echo "Health check failed"
+
+            echo "=== Step 6: 오래된 이미지 정리 ==="
+            # dangling 이미지만 정리 (사용 중인 이미지는 유지)
+            docker image prune -f 2>/dev/null || true
