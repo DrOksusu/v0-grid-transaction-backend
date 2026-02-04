@@ -647,7 +647,8 @@ export class TradingService {
 
     if (grid.type === 'sell' && grid.buyPrice) {
       const buyPrice = grid.buyPrice;
-      const sellPrice = parseFloat(order.price);
+      // order.avg_price가 실제 평균 체결가
+      const sellPrice = order.avg_price ? parseFloat(order.avg_price) : parseFloat(order.price);
       const volume = parseFloat(order.executed_volume);
 
       const buyAmount = volume * buyPrice;
@@ -674,7 +675,8 @@ export class TradingService {
     }
 
     // 실제 체결가 및 체결량 추출
-    const filledPrice = parseFloat(order.price);
+    // order.price는 주문가격, order.avg_price가 실제 평균 체결가
+    const filledPrice = order.avg_price ? parseFloat(order.avg_price) : parseFloat(order.price);
     const filledVolume = parseFloat(order.executed_volume);
     const filledTotal = filledPrice * filledVolume;
 
@@ -716,7 +718,8 @@ export class TradingService {
 
       // Trade 레코드 생성
       const volume = parseFloat(order.executed_volume);
-      const price = parseFloat(order.price);
+      // order.avg_price가 실제 평균 체결가
+      const price = order.avg_price ? parseFloat(order.avg_price) : parseFloat(order.price);
       const newTrade = await prisma.trade.create({
         data: {
           botId,
@@ -849,7 +852,8 @@ export class TradingService {
 
           if (grid.type === 'sell' && grid.buyPrice) {
             const buyPrice = grid.buyPrice;
-            const sellPrice = parseFloat(order.price);
+            // order.avg_price가 실제 평균 체결가
+            const sellPrice = order.avg_price ? parseFloat(order.avg_price) : parseFloat(order.price);
             const volume = parseFloat(order.executed_volume);
 
             const buyAmount = volume * buyPrice;
@@ -876,7 +880,8 @@ export class TradingService {
           }
 
           // 실제 체결가 및 체결량 추출
-          const filledPrice = parseFloat(order.price);
+          // order.avg_price가 실제 평균 체결가
+          const filledPrice = order.avg_price ? parseFloat(order.avg_price) : parseFloat(order.price);
           const filledVolume = parseFloat(order.executed_volume);
           const filledTotal = filledPrice * filledVolume;
 
