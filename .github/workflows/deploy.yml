@@ -9,7 +9,7 @@ env:
   AWS_REGION: ap-northeast-1
   ECR_REPOSITORY: grid-transaction-backend
   LIGHTSAIL_HOST: 54.180.188.8
-  LIGHTSAIL_USER: bitnami
+  LIGHTSAIL_USER: ubuntu
 
 jobs:
   build-and-deploy:
