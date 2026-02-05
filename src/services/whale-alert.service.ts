@@ -77,7 +77,12 @@ type PeriodKey = keyof typeof PERIODS;
 class WhaleAlertService {
   private apiKey: string;
   private readonly API_BASE = 'https://api.whale-alert.io/v1';
-  private readonly MIN_VALUE_USD = 500000; // 최소 $500,000 거래만 추적
+  private readonly MIN_VALUE_USD = 500000; // 기본 최소 $500,000 거래만 추적
+  private readonly MIN_VALUE_USD_BY_SYMBOL: Record<string, number> = {
+    btc: 1000000,  // BTC: $1,000,000 이상만 추적 (거래량 많음)
+    eth: 500000,   // ETH: $500,000 이상
+    xrp: 500000,   // XRP: $500,000 이상
+  };
   private readonly SUPPORTED_SYMBOLS = ['btc', 'eth', 'xrp'];
   private readonly FETCH_INTERVAL = 60000; // 1분마다 조회
   private readonly QUERY_PERIOD = 3600; // 1시간 (API가 start부터 순차 반환하므로 짧게 설정)
@@ -151,6 +156,10 @@ class WhaleAlertService {
       for (const dbTx of dbTransactions) {
         const symbol = dbTx.symbol.toLowerCase();
         if (!this.SUPPORTED_SYMBOLS.includes(symbol)) continue;
+
+        // 코인별 최소 거래금액 필터링 (BTC는 $1M, 나머지는 $500K)
+        const minValue = this.MIN_VALUE_USD_BY_SYMBOL[symbol] || this.MIN_VALUE_USD;
+        if (dbTx.amountUsd < minValue) continue;
 
         const transaction: WhaleTransaction = {
           id: dbTx.txId,
@@ -271,6 +280,10 @@ class WhaleAlertService {
       for (const tx of data.transactions as any[]) {
         const symbol = tx.symbol?.toLowerCase();
         if (!this.SUPPORTED_SYMBOLS.includes(symbol)) continue;
+
+        // 코인별 최소 거래금액 필터링 (BTC는 $1M, 나머지는 $500K)
+        const minValue = this.MIN_VALUE_USD_BY_SYMBOL[symbol] || this.MIN_VALUE_USD;
+        if (tx.amount_usd < minValue) continue;
 
         const transaction = this.parseTransaction(tx);
         const added = await this.addTransaction(symbol, transaction);
