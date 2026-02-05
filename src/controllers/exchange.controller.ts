@@ -4,6 +4,7 @@ import { parse } from 'node-html-parser';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { priceManager } from '../services/upbit-price-manager';
+import { binancePriceManager } from '../services/binance-price-manager';
 
 // 티커 캐시 (메모리 캐시, 5분간 유효)
 let tickerCache: {
@@ -179,7 +180,23 @@ export const getPrice = async (
       // 캐시 저장
       priceCache.set(cacheKey, { data: priceData, timestamp: now });
     } else {
-      // 바이낸스 API 호출
+      // 1. WebSocket 캐시에서 먼저 조회 (실시간 데이터)
+      const wsData = binancePriceManager.getTickerData(ticker);
+      if (wsData) {
+        priceData = {
+          ticker,
+          currentPrice: wsData.price,
+          change24h: wsData.change24h,
+          volume24h: wsData.volume24h,
+          high24h: wsData.high24h,
+          low24h: wsData.low24h,
+          timestamp: new Date().toISOString(),
+        };
+        priceCache.set(cacheKey, { data: priceData, timestamp: now });
+        return successResponse(res, priceData);
+      }
+
+      // 2. WebSocket 데이터가 없으면 REST API 폴백
       const [priceResponse, statsResponse] = await Promise.all([
         axios.get(`https://api.binance.com/api/v3/ticker/price?symbol=${ticker}`),
         axios.get(`https://api.binance.com/api/v3/ticker/24hr?symbol=${ticker}`)

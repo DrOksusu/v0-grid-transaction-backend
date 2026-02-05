@@ -9,6 +9,7 @@ import { whaleAlertService } from './services/whale-alert.service';
 import { metricsService } from './services/metrics.service';
 import { upbitDonationMonitor } from './services/upbit-donation-monitor.service';
 import { maIndicatorService } from './services/ma-indicator.service';
+import { binancePriceManager } from './services/binance-price-manager';
 
 const startServer = async () => {
   try {
@@ -71,6 +72,11 @@ const startServer = async () => {
       console.log(`Server is running on port ${config.port}`);
       console.log(`Environment: ${config.nodeEnv}`);
 
+      // 바이낸스 실시간 가격 매니저 시작 (모든 환경 - 읽기 전용)
+      binancePriceManager.subscribe('BTCUSDT');
+      binancePriceManager.connect();
+      console.log('Binance price manager started');
+
       // 메트릭 서비스 시작 (모든 환경)
       metricsService.start(poolStats);
       console.log('Metrics service started');
@@ -115,6 +121,7 @@ process.on('SIGINT', async () => {
   whaleAlertService.stop();
   upbitDonationMonitor.stop();
   maIndicatorService.stop();
+  binancePriceManager.disconnect();
   await prisma.$disconnect();
   process.exit(0);
 });
@@ -126,6 +133,7 @@ process.on('SIGTERM', async () => {
   whaleAlertService.stop();
   upbitDonationMonitor.stop();
   maIndicatorService.stop();
+  binancePriceManager.disconnect();
   await prisma.$disconnect();
   process.exit(0);
 });
