@@ -587,6 +587,67 @@ export class TradingService {
   }
 
   /**
+   * 단건 주문 체결 확인 (가격 크로스 감지 시 호출)
+   * @returns true: 체결 처리됨, false: 미체결 또는 처리 불가
+   */
+  static async checkAndProcessSingleOrder(gridId: number): Promise<boolean> {
+    try {
+      // 1. DB에서 grid 조회 (bot info 포함)
+      const grid = await prisma.gridLevel.findUnique({
+        where: { id: gridId },
+        include: {
+          bot: {
+            select: { id: true, userId: true, ticker: true, orderAmount: true, status: true },
+          },
+        },
+      });
+
+      if (!grid || grid.status !== 'pending' || !grid.orderId) {
+        return false;
+      }
+
+      // 2. 봇이 running 상태가 아니면 스킵
+      if (grid.bot.status !== 'running') {
+        return false;
+      }
+
+      // 3. 사용자 자격증명 조회
+      const credential = await this.getUserCredential(grid.bot.userId);
+      if (!credential) {
+        return false;
+      }
+
+      const upbit = new UpbitService({
+        accessKey: credential.apiKey,
+        secretKey: credential.secretKey,
+      });
+
+      // 4. 단건 주문 조회 (API 1회)
+      const order = await upbit.getOrder(grid.orderId);
+
+      if (order.state === 'done') {
+        // 5. 체결 처리
+        await this.processFilledOrder(grid, order, upbit, grid.bot.userId);
+        return true;
+      } else if (order.state === 'cancel') {
+        // 6. 취소된 주문 → available로 복원
+        console.log(`[Trading] Grid ${gridId}: 취소된 주문 감지 - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
+        await prisma.gridLevel.update({
+          where: { id: gridId },
+          data: { status: 'available', orderId: null },
+        });
+        return false;
+      }
+
+      // 7. wait 등 다른 상태 → 아직 미체결
+      return false;
+    } catch (error: any) {
+      console.error(`[Trading] 단건 체결 확인 실패 (gridId=${gridId}):`, error.message);
+      return false;
+    }
+  }
+
+  /**
    * 체결된 주문 처리 (checkAllFilledOrders에서 호출)
    */
   private static async processFilledOrder(

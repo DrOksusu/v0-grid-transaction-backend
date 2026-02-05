@@ -75,6 +75,9 @@ class UpbitPriceManager {
     lastBroadcast: 0,
   };
 
+  // 가격 수신 리스너 (외부에서 가격 변동을 감지할 수 있도록)
+  private priceListeners: Array<(ticker: string, price: number) => void> = [];
+
   private readonly WS_URL = 'wss://api.upbit.com/websocket/v1';
   private readonly PING_INTERVAL = 30000; // 30초마다 PING
   private readonly CACHE_TTL = 60000; // 캐시 유효기간 60초 (WebSocket 끊어졌을 때 대비)
@@ -292,6 +295,20 @@ class UpbitPriceManager {
   }
 
   /**
+   * 가격 수신 리스너 등록
+   */
+  onPrice(callback: (ticker: string, price: number) => void): void {
+    this.priceListeners.push(callback);
+  }
+
+  /**
+   * 가격 수신 리스너 해제
+   */
+  removeOnPrice(callback: (ticker: string, price: number) => void): void {
+    this.priceListeners = this.priceListeners.filter(cb => cb !== callback);
+  }
+
+  /**
    * 변동성 업데이트 (내부 메서드)
    */
   private updateVolatility(ticker: string, price: number, timestamp: number): void {
@@ -403,6 +420,15 @@ class UpbitPriceManager {
           change24h: message.signed_change_rate * 100, // 퍼센트로 변환
           volume24h: message.trade_volume,
         });
+
+        // 가격 리스너 호출
+        for (const listener of this.priceListeners) {
+          try {
+            listener(message.code, price);
+          } catch (e) {
+            // 리스너 에러가 WebSocket 처리를 방해하지 않도록
+          }
+        }
       }
     } catch (error: any) {
       // PING 응답 등 JSON이 아닌 메시지는 무시

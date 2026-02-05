@@ -11,7 +11,7 @@ class BotEngine {
   private orderCheckInterval: NodeJS.Timeout | null = null;
   private readonly BASE_INTERVAL = 3000; // 기본 체크 주기 3초 (가장 빠른 봇 기준)
   private readonly BROADCAST_INTERVAL = 10000; // 10초마다 봇 데이터 브로드캐스트
-  private readonly ORDER_CHECK_INTERVAL = 10000; // 체결 확인 10초 (API 호출량 최적화)
+  private readonly ORDER_CHECK_INTERVAL = 30000; // 체결 확인 30초 (안전망 역할, 가격 크로스 감지가 주력)
   private readonly BOT_EXECUTION_DELAY = 300; // 봇 간 실행 딜레이 (ms) - 429 에러 방지
 
   // 봇별 마지막 실행 시간 추적
@@ -21,6 +21,17 @@ class BotEngine {
   private isExecutingBots: boolean = false;
   private isBroadcasting: boolean = false;
   private isCheckingOrders: boolean = false;
+
+  // 가격 크로스 감지용
+  private pendingGridCache: Map<string, Array<{ gridId: number; botId: number; type: string; price: number }>> = new Map();
+  private crossCheckCooldown: Map<number, number> = new Map(); // gridId -> 마지막 확인 시간
+  private pendingCacheRefreshInterval: NodeJS.Timeout | null = null;
+  private isCheckingCross: boolean = false;
+  private readonly CROSS_COOLDOWN_MS = 3000; // gridId별 쿨다운 3초
+  private readonly PENDING_CACHE_REFRESH_MS = 5000; // 캐시 갱신 5초
+
+  // 가격 리스너 (바인딩된 참조를 유지해야 해제 가능)
+  private boundOnPriceUpdate = this.onPriceUpdate.bind(this);
 
   // 엔진 시작
   async start() {
@@ -50,6 +61,13 @@ class BotEngine {
     this.orderCheckInterval = setInterval(async () => {
       await this.checkFilledOrders();
     }, this.ORDER_CHECK_INTERVAL);
+
+    // 가격 크로스 감지: 리스너 등록 + 캐시 갱신 타이머
+    priceManager.onPrice(this.boundOnPriceUpdate);
+    this.refreshPendingGridCache(); // 즉시 1회
+    this.pendingCacheRefreshInterval = setInterval(() => {
+      this.refreshPendingGridCache();
+    }, this.PENDING_CACHE_REFRESH_MS);
 
     // 즉시 한 번 실행
     this.executeBots();
@@ -131,6 +149,15 @@ class BotEngine {
       this.orderCheckInterval = null;
     }
 
+    // 가격 크로스 감지: 리스너 해제 + 캐시 갱신 타이머 정리
+    priceManager.removeOnPrice(this.boundOnPriceUpdate);
+    if (this.pendingCacheRefreshInterval) {
+      clearInterval(this.pendingCacheRefreshInterval);
+      this.pendingCacheRefreshInterval = null;
+    }
+    this.pendingGridCache.clear();
+    this.crossCheckCooldown.clear();
+
     // PriceManager WebSocket 연결 종료
     priceManager.disconnect();
 
@@ -193,6 +220,134 @@ class BotEngine {
   // PriceManager 상태 조회
   getPriceManagerStatus() {
     return priceManager.getConnectionStatus();
+  }
+
+  // pending 그리드 캐시 갱신 (티커별로 정리)
+  private async refreshPendingGridCache() {
+    try {
+      const runningBots = await withRetry(
+        () => prisma.bot.findMany({
+          where: { status: 'running', deletedAt: null },
+          select: { id: true, ticker: true },
+        }),
+        { operationName: 'BotEngine.refreshPendingGridCache' }
+      );
+
+      if (runningBots.length === 0) {
+        this.pendingGridCache.clear();
+        return;
+      }
+
+      const botIds = runningBots.map(b => b.id);
+      const botTickerMap = new Map(runningBots.map(b => [b.id, b.ticker]));
+
+      const pendingGrids = await withRetry(
+        () => prisma.gridLevel.findMany({
+          where: {
+            botId: { in: botIds },
+            status: 'pending',
+            orderId: { not: null },
+          },
+          select: { id: true, botId: true, type: true, price: true },
+        }),
+        { operationName: 'BotEngine.refreshPendingGridCache.grids' }
+      );
+
+      // 티커별로 그룹화
+      const newCache = new Map<string, Array<{ gridId: number; botId: number; type: string; price: number }>>();
+      for (const grid of pendingGrids) {
+        const ticker = botTickerMap.get(grid.botId);
+        if (!ticker) continue;
+
+        if (!newCache.has(ticker)) {
+          newCache.set(ticker, []);
+        }
+        newCache.get(ticker)!.push({
+          gridId: grid.id,
+          botId: grid.botId,
+          type: grid.type,
+          price: grid.price,
+        });
+      }
+
+      this.pendingGridCache = newCache;
+
+      // 오래된 쿨다운 정리 (10초 이상 된 항목)
+      const now = Date.now();
+      for (const [gridId, lastCheck] of this.crossCheckCooldown) {
+        if (now - lastCheck > 10000) {
+          this.crossCheckCooldown.delete(gridId);
+        }
+      }
+    } catch (error: any) {
+      console.error('[BotEngine] pending 캐시 갱신 실패:', error.message);
+    }
+  }
+
+  // 가격 수신 시 크로스 감지 (WebSocket 리스너)
+  private onPriceUpdate(ticker: string, price: number): void {
+    if (!this.isRunning) return;
+
+    const pendingGrids = this.pendingGridCache.get(ticker);
+    if (!pendingGrids || pendingGrids.length === 0) return;
+
+    const now = Date.now();
+
+    // 가격 크로스된 그리드 필터링
+    const crossedGrids = pendingGrids.filter(grid => {
+      // 크로스 판정: buy pending이면 현재가 ≤ 주문가, sell pending이면 현재가 ≥ 주문가
+      const isCrossed = (grid.type === 'buy' && price <= grid.price) ||
+                         (grid.type === 'sell' && price >= grid.price);
+      if (!isCrossed) return false;
+
+      // 쿨다운 확인 (동일 gridId를 3초 내 재확인 방지)
+      const lastCheck = this.crossCheckCooldown.get(grid.gridId) || 0;
+      return (now - lastCheck) >= this.CROSS_COOLDOWN_MS;
+    });
+
+    if (crossedGrids.length === 0) return;
+
+    // 쿨다운 등록
+    for (const grid of crossedGrids) {
+      this.crossCheckCooldown.set(grid.gridId, now);
+    }
+
+    console.log(`[BotEngine] 가격 크로스 감지: ${ticker} ${price.toLocaleString()}원 → ${crossedGrids.length}개 주문 확인`);
+
+    // 비동기 실행 (fire-and-forget, 가격 리스너 블로킹 방지)
+    this.checkCrossedOrders(crossedGrids).catch(err => {
+      console.error('[BotEngine] 크로스 체결 확인 실패:', err.message);
+    });
+  }
+
+  // 크로스된 주문들의 체결 여부 즉시 확인
+  private async checkCrossedOrders(grids: Array<{ gridId: number; botId: number; type: string; price: number }>) {
+    // 동시 실행 방지
+    if (this.isCheckingCross) return;
+    this.isCheckingCross = true;
+
+    try {
+      for (const grid of grids) {
+        try {
+          const filled = await TradingService.checkAndProcessSingleOrder(grid.gridId);
+          if (filled) {
+            console.log(`[BotEngine] ⚡ 크로스 체결 확인 성공: gridId=${grid.gridId}, ${grid.type} ${grid.price.toLocaleString()}원`);
+            // 캐시에서 해당 그리드 제거 (이미 처리됨)
+            for (const [ticker, grids] of this.pendingGridCache) {
+              const idx = grids.findIndex(g => g.gridId === grid.gridId);
+              if (idx !== -1) {
+                grids.splice(idx, 1);
+                break;
+              }
+            }
+          }
+        } catch (error: any) {
+          console.error(`[BotEngine] 크로스 체결 확인 실패 (gridId=${grid.gridId}):`, error.message);
+        }
+      }
+    } finally {
+      this.isCheckingCross = false;
+    }
   }
 
   // 모든 실행 중인 봇 처리 (동적 간격 적용)
