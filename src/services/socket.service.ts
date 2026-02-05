@@ -17,6 +17,7 @@ class SocketService {
   private botsSubscribers: Map<number, Set<string>> = new Map(); // userId -> Set of socket ids
   private socketUserMap: Map<string, number> = new Map(); // socketId -> userId
   private whaleSubscribers: Set<string> = new Set(); // 고래 활동 구독자 socket ids
+  private maSubscribers: Set<string> = new Set(); // MA 지표 구독자 socket ids
 
   initialize(httpServer: HttpServer) {
     // CORS 설정: 쉼표로 구분된 여러 도메인 허용
@@ -116,6 +117,20 @@ class SocketService {
         console.log(`[Socket] ${socket.id} unsubscribed from whale activity`);
       });
 
+      // MA 지표 구독
+      socket.on('subscribe:ma', () => {
+        socket.join('ma');
+        this.maSubscribers.add(socket.id);
+        console.log(`[Socket] ${socket.id} subscribed to MA indicator (total: ${this.maSubscribers.size})`);
+      });
+
+      // MA 지표 구독 해제
+      socket.on('unsubscribe:ma', () => {
+        socket.leave('ma');
+        this.maSubscribers.delete(socket.id);
+        console.log(`[Socket] ${socket.id} unsubscribed from MA indicator`);
+      });
+
       // 연결 해제
       socket.on('disconnect', () => {
         console.log(`[Socket] Client disconnected: ${socket.id}`);
@@ -130,6 +145,9 @@ class SocketService {
 
         // 고래 구독자에서도 제거
         this.whaleSubscribers.delete(socket.id);
+
+        // MA 구독자에서도 제거
+        this.maSubscribers.delete(socket.id);
 
         // 봇 구독자에서도 제거
         const userId = this.socketUserMap.get(socket.id);
@@ -386,6 +404,43 @@ class SocketService {
   // 고래 구독자 수
   getWhaleSubscribersCount(): number {
     return this.whaleSubscribers.size;
+  }
+
+  // MA 지표 업데이트 브로드캐스트
+  emitMAUpdate(data: {
+    market: string;
+    currentPrice: number;
+    timestamp: number;
+    ma20: number;
+    ma60: number;
+    ma120: number;
+    pricePosition: {
+      aboveMA20: boolean;
+      aboveMA60: boolean;
+      aboveMA120: boolean;
+    };
+    crossSignal: {
+      goldenCross: boolean;
+      deadCross: boolean;
+      crossType: 'golden' | 'dead' | 'none';
+    };
+    trendSignal: {
+      signal: 'strong_buy' | 'buy' | 'neutral' | 'sell' | 'strong_sell';
+      strength: number;
+      description: string;
+    };
+  }) {
+    if (!this.io || this.maSubscribers.size === 0) {
+      return;
+    }
+
+    this.io.to('ma').emit('ma:update', data);
+    console.log(`[Socket] Emitted MA update to ${this.maSubscribers.size} subscribers`);
+  }
+
+  // MA 구독자 수
+  getMASubscribersCount(): number {
+    return this.maSubscribers.size;
   }
 }
 

@@ -13,6 +13,7 @@ import subscriptionRoutes from './subscription';
 import usdtSubscriptionRoutes from './usdt-subscription';
 import upbitDonationRoutes from './upbit-donation';
 import adminDonationRoutes from './admin-donation';
+import maRoutes from './ma';
 
 const router = Router();
 
@@ -38,5 +39,6 @@ router.use('/subscription', subscriptionRoutes);
 router.use('/usdt', usdtSubscriptionRoutes);
 router.use('/upbit-donation', upbitDonationRoutes);
 router.use('/admin', adminDonationRoutes);
+router.use('/ma', maRoutes);
 
 export default router;
