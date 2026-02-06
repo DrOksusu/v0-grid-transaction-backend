@@ -132,8 +132,8 @@ class SocketService {
       });
 
       // 연결 해제
-      socket.on('disconnect', () => {
-        console.log(`[Socket] Client disconnected: ${socket.id}`);
+      socket.on('disconnect', (reason) => {
+        console.log(`[Socket] Client disconnected: ${socket.id} (reason: ${reason})`);
 
         // 모든 방에서 제거
         this.botRooms.forEach((sockets, botId) => {
