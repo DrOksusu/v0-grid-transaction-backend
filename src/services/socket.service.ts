@@ -31,6 +31,10 @@ class SocketService {
         methods: ['GET', 'POST'],
         credentials: true,
       },
+      pingInterval: 25000,  // 25초마다 ping 전송
+      pingTimeout: 60000,   // 60초 내 pong 미응답 시 disconnect (기본 20초→60초)
+      transports: ['websocket', 'polling'],
+      allowUpgrades: true,
     });
 
     this.io.on('connection', (socket: Socket) => {
