@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -14,60 +8,45 @@ datasource db {
 }
 
 model User {
-  id                Int          @id @default(autoincrement())
-  email             String       @unique
+  id                Int                @id @default(autoincrement())
+  email             String             @unique
   name              String?
-  nickname          String?      // 랭킹에 표시될 닉네임
   password          String
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  nickname          String?
   bots              Bot[]
   credentials       Credential[]
   infiniteBuyStocks InfiniteBuyStock[]
   monthlyProfits    MonthlyProfit[]
+  passwordResets    PasswordReset[]
   profitSnapshots   ProfitSnapshot[]
   pushSubscriptions PushSubscription[]
   subscription      Subscription?
+  upbitDonations    UpbitDonation[]
   usdtDeposits      UsdtDeposit[]
   usdtPayments      UsdtPayment[]
-  upbitDonations    UpbitDonation[]
-  passwordResets    PasswordReset[]
 
   @@map("users")
 }
 
-// 비밀번호 재설정 토큰
 model PasswordReset {
-  id        Int      @id @default(autoincrement())
+  id        Int       @id @default(autoincrement())
   userId    Int
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  token     String   @unique
+  token     String    @unique
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([token])
   @@index([userId])
   @@map("password_resets")
 }
 
-enum Exchange {
-  upbit
-  binance
-  kis  // 한국투자증권
-}
-
-enum BotStatus {
-  running
-  stopped
-  error
-  deleting
-}
-
 model Bot {
-  id                 Int        @id @default(autoincrement())
+  id                 Int         @id @default(autoincrement())
   userId             Int
-  user               User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   exchange           Exchange
   ticker             String
   lowerPrice         Float
@@ -75,24 +54,357 @@ model Bot {
   priceChangePercent Float
   gridCount          Int
   orderAmount        Float
-  stopAtMax          Boolean    @default(false)
-  status             BotStatus  @default(stopped)
-  investmentAmount   Float      @default(0)
-  currentProfit      Float      @default(0)
-  totalTrades        Int        @default(0)
+  stopAtMax          Boolean     @default(false)
+  status             BotStatus   @default(stopped)
+  investmentAmount   Float       @default(0)
+  currentProfit      Float       @default(0)
+  totalTrades        Int         @default(0)
   lastExecutedAt     DateTime?
-  errorMessage       String?    @db.Text
-  deletedAt          DateTime?  // Soft delete - null이면 활성, 값이 있으면 삭제됨
-  createdAt          DateTime   @default(now())
-  updatedAt          DateTime   @updatedAt
+  errorMessage       String?     @db.Text
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  deletedAt          DateTime?
+  user               User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   gridLevels         GridLevel[]
   trades             Trade[]
 
   @@index([userId])
   @@index([status])
   @@index([userId, status])
-  @@index([deletedAt])          // 삭제 여부 필터링용
+  @@index([deletedAt])
   @@map("bots")
+}
+
+model GridLevel {
+  id        Int             @id @default(autoincrement())
+  botId     Int
+  price     Float
+  type      TradeType
+  status    GridLevelStatus @default(available)
+  orderId   String?
+  filledAt  DateTime?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  buyPrice  Float?
+  sellPrice Float?
+  bot       Bot             @relation(fields: [botId], references: [id], onDelete: Cascade)
+  trades    Trade[]
+
+  @@index([botId])
+  @@index([botId, status])
+  @@index([status])
+  @@index([botId, type, status, price], map: "idx_grid_levels_botId_type_status_price")
+  @@index([orderId], map: "idx_grid_levels_orderId")
+  @@map("grid_levels")
+}
+
+model Trade {
+  id          Int         @id @default(autoincrement())
+  botId       Int
+  gridLevelId Int?
+  type        TradeType
+  price       Float
+  amount      Float
+  total       Float
+  profit      Float?
+  orderId     String
+  executedAt  DateTime    @default(now())
+  createdAt   DateTime    @default(now())
+  filledAt    DateTime?
+  status      TradeStatus @default(pending)
+  exchange    String?
+  ticker      String?
+  bot         Bot         @relation(fields: [botId], references: [id])
+  gridLevel   GridLevel?  @relation(fields: [gridLevelId], references: [id])
+
+  @@index([botId])
+  @@index([botId, status])
+  @@index([gridLevelId])
+  @@index([botId, status, filledAt], map: "idx_trades_botId_status_filledAt")
+  @@index([orderId], map: "idx_trades_orderId")
+  @@index([ticker])
+  @@map("trades")
+}
+
+model Credential {
+  id              Int               @id @default(autoincrement())
+  userId          Int
+  exchange        Exchange
+  apiKey          String            @db.Text
+  secretKey       String            @db.Text
+  ipWhitelist     String?
+  ipRestricted    Boolean           @default(false)
+  isValid         Boolean           @default(false)
+  lastValidatedAt DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  accessToken     String?           @db.Text
+  accountNo       String?
+  isPaper         Boolean           @default(true)
+  tokenExpireAt   DateTime?
+  purpose         CredentialPurpose @default(default)
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, exchange, purpose])
+  @@index([userId])
+  @@index([userId, exchange])
+  @@map("credentials")
+}
+
+model InfiniteBuyStock {
+  id               Int                 @id @default(autoincrement())
+  userId           Int
+  ticker           String
+  name             String
+  exchange         String              @default("NAS")
+  buyAmount        Float
+  totalRounds      Int                 @default(40)
+  targetProfit     Float               @default(10)
+  status           InfiniteBuyStatus   @default(buying)
+  currentRound     Int                 @default(0)
+  totalInvested    Float               @default(0)
+  totalQuantity    Float               @default(0)
+  avgPrice         Float               @default(0)
+  autoEnabled      Boolean             @default(true)
+  buyTime          String?
+  buyCondition     String              @default("daily")
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  completedAt      DateTime?
+  strategy         InfiniteBuyStrategy @default(basic)
+  accountNo        String              @default("")
+  vrBandPercent    Float?              @default(15)
+  vrCycleStartDate DateTime?
+  vrCycleWeeks     Int?                @default(2)
+  vrDepositAmount  Float?
+  vrGradient       Int?                @default(10)
+  vrLastCycleDate  DateTime?
+  vrPool           Float?
+  vrStyle          String?
+  vrValue          Float?
+  buyRecords       InfiniteBuyRecord[]
+  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, accountNo])
+  @@index([userId, accountNo, ticker])
+  @@index([status])
+  @@map("infinite_buy_stocks")
+}
+
+model InfiniteBuyRecord {
+  id            Int              @id @default(autoincrement())
+  stockId       Int
+  type          TradeType
+  round         Int?
+  price         Float
+  quantity      Float
+  amount        Float
+  profit        Float?
+  profitPercent Float?
+  orderId       String?
+  orderStatus   String           @default("pending")
+  executedAt    DateTime         @default(now())
+  filledAt      DateTime?
+  orderType     String           @default("market")
+  targetPrice   Float?
+  orderSubType  String?
+  vrOrderIndex  Int?
+  vrTargetBand  String?
+  stock         InfiniteBuyStock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@index([stockId])
+  @@index([type])
+  @@map("infinite_buy_records")
+}
+
+model MonthlyProfit {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  exchange    Exchange
+  month       String
+  totalProfit Float    @default(0)
+  tradeCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, exchange, month])
+  @@index([userId])
+  @@index([month])
+  @@map("monthly_profits")
+}
+
+model ProfitSnapshot {
+  id               Int      @id @default(autoincrement())
+  userId           Int
+  exchange         Exchange
+  ticker           String
+  botType          String   @default("grid")
+  finalProfit      Float
+  totalTrades      Int
+  investmentAmount Float
+  profitPercent    Float
+  startedAt        DateTime
+  deletedAt        DateTime @default(now())
+  runningDays      Int
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([deletedAt])
+  @@map("profit_snapshots")
+}
+
+model SchedulerLog {
+  id           Int                @id @default(autoincrement())
+  type         SchedulerLogType
+  status       SchedulerLogStatus
+  stockId      Int?
+  ticker       String?
+  message      String             @db.Text
+  details      String?            @db.Text
+  errorMessage String?            @db.Text
+  executedAt   DateTime           @default(now())
+
+  @@index([type])
+  @@index([status])
+  @@index([executedAt])
+  @@index([stockId])
+  @@map("scheduler_logs")
+}
+
+model Subscription {
+  id                   Int            @id @default(autoincrement())
+  userId               Int            @unique
+  plan                 PlanType       @default(free)
+  status               String         @default("active")
+  paymentMethod        PaymentMethod?
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean        @default(false)
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  user                 User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([plan])
+  @@map("subscriptions")
+}
+
+model UsdtDeposit {
+  id              Int       @id @default(autoincrement())
+  userId          Int
+  address         String
+  uniqueCode      String
+  expectedAmount  Float
+  status          String    @default("pending")
+  txHash          String?
+  confirmedAmount Float?
+  confirmedAt     DateTime?
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([uniqueCode, status])
+  @@map("usdt_deposits")
+}
+
+model UsdtPayment {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  txHash      String
+  fromAddress String
+  amount      Float
+  periodStart DateTime
+  periodEnd   DateTime
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([txHash])
+  @@map("usdt_payments")
+}
+
+model UpbitDonation {
+  id              Int              @id @default(autoincrement())
+  userId          Int
+  currency        DonationCurrency
+  expectedAmount  Float
+  status          DonationStatus   @default(pending)
+  txId            String?
+  confirmedAmount Float?
+  confirmedAt     DateTime?
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  expiresAt       DateTime
+  createdAt       DateTime         @default(now())
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([currency, status])
+  @@index([expectedAmount, currency, status])
+  @@map("upbit_donations")
+}
+
+model PushSubscription {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  endpoint    String   @db.Text
+  p256dh      String   @db.Text
+  auth        String   @db.Text
+  orderFilled Boolean  @default(true)
+  priceAlert  Boolean  @default(true)
+  dailyReport Boolean  @default(false)
+  userAgent   String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+model WhaleTransaction {
+  id              Int                  @id @default(autoincrement())
+  txId            String               @unique
+  txHash          String
+  blockchain      String
+  symbol          String
+  amount          Float
+  amountUsd       Float
+  fromAddress     String               @db.Text
+  fromOwner       String
+  fromOwnerType   String
+  toAddress       String               @db.Text
+  toOwner         String
+  toOwnerType     String
+  transactionType WhaleTransactionType
+  signal          WhaleSignal
+  timestamp       Int
+  createdAt       DateTime             @default(now())
+
+  @@index([symbol])
+  @@index([timestamp])
+  @@index([symbol, timestamp])
+  @@map("whale_transactions")
+}
+
+enum Exchange {
+  upbit
+  binance
+  kis
+}
+
+enum BotStatus {
+  running
+  stopped
+  error
+  deleting
 }
 
 enum GridLevelStatus {
@@ -107,292 +419,45 @@ enum TradeType {
   sell
 }
 
-model GridLevel {
-  id         Int              @id @default(autoincrement())
-  botId      Int
-  bot        Bot              @relation(fields: [botId], references: [id], onDelete: Cascade)
-  price      Float
-  sellPrice  Float?           // 매수 레벨일 때: 이 가격에 매수 후 sellPrice에 매도
-  buyPrice   Float?           // 매도 레벨일 때: 이 가격에 매도 후 buyPrice에 매수
-  type       TradeType
-  status     GridLevelStatus  @default(available)
-  orderId    String?
-  filledAt   DateTime?
-  createdAt  DateTime         @default(now())
-  updatedAt  DateTime         @updatedAt
-  trades     Trade[]
-
-  @@index([botId])
-  @@index([botId, status])
-  @@index([status])
-  @@map("grid_levels")
-}
-
 enum TradeStatus {
   pending
   filled
   cancelled
 }
 
-model Trade {
-  id           Int         @id @default(autoincrement())
-  botId        Int         // Soft delete로 봇이 실제 삭제되지 않으므로 NOT NULL 유지
-  bot          Bot         @relation(fields: [botId], references: [id])
-  gridLevelId  Int?
-  gridLevel    GridLevel?  @relation(fields: [gridLevelId], references: [id], onDelete: SetNull)
-  type         TradeType
-  price        Float
-  amount       Float
-  total        Float
-  profit       Float?
-  orderId      String
-  status       TradeStatus @default(pending)
-  executedAt   DateTime    @default(now())
-  filledAt     DateTime?
-  createdAt    DateTime    @default(now())
-
-  @@index([botId])
-  @@index([botId, status])
-  @@index([gridLevelId])
-  @@map("trades")
-}
-
-// Credential 용도 (전략별 계좌 분리)
 enum CredentialPurpose {
-  default        // 기본 (폴백용)
-  infinite_buy   // 무한매수 전용
-  vr             // VR 전략 전용
+  default
+  infinite_buy
+  vr
 }
-
-model Credential {
-  id              Int       @id @default(autoincrement())
-  userId          Int
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  exchange        Exchange
-  purpose         CredentialPurpose @default(default)  // 용도 (전략별 분리)
-  apiKey          String    @db.Text
-  secretKey       String    @db.Text
-  ipWhitelist     String?
-  ipRestricted    Boolean   @default(false)
-  isValid         Boolean   @default(false)
-  lastValidatedAt DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  // 한국투자증권(KIS) 전용 필드
-  accountNo       String?           // 계좌번호 (예: 12345678-01)
-  isPaper         Boolean   @default(true)  // 모의투자 여부
-  accessToken     String?   @db.Text  // OAuth Access Token
-  tokenExpireAt   DateTime?         // 토큰 만료 시간
-
-  @@unique([userId, exchange, purpose])
-  @@index([userId])
-  @@index([userId, exchange])
-  @@map("credentials")
-}
-
-// ============ 무한매수법 (Infinite Buy) ============
 
 enum InfiniteBuyStatus {
-  buying      // 매수 진행중
-  completed   // 익절 완료
-  stopped     // 중단됨
+  buying
+  completed
+  stopped
 }
 
 enum InfiniteBuyStrategy {
-  basic       // 기본 전략 (단순 분할매수)
-  strategy1   // 무한매수전략1 (전반전/후반전 LOC 매수)
-  vr          // 밸류 리밸런싱 (VR)
+  basic
+  strategy1
+  vr
 }
-
-// 무한매수 종목
-model InfiniteBuyStock {
-  id              Int       @id @default(autoincrement())
-  userId          Int
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  accountNo       String    @default("")  // 계좌번호 (계좌별 분리)
-
-  // 종목 정보
-  ticker          String                // 티커 (예: AAPL, TSLA)
-  name            String                // 종목명 (예: Apple Inc.)
-  exchange        String    @default("NAS")  // 거래소 (NAS, NYS, AMS)
-
-  // 무한매수 설정
-  buyAmount       Float                 // 1회 매수금액 (USD)
-  totalRounds     Int       @default(40) // 총 분할 횟수
-  targetProfit    Float     @default(10) // 목표 수익률 (%)
-  strategy        InfiniteBuyStrategy @default(basic) // 매수 전략
-
-  // 현재 상태
-  status          InfiniteBuyStatus @default(buying)
-  currentRound    Int       @default(0)  // 현재 회차
-  totalInvested   Float     @default(0)  // 총 투자금
-  totalQuantity   Float     @default(0)  // 총 보유수량
-  avgPrice        Float     @default(0)  // 평균단가
-
-  // 자동매수 설정
-  autoEnabled     Boolean   @default(true)
-  buyTime         String?              // 매수 시간 (예: "09:30")
-  buyCondition    String    @default("daily") // daily, weekly, condition
-
-  // VR 전략 설정
-  vrValue           Float?              // V값 (목표 평가금)
-  vrPool            Float?              // P값 (보유 현금)
-  vrGradient        Int?      @default(10)  // G값 (기울기, 10 또는 20)
-  vrStyle           String?             // 운용 스타일: deposit, hold, withdraw
-  vrDepositAmount   Float?              // 사이클당 적립금/인출금
-  vrBandPercent     Float?    @default(15)  // 밴드 범위 (%)
-  vrCycleWeeks      Int?      @default(2)   // 사이클 주기 (주 단위, 1~4)
-  vrCycleStartDate  DateTime?           // 현재 사이클 시작일
-  vrLastCycleDate   DateTime?           // 마지막 사이클 실행일
-
-  // 타임스탬프
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  completedAt     DateTime?            // 익절 완료 시간
-
-  // 관계
-  buyRecords      InfiniteBuyRecord[]
-
-  @@index([userId])
-  @@index([userId, accountNo])  // 계좌별 조회용
-  @@index([userId, accountNo, ticker])  // 계좌+종목 조회용
-  @@index([status])
-  @@map("infinite_buy_stocks")
-}
-
-// 무한매수 기록
-model InfiniteBuyRecord {
-  id              Int       @id @default(autoincrement())
-  stockId         Int
-  stock           InfiniteBuyStock @relation(fields: [stockId], references: [id], onDelete: Cascade)
-
-  // 거래 정보
-  type            TradeType             // buy, sell
-  round           Int?                  // 회차 (매수시)
-  price           Float                 // 체결 가격
-  quantity        Float                 // 체결 수량
-  amount          Float                 // 체결 금액
-
-  // LOC 주문 정보 (전략1용)
-  orderType       String    @default("market") // market, loc (Limit on Close)
-  targetPrice     Float?                // LOC 목표가격
-  orderSubType    String?               // 전략1: "first_half_a", "first_half_b", "second_half", "sell_a", "sell_b"
-
-  // 매도시 수익 정보
-  profit          Float?                // 실현 손익
-  profitPercent   Float?                // 실현 수익률
-
-  // KIS 주문 정보
-  orderId         String?               // KIS 주문번호
-  orderStatus     String    @default("pending") // pending, filled, cancelled
-
-  // VR 전략 주문 정보
-  vrOrderIndex    Int?                  // VR 주문 순번 (1번째 매수, 2번째 매수...)
-  vrTargetBand    String?               // min 또는 max (밴드 방향)
-
-  // 타임스탬프
-  executedAt      DateTime  @default(now())  // 주문 접수 시간
-  filledAt        DateTime?                   // 체결 확인 시간
-
-  @@index([stockId])
-  @@index([type])
-  @@map("infinite_buy_records")
-}
-
-// ============ 수익 히스토리 (Profit History) ============
-
-// 월별 수익 집계
-model MonthlyProfit {
-  id              Int       @id @default(autoincrement())
-  userId          Int
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  exchange        Exchange  // upbit, kis
-  month           String    // YYYY-MM 형식 (예: 2024-01)
-  totalProfit     Float     @default(0)  // 월 총 수익
-  tradeCount      Int       @default(0)  // 거래 횟수
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  @@unique([userId, exchange, month])
-  @@index([userId])
-  @@index([month])
-  @@map("monthly_profits")
-}
-
-// 삭제된 봇 성과 스냅샷
-model ProfitSnapshot {
-  id              Int       @id @default(autoincrement())
-  userId          Int
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  exchange        Exchange  // upbit, kis
-  ticker          String    // 종목 티커
-  botType         String    @default("grid")  // grid, infinite_buy
-
-  // 최종 성과
-  finalProfit     Float     // 최종 수익
-  totalTrades     Int       // 총 거래 횟수
-  investmentAmount Float    // 투자금액
-  profitPercent   Float     // 수익률
-
-  // 운영 기간
-  startedAt       DateTime  // 봇 시작일
-  deletedAt       DateTime  @default(now())  // 삭제일
-  runningDays     Int       // 운영 일수
-
-  @@index([userId])
-  @@index([deletedAt])
-  @@map("profit_snapshots")
-}
-
-// ============ 스케줄러 로그 (Scheduler Log) ============
 
 enum SchedulerLogType {
-  auto_buy        // 자동 매수 스케줄
-  strategy1_buy   // 전략1 LOC 매수
-  vr_cycle        // VR 사이클 실행
-  vr_order        // VR 주문 생성/체결
-  price_check     // 가격 체크 (익절)
-  order_check     // 주문 체결 확인
+  auto_buy
+  strategy1_buy
+  vr_cycle
+  vr_order
+  price_check
+  order_check
 }
 
 enum SchedulerLogStatus {
-  started         // 시작됨
-  completed       // 완료
-  skipped         // 스킵됨
-  error           // 에러
+  started
+  completed
+  skipped
+  error
 }
-
-// 스케줄러 실행 로그
-model SchedulerLog {
-  id              Int       @id @default(autoincrement())
-
-  // 실행 정보
-  type            SchedulerLogType      // 로그 타입
-  status          SchedulerLogStatus    // 실행 상태
-
-  // 대상 정보 (선택적)
-  stockId         Int?                  // 관련 종목 ID
-  ticker          String?               // 티커
-
-  // 실행 결과
-  message         String    @db.Text    // 로그 메시지
-  details         String?   @db.Text    // 상세 정보 (JSON)
-
-  // 에러 정보
-  errorMessage    String?   @db.Text    // 에러 메시지
-
-  // 타임스탬프
-  executedAt      DateTime  @default(now())
-
-  @@index([type])
-  @@index([status])
-  @@index([executedAt])
-  @@index([stockId])
-  @@map("scheduler_logs")
-}
-
-// ============ 구독 (Subscription) ============
 
 enum PlanType {
   free
@@ -405,149 +470,17 @@ enum PaymentMethod {
   usdt
 }
 
-// 사용자 구독
-model Subscription {
-  id                  Int           @id @default(autoincrement())
-  userId              Int           @unique
-  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  plan                PlanType      @default(free)
-  status              String        @default("active")  // active, cancelled, past_due
-  paymentMethod       PaymentMethod?
-
-  // Stripe 관련
-  stripeCustomerId    String?
-  stripeSubscriptionId String?
-
-  // 구독 기간
-  currentPeriodStart  DateTime?
-  currentPeriodEnd    DateTime?
-  cancelAtPeriodEnd   Boolean       @default(false)
-
-  createdAt           DateTime      @default(now())
-  updatedAt           DateTime      @updatedAt
-
-  @@index([userId])
-  @@index([plan])
-  @@map("subscriptions")
-}
-
-// USDT 입금 요청
-model UsdtDeposit {
-  id              Int       @id @default(autoincrement())
-  userId          Int
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  address         String    // 입금 주소
-  uniqueCode      String    // 6자리 고유 코드
-  expectedAmount  Float     // 예상 금액 (10 USDT)
-  status          String    @default("pending")  // pending, confirmed, expired
-
-  // 확인 정보
-  txHash          String?   // 트랜잭션 해시
-  confirmedAmount Float?    // 실제 입금 금액
-  confirmedAt     DateTime? // 입금 확인 시간
-
-  expiresAt       DateTime  // 만료 시간
-  createdAt       DateTime  @default(now())
-
-  @@index([userId])
-  @@index([status])
-  @@index([uniqueCode, status])
-  @@map("usdt_deposits")
-}
-
-// USDT 결제 내역
-model UsdtPayment {
-  id              Int       @id @default(autoincrement())
-  userId          Int
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  txHash          String    // 트랜잭션 해시
-  fromAddress     String    // 발신 주소
-  amount          Float     // 입금 금액
-
-  periodStart     DateTime  // 구독 시작일
-  periodEnd       DateTime  // 구독 종료일
-
-  createdAt       DateTime  @default(now())
-
-  @@index([userId])
-  @@index([txHash])
-  @@map("usdt_payments")
-}
-
-// ============ 업비트 후원 (Upbit Donation) ============
-
 enum DonationCurrency {
   KRW
   USDT
 }
 
 enum DonationStatus {
-  pending     // 입금 대기
-  confirmed   // 입금 확인됨
-  expired     // 만료됨
+  pending
+  confirmed
+  expired
 }
 
-// 업비트 후원 요청
-model UpbitDonation {
-  id              Int       @id @default(autoincrement())
-  userId          Int
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  currency        DonationCurrency  // KRW 또는 USDT
-  expectedAmount  Float     // 예상 금액 (고유 금액)
-  status          DonationStatus @default(pending)
-
-  // 확인 정보
-  txId            String?   // 업비트 입금 UUID
-  confirmedAmount Float?    // 실제 입금 금액
-  confirmedAt     DateTime? // 입금 확인 시간
-
-  // 구독 기간
-  periodStart     DateTime? // 구독 시작일
-  periodEnd       DateTime? // 구독 종료일
-
-  expiresAt       DateTime  // 입금 대기 만료 시간
-  createdAt       DateTime  @default(now())
-
-  @@index([userId])
-  @@index([status])
-  @@index([currency, status])
-  @@index([expectedAmount, currency, status])
-  @@map("upbit_donations")
-}
-
-// ============ 푸시 알림 (Push Notifications) ============
-
-model PushSubscription {
-  id              Int       @id @default(autoincrement())
-  userId          Int
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  // Web Push 구독 정보
-  endpoint        String    @db.Text
-  p256dh          String    @db.Text  // 암호화 키
-  auth            String    @db.Text  // 인증 토큰
-
-  // 알림 설정
-  orderFilled     Boolean   @default(true)  // 주문 체결 알림
-  priceAlert      Boolean   @default(true)  // 가격 알림
-  dailyReport     Boolean   @default(false) // 일일 리포트
-
-  // 메타 정보
-  userAgent       String?   @db.Text
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  @@index([userId])
-  @@map("push_subscriptions")
-}
-
-// ============ 고래 활동 (Whale Alert) ============
-
-// 고래 거래 유형
 enum WhaleTransactionType {
   exchange_to_wallet
   wallet_to_exchange
@@ -556,49 +489,8 @@ enum WhaleTransactionType {
   unknown
 }
 
-// 고래 거래 신호
 enum WhaleSignal {
   bullish
   bearish
   neutral
-}
-
-// 고래 거래 기록
-model WhaleTransaction {
-  id              Int       @id @default(autoincrement())
-
-  // 거래 식별
-  txId            String    @unique  // Whale Alert API의 거래 ID
-  txHash          String    // 블록체인 트랜잭션 해시
-
-  // 코인 정보
-  blockchain      String    // bitcoin, ethereum, ripple
-  symbol          String    // BTC, ETH, XRP
-
-  // 금액
-  amount          Float     // 코인 수량
-  amountUsd       Float     // USD 가치
-
-  // 발신자
-  fromAddress     String    @db.Text
-  fromOwner       String    // 거래소명 또는 unknown
-  fromOwnerType   String    // exchange, wallet, unknown
-
-  // 수신자
-  toAddress       String    @db.Text
-  toOwner         String
-  toOwnerType     String
-
-  // 분류
-  transactionType WhaleTransactionType
-  signal          WhaleSignal
-
-  // 타임스탬프
-  timestamp       Int       // Unix timestamp (API 원본)
-  createdAt       DateTime  @default(now())
-
-  @@index([symbol])
-  @@index([timestamp])
-  @@index([symbol, timestamp])
-  @@map("whale_transactions")
 }
