@@ -265,6 +265,13 @@ export class TradingService {
         } catch (error: any) {
           console.error(`매수 주문 실패 (Bot ${botId}):`, error.message);
 
+          // 주문 실패 시 그리드 상태를 available로 복구 (재주문 가능하도록)
+          await prisma.gridLevel.updateMany({
+            where: { id: executableGrids.buy.id, status: 'pending', orderId: null },
+            data: { status: 'available' },
+          });
+          console.log(`[Trading] Bot ${botId}: 매수 주문 실패 → 그리드 ${executableGrids.buy.id} available로 복구`);
+
           // 에러 메시지 저장
           await prisma.bot.update({
             where: { id: botId },
@@ -343,6 +350,13 @@ export class TradingService {
           }
         } catch (error: any) {
           console.error(`매도 주문 실패 (Bot ${botId}):`, error.message);
+
+          // 주문 실패 시 그리드 상태를 available로 복구 (재주문 가능하도록)
+          await prisma.gridLevel.updateMany({
+            where: { id: executableGrids.sell.id, status: 'pending', orderId: null },
+            data: { status: 'available' },
+          });
+          console.log(`[Trading] Bot ${botId}: 매도 주문 실패 → 그리드 ${executableGrids.sell.id} available로 복구`);
 
           // 에러 메시지 저장
           await prisma.bot.update({
