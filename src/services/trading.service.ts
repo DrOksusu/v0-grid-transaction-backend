@@ -25,6 +25,9 @@ interface CachedBotInfo {
 const botInfoCache = new Map<number, CachedBotInfo>();
 const BOT_INFO_CACHE_TTL = 60 * 1000; // 1분
 
+// 봇별 마지막 확인 가격 (가격 크로싱 감지용)
+const lastCheckedPriceMap = new Map<number, number>();
+
 // 사용자별 자격증명 캐시 (중앙 집중식 조회용)
 interface UserCredentialCache {
   apiKey: string;
@@ -34,6 +37,11 @@ interface UserCredentialCache {
 const userCredentialCache = new Map<number, UserCredentialCache>(); // userId -> credential
 
 export class TradingService {
+  // 봇 중지 시 마지막 확인 가격 캐시 정리
+  static clearLastCheckedPrice(botId: number) {
+    lastCheckedPriceMap.delete(botId);
+  }
+
   // 사용자별 자격증명 조회 (중앙 집중식 조회용)
   private static async getUserCredential(userId: number): Promise<{ apiKey: string; secretKey: string } | null> {
     const now = Date.now();
@@ -183,6 +191,11 @@ export class TradingService {
       // 현재가 조회 (WebSocket 캐시 우선, 없으면 REST 폴백)
       const currentPrice = await priceManager.getPriceWithFallback(bot.ticker);
 
+      // 이전 가격 조회 (가격 크로싱 감지용)
+      const previousPrice = lastCheckedPriceMap.get(botId);
+      // 현재가 저장 (다음 사이클에서 크로싱 감지에 사용)
+      lastCheckedPriceMap.set(botId, currentPrice);
+
       // 현재가 조회 성공 시 기존 에러 메시지 제거 (일시적 에러 복구)
       if (bot.errorMessage) {
         await prisma.bot.update({
@@ -191,23 +204,23 @@ export class TradingService {
         });
       }
 
-      // 실행 가능한 그리드 찾기
-      const executableGrids = await GridService.findExecutableGrids(botId, currentPrice);
+      // 실행 가능한 그리드 찾기 (가격 크로싱 감지 방식)
+      const executableGrids = await GridService.findExecutableGrids(botId, currentPrice, previousPrice);
 
       // 실행할 주문이 있을 때만 로깅
-      if (executableGrids.buy || executableGrids.sell) {
-        console.log(`[Trading] Bot ${botId} (${bot.ticker}): price=${currentPrice.toLocaleString()}, buy:${executableGrids.buy?.price || '-'}, sell:${executableGrids.sell?.price || '-'}`);
+      if (executableGrids.buys.length > 0 || executableGrids.sell) {
+        console.log(`[Trading] Bot ${botId} (${bot.ticker}): price=${currentPrice.toLocaleString()}, buys:[${executableGrids.buys.map((b: any) => b.price).join(',')}], sell:${executableGrids.sell?.price || '-'}`);
       }
 
       let executed = false;
 
-      // 매수 주문 실행 (지정가 주문)
-      if (executableGrids.buy) {
+      // 매수 주문 실행 (가격 크로싱된 모든 그리드 레벨에 대해)
+      for (const buyGrid of executableGrids.buys) {
         try {
           // Race condition 방지: 상태가 여전히 available인 경우에만 pending으로 변경
           const updateResult = await prisma.gridLevel.updateMany({
             where: {
-              id: executableGrids.buy.id,
+              id: buyGrid.id,
               status: 'available',  // 아직 available 상태인 경우에만
             },
             data: {
@@ -217,30 +230,30 @@ export class TradingService {
 
           // 이미 다른 프로세스가 처리 중이면 스킵
           if (updateResult.count === 0) {
-            console.log(`[Trading] Bot ${botId}: 매수 그리드가 이미 처리 중입니다 (${executableGrids.buy.price}원)`);
+            console.log(`[Trading] Bot ${botId}: 매수 그리드가 이미 처리 중입니다 (${buyGrid.price}원)`);
           } else {
-            console.log(`[Trading] Bot ${botId}: 지정가 매수 주문 - ${executableGrids.buy.price}원`);
+            console.log(`[Trading] Bot ${botId}: 지정가 매수 주문 - ${buyGrid.price}원`);
 
-            const volume = bot.orderAmount / executableGrids.buy.price;
+            const volume = bot.orderAmount / buyGrid.price;
 
             const order = await upbit.buyLimit(
               bot.ticker,
-              executableGrids.buy.price,
+              buyGrid.price,
               volume
             );
 
             // orderId 업데이트
             await prisma.gridLevel.update({
-              where: { id: executableGrids.buy.id },
+              where: { id: buyGrid.id },
               data: { orderId: order.uuid },
             });
 
             const newTrade = await prisma.trade.create({
               data: {
                 botId,
-                gridLevelId: executableGrids.buy.id,
+                gridLevelId: buyGrid.id,
                 type: 'buy',
-                price: executableGrids.buy.price,
+                price: buyGrid.price,
                 amount: volume,
                 total: bot.orderAmount,
                 orderId: order.uuid,
@@ -250,7 +263,7 @@ export class TradingService {
             socketService.emitNewTrade(botId, {
               id: newTrade.id,
               type: 'buy',
-              price: executableGrids.buy.price,
+              price: buyGrid.price,
               amount: volume,
               total: bot.orderAmount,
               orderId: order.uuid,
@@ -258,7 +271,7 @@ export class TradingService {
               createdAt: newTrade.createdAt,
             });
 
-            console.log(`[Trading] Bot ${botId}: 지정가 매수 주문 완료 - ${executableGrids.buy.price.toLocaleString()}원`);
+            console.log(`[Trading] Bot ${botId}: 지정가 매수 주문 완료 - ${buyGrid.price.toLocaleString()}원`);
 
             executed = true;
           }
@@ -267,10 +280,10 @@ export class TradingService {
 
           // 주문 실패 시 그리드 상태를 available로 복구 (재주문 가능하도록)
           await prisma.gridLevel.updateMany({
-            where: { id: executableGrids.buy.id, status: 'pending', orderId: null },
+            where: { id: buyGrid.id, status: 'pending', orderId: null },
             data: { status: 'available' },
           });
-          console.log(`[Trading] Bot ${botId}: 매수 주문 실패 → 그리드 ${executableGrids.buy.id} available로 복구`);
+          console.log(`[Trading] Bot ${botId}: 매수 주문 실패 → 그리드 ${buyGrid.id} available로 복구`);
 
           // 에러 메시지 저장
           await prisma.bot.update({
@@ -282,8 +295,22 @@ export class TradingService {
           socketService.emitError(botId, {
             type: 'order_failed',
             message: `매수 주문 실패: ${error.message}`,
-            details: `가격: ${executableGrids.buy.price.toLocaleString()}원`,
+            details: `가격: ${buyGrid.price.toLocaleString()}원`,
           });
+
+          // 잔고 부족 에러면 나머지 매수 주문도 실패할 가능성 높으므로 중단
+          const isBalanceError = error.message.includes('부족') ||
+                                 error.message.includes('insufficient') ||
+                                 error.message.includes('balance');
+          if (isBalanceError) {
+            console.log(`[Trading] Bot ${botId}: 잔고 부족으로 남은 매수 주문 중단`);
+            break;
+          }
+        }
+
+        // API rate limit 방지: 여러 주문 사이에 200ms 대기
+        if (executableGrids.buys.length > 1) {
+          await new Promise(resolve => setTimeout(resolve, 200));
         }
       }
 
