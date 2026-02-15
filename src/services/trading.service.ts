@@ -28,6 +28,10 @@ const BOT_INFO_CACHE_TTL = 60 * 1000; // 1분
 // 봇별 마지막 확인 가격 (가격 크로싱 감지용)
 const lastCheckedPriceMap = new Map<number, number>();
 
+// 봇별 잔고 부족 쿨다운 (반복 주문 실패 방지)
+const balanceErrorCooldownMap = new Map<number, number>(); // botId -> 쿨다운 만료 시각
+const BALANCE_ERROR_COOLDOWN_MS = 5 * 60 * 1000; // 5분
+
 // 사용자별 자격증명 캐시 (중앙 집중식 조회용)
 interface UserCredentialCache {
   apiKey: string;
@@ -37,9 +41,10 @@ interface UserCredentialCache {
 const userCredentialCache = new Map<number, UserCredentialCache>(); // userId -> credential
 
 export class TradingService {
-  // 봇 중지 시 마지막 확인 가격 캐시 정리
+  // 봇 중지 시 캐시 정리
   static clearLastCheckedPrice(botId: number) {
     lastCheckedPriceMap.delete(botId);
+    balanceErrorCooldownMap.delete(botId);
   }
 
   // 사용자별 자격증명 조회 (중앙 집중식 조회용)
@@ -215,7 +220,18 @@ export class TradingService {
       let executed = false;
 
       // 매수 주문 실행 (가격 크로싱된 모든 그리드 레벨에 대해)
-      for (const buyGrid of executableGrids.buys) {
+      // 잔고 부족 쿨다운 체크: 5분간 매수 주문 스킵
+      const cooldownExpire = balanceErrorCooldownMap.get(botId);
+      const isCooldown = cooldownExpire && Date.now() < cooldownExpire;
+      if (isCooldown && executableGrids.buys.length > 0) {
+        const remainSec = Math.ceil((cooldownExpire - Date.now()) / 1000);
+        // 1분마다만 로깅 (매 사이클 로깅 방지)
+        if (remainSec % 60 < 10) {
+          console.log(`[Trading] Bot ${botId}: 잔고 부족 쿨다운 중 (${remainSec}초 남음), 매수 스킵`);
+        }
+      }
+
+      for (const buyGrid of isCooldown ? [] : executableGrids.buys) {
         try {
           // Race condition 방지: 상태가 여전히 available인 경우에만 pending으로 변경
           const updateResult = await prisma.gridLevel.updateMany({
@@ -273,6 +289,9 @@ export class TradingService {
 
             console.log(`[Trading] Bot ${botId}: 지정가 매수 주문 완료 - ${buyGrid.price.toLocaleString()}원`);
 
+            // 매수 성공 시 잔고 부족 쿨다운 해제
+            balanceErrorCooldownMap.delete(botId);
+
             executed = true;
           }
         } catch (error: any) {
@@ -285,27 +304,37 @@ export class TradingService {
           });
           console.log(`[Trading] Bot ${botId}: 매수 주문 실패 → 그리드 ${buyGrid.id} available로 복구`);
 
-          // 에러 메시지 저장
+          // 잔고 부족 에러면 5분 쿨다운 설정 후 즉시 중단
+          const isBalanceError = error.message.includes('부족') ||
+                                 error.message.includes('insufficient') ||
+                                 error.message.includes('balance');
+          if (isBalanceError) {
+            balanceErrorCooldownMap.set(botId, Date.now() + BALANCE_ERROR_COOLDOWN_MS);
+            console.log(`[Trading] Bot ${botId}: 잔고 부족 → 매수 5분 쿨다운 설정`);
+
+            // 에러 메시지 저장 + 소켓 알림 (1회만)
+            await prisma.bot.update({
+              where: { id: botId },
+              data: { errorMessage: `잔고 부족으로 매수 일시 중단 (5분 후 재시도)` },
+            });
+            socketService.emitError(botId, {
+              type: 'order_failed',
+              message: `잔고 부족으로 매수 일시 중단 (5분 후 자동 재시도)`,
+              details: `가격: ${buyGrid.price.toLocaleString()}원`,
+            });
+            break;
+          }
+
+          // 그 외 에러: 기존 처리
           await prisma.bot.update({
             where: { id: botId },
             data: { errorMessage: `매수 주문 실패: ${error.message}` },
           });
-
-          // 소켓으로 에러 알림
           socketService.emitError(botId, {
             type: 'order_failed',
             message: `매수 주문 실패: ${error.message}`,
             details: `가격: ${buyGrid.price.toLocaleString()}원`,
           });
-
-          // 잔고 부족 에러면 나머지 매수 주문도 실패할 가능성 높으므로 중단
-          const isBalanceError = error.message.includes('부족') ||
-                                 error.message.includes('insufficient') ||
-                                 error.message.includes('balance');
-          if (isBalanceError) {
-            console.log(`[Trading] Bot ${botId}: 잔고 부족으로 남은 매수 주문 중단`);
-            break;
-          }
         }
 
         // API rate limit 방지: 여러 주문 사이에 200ms 대기
