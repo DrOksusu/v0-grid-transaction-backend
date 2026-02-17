@@ -64,3 +64,49 @@ try {
 - 환경 변수: `src/config/env.ts`
 - 전역 에러 핸들러: `src/middlewares/errorHandler.ts`
 - JWT 인증: `src/middlewares/auth.ts`
+
+## 배포
+1. `npm run build` 성공 확인
+2. `docker build -t grid-backend .`
+3. AWS AppRunner에 배포
+
+---
+
+# 공통 규칙 (프론트엔드 CLAUDE.md와 동기화 유지할 것)
+> 아래 내용을 수정할 경우, 반드시 프론트엔드 `CLAUDE.md`의 동일 섹션도 함께 수정한다.
+> 원본 위치: 루트 `Grid_project/CLAUDE.md`
+
+## 전체 프로젝트 구조
+- `v0-grid-tranasction-backend/` — Express 백엔드 서버 (이 저장소)
+- `v0-grid-transaction-frontend/` — Next.js 프론트엔드 웹앱
+- `grid_trading_app/` — Flutter 모바일 앱 (Android/iOS)
+
+## 서브에이전트 워크플로우
+
+### 역할 분담
+이 프로젝트는 2~3개 Claude Code 터미널을 동시에 열어 병렬 작업이 가능하다:
+
+| 터미널 | 작업 디렉토리 | 역할 |
+|--------|-------------|------|
+| 터미널 1 (백엔드) | `v0-grid-tranasction-backend/` | API, 서비스, DB 작업 |
+| 터미널 2 (프론트엔드) | `v0-grid-transaction-frontend/` | UI, 페이지, 컴포넌트 작업 |
+| 터미널 3 (통합/리뷰) | `Grid_project/` (루트) | 리뷰, 빌드 확인, 커밋, 배포 |
+
+### 작업 간 의존성 규칙
+- **백엔드 API 먼저 → 프론트엔드 연동**: 새 API가 필요한 기능은 백엔드부터 구현
+- **프론트엔드 UI 먼저 가능**: API 완성 전에 UI/목업 먼저 작업 가능
+- **DB 스키마 변경**: 반드시 백엔드 터미널에서 `npx prisma migrate dev` 실행
+- **충돌 방지**: 같은 파일을 동시에 수정하지 않도록 역할 분담 준수
+
+## 커밋 컨벤션
+```
+feat: 새 기능 추가
+fix: 버그 수정
+refactor: 코드 리팩토링 (기능 변경 없음)
+style: 코드 포맷, 세미콜론 등 (기능 변경 없음)
+docs: 문서 추가/수정
+chore: 빌드, 설정 파일 변경
+test: 테스트 추가/수정
+```
+- 제목은 50자 이내, 한국어 사용
+- 예: `feat: 무한매수법 손절 기능 추가`
