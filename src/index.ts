@@ -10,6 +10,7 @@ import { metricsService } from './services/metrics.service';
 import { upbitDonationMonitor } from './services/upbit-donation-monitor.service';
 import { maIndicatorService } from './services/ma-indicator.service';
 import { binancePriceManager } from './services/binance-price-manager';
+import { agentManager, GridAgent, InfiniteBuyAgent } from './agents';
 
 const startServer = async () => {
   try {
@@ -68,7 +69,7 @@ const startServer = async () => {
     // Socket.IO 초기화
     socketService.initialize(httpServer);
 
-    httpServer.listen(config.port, () => {
+    httpServer.listen(config.port, async () => {
       console.log(`Server is running on port ${config.port}`);
       console.log(`Environment: ${config.nodeEnv}`);
 
@@ -81,15 +82,16 @@ const startServer = async () => {
       metricsService.start(poolStats);
       console.log('Metrics service started');
 
+      // AgentManager에 에이전트 등록
+      agentManager.register(new GridAgent());
+      agentManager.register(new InfiniteBuyAgent());
+      console.log('[AgentManager] Agents registered');
+
       // 프로덕션 환경에서만 스케줄러 시작 (중복 주문 방지)
       if (config.nodeEnv === 'production') {
-        // 봇 엔진 시작
-        botEngine.start();
-        console.log('Bot trading engine started');
-
-        // 무한매수법 스케줄러 시작
-        infiniteBuyScheduler.start();
-        console.log('Infinite buy scheduler started');
+        // AgentManager를 통해 봇 엔진 + 무한매수법 스케줄러 시작
+        await agentManager.startAll();
+        console.log('Agent-managed services started (GridAgent, InfiniteBuyAgent)');
 
         // 고래 알림 서비스 시작
         whaleAlertService.start();
@@ -114,26 +116,16 @@ const startServer = async () => {
 
 startServer();
 
-process.on('SIGINT', async () => {
+const gracefulShutdown = async () => {
   metricsService.stop();
-  botEngine.stop();
-  infiniteBuyScheduler.stop();
+  await agentManager.stopAll();
   whaleAlertService.stop();
   upbitDonationMonitor.stop();
   maIndicatorService.stop();
   binancePriceManager.disconnect();
   await prisma.$disconnect();
   process.exit(0);
-});
+};
 
-process.on('SIGTERM', async () => {
-  metricsService.stop();
-  botEngine.stop();
-  infiniteBuyScheduler.stop();
-  whaleAlertService.stop();
-  upbitDonationMonitor.stop();
-  maIndicatorService.stop();
-  binancePriceManager.disconnect();
-  await prisma.$disconnect();
-  process.exit(0);
-});
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
