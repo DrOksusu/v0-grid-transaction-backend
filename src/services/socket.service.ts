@@ -379,6 +379,18 @@ class SocketService {
     return (this.botsSubscribers.get(userId)?.size || 0) > 0;
   }
 
+  // 잔고 업데이트 이벤트 전송 (체결 후 실시간 잔고 갱신)
+  emitBalanceUpdate(userId: number, data: {
+    availableBalance: number;
+    lockedBalance: number;
+    totalBalance: number;
+  }) {
+    if (!this.io) return;
+
+    const room = `user:${userId}:bots`;
+    this.io.to(room).emit('balance:update', { ...data, timestamp: Date.now() });
+  }
+
   // 봇 구독 중인 모든 유저 ID 목록 반환
   getSubscribedUserIds(): number[] {
     const userIds: number[] = [];

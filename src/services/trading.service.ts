@@ -892,6 +892,23 @@ export class TradingService {
         currentProfit: updatedBot.currentProfit,
       });
 
+      // 잔고 업데이트 소켓 전송 (체결 후 실시간 잔고 갱신)
+      try {
+        const accounts = await upbit.getAccounts();
+        const krwAccount = accounts.find((acc: any) => acc.currency === 'KRW');
+        if (krwAccount) {
+          const availableBalance = parseFloat(krwAccount.balance);
+          const lockedBalance = parseFloat(krwAccount.locked);
+          socketService.emitBalanceUpdate(userId, {
+            availableBalance,
+            lockedBalance,
+            totalBalance: availableBalance + lockedBalance,
+          });
+        }
+      } catch (balanceError: any) {
+        console.error(`[Trading] Bot ${botId}: 잔고 업데이트 소켓 전송 실패:`, balanceError.message);
+      }
+
       // 반대 주문 실행
       if (updatedBot.status === 'running') {
         const botInfo = await this.getCachedBotInfo(botId);
