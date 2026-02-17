@@ -33,3 +33,4 @@ coverage
 *.lcov
 .nyc_output
 tmpclaude-*
+nul
