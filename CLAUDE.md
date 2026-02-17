@@ -98,6 +98,25 @@ try {
 - **DB 스키마 변경**: 반드시 백엔드 터미널에서 `npx prisma migrate dev` 실행
 - **충돌 방지**: 같은 파일을 동시에 수정하지 않도록 역할 분담 준수
 
+### 병렬 작업 예시
+```
+기능: "무한매수법에 손절 기능 추가"
+
+터미널 1 (백엔드):
+  → Prisma 스키마에 stopLoss 필드 추가 + 마이그레이션
+  → infinite-buy.service.ts에 손절 로직 구현
+  → API 엔드포인트 추가
+
+터미널 2 (프론트엔드):
+  → 손절 설정 폼 UI 구현 (API 완성 전 가능)
+  → lib/api.ts에 새 API 함수 추가
+  → 페이지에 손절 UI 통합
+
+터미널 3 (통합):
+  → 양쪽 변경사항 리뷰
+  → 전체 빌드 확인 → 커밋 → 배포
+```
+
 ## 커밋 컨벤션
 ```
 feat: 새 기능 추가
@@ -110,3 +129,14 @@ test: 테스트 추가/수정
 ```
 - 제목은 50자 이내, 한국어 사용
 - 예: `feat: 무한매수법 손절 기능 추가`
+
+## 배포 절차
+
+### 프론트엔드 (Vercel)
+1. `v0-grid-transaction-frontend/`에서 `npm run build` 성공 확인
+2. main 브랜치에 push → Vercel 자동 배포
+
+### 백엔드 (Docker → AWS)
+1. `v0-grid-tranasction-backend/`에서 `npm run build` 성공 확인
+2. `docker build -t grid-backend .`
+3. AWS에 배포 (AppRunner 사용)
