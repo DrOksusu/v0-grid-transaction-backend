@@ -4,3 +4,4 @@ export { AgentManager, agentManager } from './agent-manager';
 export { GridAgent } from './grid-agent';
 export { InfiniteBuyAgent } from './infinite-buy-agent';
 export { TestAgent } from './test-agent';
+export { VRAgent } from './vr-agent';

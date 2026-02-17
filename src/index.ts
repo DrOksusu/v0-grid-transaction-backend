@@ -10,7 +10,7 @@ import { metricsService } from './services/metrics.service';
 import { upbitDonationMonitor } from './services/upbit-donation-monitor.service';
 import { maIndicatorService } from './services/ma-indicator.service';
 import { binancePriceManager } from './services/binance-price-manager';
-import { agentManager, GridAgent, InfiniteBuyAgent } from './agents';
+import { agentManager, GridAgent, InfiniteBuyAgent, VRAgent } from './agents';
 
 const startServer = async () => {
   try {
@@ -85,13 +85,14 @@ const startServer = async () => {
       // AgentManager에 에이전트 등록
       agentManager.register(new GridAgent());
       agentManager.register(new InfiniteBuyAgent());
-      console.log('[AgentManager] Agents registered');
+      agentManager.register(new VRAgent());
+      console.log('[AgentManager] Agents registered (GridAgent, InfiniteBuyAgent, VRAgent)');
 
       // 프로덕션 환경에서만 스케줄러 시작 (중복 주문 방지)
       if (config.nodeEnv === 'production') {
         // AgentManager를 통해 봇 엔진 + 무한매수법 스케줄러 시작
         await agentManager.startAll();
-        console.log('Agent-managed services started (GridAgent, InfiniteBuyAgent)');
+        console.log('Agent-managed services started (GridAgent, InfiniteBuyAgent, VRAgent)');
 
         // 고래 알림 서비스 시작
         whaleAlertService.start();
