@@ -12,7 +12,8 @@ class BotEngine {
   private readonly BASE_INTERVAL = 3000; // 기본 체크 주기 3초 (가장 빠른 봇 기준)
   private readonly BROADCAST_INTERVAL = 10000; // 10초마다 봇 데이터 브로드캐스트
   private readonly ORDER_CHECK_INTERVAL = 30000; // 체결 확인 30초 (안전망 역할, 가격 크로스 감지가 주력)
-  private readonly BOT_EXECUTION_DELAY = 300; // 봇 간 실행 딜레이 (ms) - 429 에러 방지
+  private readonly BOT_EXECUTION_DELAY = 300; // 배치 간 딜레이 (ms) - 429 에러 방지
+  private readonly BOT_BATCH_SIZE = 5; // 동시 실행할 봇 수
 
   // 봇별 마지막 실행 시간 추적
   private lastExecutionTime: Map<number, number> = new Map();
@@ -405,31 +406,37 @@ class BotEngine {
       );
       const botsWithGridsSet = new Set(botsWithAvailableGrids.map(g => g.botId));
 
-      // 각 봇에 대해 거래 실행 (429 에러 방지를 위해 순차 실행 + 딜레이)
-      for (let i = 0; i < botsToExecute.length; i++) {
-        const bot = botsToExecute[i];
-        try {
-          // 실행 시간 기록 (그리드 유무와 관계없이)
-          this.lastExecutionTime.set(bot.id, now);
+      // 그리드가 있는 봇만 필터링
+      const executableBots = botsToExecute.filter(bot => {
+        this.lastExecutionTime.set(bot.id, now);
+        return botsWithGridsSet.has(bot.id);
+      });
 
-          // 그리드 레벨이 없으면 스킵 (로그 없이)
-          if (!botsWithGridsSet.has(bot.id)) {
-            continue;
-          }
+      // 봇을 배치(5개씩)로 나눠서 병렬 실행
+      for (let i = 0; i < executableBots.length; i += this.BOT_BATCH_SIZE) {
+        const batch = executableBots.slice(i, i + this.BOT_BATCH_SIZE);
 
-          // 거래 실행
-          const result = await TradingService.executeTrade(bot.id);
-          if (result.executed) {
-            const volatility = priceManager.getVolatility(bot.ticker);
-            console.log(`[BotEngine] Bot ${bot.id} (${bot.ticker}): 거래 실행됨 (변동성: ${volatility.toFixed(2)}%)`);
-          }
+        const results = await Promise.allSettled(
+          batch.map(async (bot) => {
+            const result = await TradingService.executeTrade(bot.id);
+            if (result.executed) {
+              const volatility = priceManager.getVolatility(bot.ticker);
+              console.log(`[BotEngine] Bot ${bot.id} (${bot.ticker}): 거래 실행됨 (변동성: ${volatility.toFixed(2)}%)`);
+            }
+            return result;
+          })
+        );
 
-          // 다음 봇 실행 전 딜레이 (마지막 봇이 아닌 경우만)
-          if (i < botsToExecute.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, this.BOT_EXECUTION_DELAY));
+        // 에러 로깅
+        results.forEach((result, idx) => {
+          if (result.status === 'rejected') {
+            console.error(`[BotEngine] Error executing bot ${batch[idx].id}:`, result.reason?.message);
           }
-        } catch (error: any) {
-          console.error(`[BotEngine] Error executing bot ${bot.id}:`, error.message);
+        });
+
+        // 다음 배치 전 딜레이 (마지막 배치가 아닌 경우)
+        if (i + this.BOT_BATCH_SIZE < executableBots.length) {
+          await new Promise(resolve => setTimeout(resolve, this.BOT_EXECUTION_DELAY));
         }
       }
 

@@ -157,73 +157,67 @@ export class GridService {
     });
   }
 
-  // 현재가 기준으로 실행할 그리드 레벨 찾기 (하이브리드 방식)
+  // 현재가 기준으로 실행할 그리드 레벨 찾기 (하이브리드 방식, 병렬 쿼리)
   // 1. 크로싱 감지: 이전 가격→현재 가격 사이를 지나간 그리드 레벨 (상승/하락 모두 대응)
   // 2. 하방 매수 대기: 현재가 아래의 가장 가까운 available 매수 레벨 (하락 대비 지정가 매수)
+  // 3. 매도: 현재가 이상의 가장 가까운 available 매도 레벨
   static async findExecutableGrids(botId: number, currentPrice: number, previousPrice?: number) {
-    let buyLevels: any[] = [];
+    // 매수 + 매도 쿼리를 병렬 실행 (3쿼리 순차 → 2쿼리 병렬)
+    const upperPriceBound = previousPrice !== undefined
+      ? Math.max(currentPrice, previousPrice)
+      : currentPrice;
 
-    // 1단계: 가격 크로싱 감지 (상승장에서 매수 가능하게)
-    if (previousPrice !== undefined && previousPrice !== currentPrice) {
-      const lowerBound = Math.min(previousPrice, currentPrice);
-      const upperBound = Math.max(previousPrice, currentPrice);
-
-      buyLevels = await prisma.gridLevel.findMany({
+    const [allAvailableBuys, sellLevels] = await Promise.all([
+      // 매수 후보: 크로싱 범위 + 하방 대기 모두 포함하는 단일 쿼리
+      prisma.gridLevel.findMany({
         where: {
           botId,
           type: 'buy',
           status: 'available',
-          price: {
-            gt: lowerBound,
-            lte: upperBound,
-          },
+          price: { lte: upperPriceBound },
         },
         orderBy: { price: 'asc' },
-      });
+      }),
+      // 매도: 현재가 이상의 가장 가까운 available 매도 레벨
+      prisma.gridLevel.findMany({
+        where: {
+          botId,
+          type: 'sell',
+          status: 'available',
+          price: { gte: currentPrice },
+        },
+        orderBy: { price: 'asc' },
+        take: 1,
+      }),
+    ]);
+
+    // JS에서 크로싱 + 하방 매수 분류 (DB 쿼리 대신 메모리 필터링)
+    let buyLevels: any[] = [];
+
+    // 1단계: 크로싱 감지
+    if (previousPrice !== undefined && previousPrice !== currentPrice) {
+      const lowerBound = Math.min(previousPrice, currentPrice);
+      const upperBound = Math.max(previousPrice, currentPrice);
+
+      buyLevels = allAvailableBuys.filter((b: any) => b.price > lowerBound && b.price <= upperBound);
 
       if (buyLevels.length > 0) {
         console.log(`[GridService] Bot ${botId}: 가격 크로싱 감지 (${previousPrice.toLocaleString()} → ${currentPrice.toLocaleString()}), ${buyLevels.length}개 매수 레벨 발견: [${buyLevels.map((b: any) => b.price).join(', ')}]`);
       }
     }
 
-    // 2단계: 하방 매수 대기 (현재가 아래 가장 가까운 available 매수 레벨 1개)
-    // 가격 하락에 대비하여 지정가 매수 주문을 미리 걸어둠
-    const belowBuyLevels = await prisma.gridLevel.findMany({
-      where: {
-        botId,
-        type: 'buy',
-        status: 'available',
-        price: {
-          lte: currentPrice,
-        },
-      },
-      orderBy: { price: 'desc' },
-      take: 1,
-    });
+    // 2단계: 하방 매수 대기 (현재가 이하에서 가장 높은 1개)
+    const belowBuys = allAvailableBuys.filter((b: any) => b.price <= currentPrice);
+    const belowBuy = belowBuys.length > 0 ? belowBuys[belowBuys.length - 1] : null; // 이미 asc 정렬이므로 마지막이 가장 높음
 
-    // 중복 방지: 크로싱으로 이미 찾은 레벨이 아닌 경우에만 추가
-    if (belowBuyLevels[0] && !buyLevels.some((b: any) => b.id === belowBuyLevels[0].id)) {
-      buyLevels.push(belowBuyLevels[0]);
-      console.log(`[GridService] Bot ${botId}: 하방 매수 대기 - ${belowBuyLevels[0].price.toLocaleString()}원`);
+    if (belowBuy && !buyLevels.some((b: any) => b.id === belowBuy.id)) {
+      buyLevels.push(belowBuy);
+      console.log(`[GridService] Bot ${botId}: 하방 매수 대기 - ${belowBuy.price.toLocaleString()}원`);
     }
 
-    // 현재가보다 높거나 같은 가격의 available 매도 레벨 찾기 (가장 낮은 것)
-    const sellLevels = await prisma.gridLevel.findMany({
-      where: {
-        botId,
-        type: 'sell',
-        status: 'available',
-        price: {
-          gte: currentPrice,
-        },
-      },
-      orderBy: { price: 'asc' },
-      take: 1,
-    });
-
     return {
-      buy: buyLevels[0] || null,   // 기존 호환성 유지
-      buys: buyLevels,              // 크로싱 + 하방 대기 매수 레벨
+      buy: buyLevels[0] || null,
+      buys: buyLevels,
       sell: sellLevels[0] || null,
     };
   }

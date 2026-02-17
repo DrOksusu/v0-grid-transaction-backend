@@ -95,6 +95,8 @@ model GridLevel {
   @@index([status])
   @@index([botId, type, status, price], map: "idx_grid_levels_botId_type_status_price")
   @@index([orderId], map: "idx_grid_levels_orderId")
+  @@index([botId, price], map: "idx_grid_levels_botId_price")
+  @@index([botId, status, updatedAt], map: "idx_grid_levels_botId_status_updatedAt")
   @@map("grid_levels")
 }
 
