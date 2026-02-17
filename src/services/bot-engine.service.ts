@@ -3,6 +3,8 @@ import { TradingService } from './trading.service';
 import { priceManager } from './upbit-price-manager';
 import { socketService } from './socket.service';
 import { calculateBuyPrices } from './grid.service';
+import { UpbitService } from './upbit.service';
+import { decrypt } from '../utils/encryption';
 
 class BotEngine {
   private isRunning: boolean = false;
@@ -547,6 +549,35 @@ class BotEngine {
         });
 
         socketService.emitBotsList(userId, botsData, summary);
+
+        // 잔고 업데이트 함께 전송 (10초 주기로 최신 잔고 반영)
+        try {
+          const credential = await withRetry(
+            () => prisma.credential.findFirst({
+              where: { userId, exchange: 'upbit' },
+            }),
+            { operationName: `BotEngine.broadcastBalance(userId=${userId})` }
+          );
+          if (credential) {
+            const accessKey = decrypt(credential.apiKey);
+            const secretKey = decrypt(credential.secretKey);
+            const upbit = new UpbitService({ accessKey, secretKey });
+            const accounts = await upbit.getAccounts();
+            const krwAccount = accounts.find((acc: any) => acc.currency === 'KRW');
+            if (krwAccount) {
+              const availableBalance = parseFloat(krwAccount.balance);
+              const lockedBalance = parseFloat(krwAccount.locked);
+              socketService.emitBalanceUpdate(userId, {
+                availableBalance,
+                lockedBalance,
+                totalBalance: availableBalance + lockedBalance,
+              });
+            }
+          }
+        } catch (balanceError: any) {
+          // 잔고 조회 실패해도 봇 브로드캐스트에 영향 없음
+          console.error(`[BotEngine] Balance broadcast failed for user ${userId}:`, balanceError.message);
+        }
       }
     } catch (error: any) {
       // 에러 로깅은 자주 발생할 수 있으므로 최소화
