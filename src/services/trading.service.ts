@@ -330,7 +330,7 @@ export class TradingService {
           // 주문 실패 시 그리드 상태를 available로 복구 (재주문 가능하도록)
           await prisma.gridLevel.updateMany({
             where: { id: buyGrid.id, status: 'pending', orderId: null },
-            data: { status: 'available' },
+            data: { status: 'available', filledAt: null },
           });
           console.log(`[Trading] Bot ${botId}: 매수 주문 실패 → 그리드 ${buyGrid.id} available로 복구`);
 
@@ -440,7 +440,7 @@ export class TradingService {
           // 주문 실패 시 그리드 상태를 available로 복구 (재주문 가능하도록)
           await prisma.gridLevel.updateMany({
             where: { id: executableGrids.sell.id, status: 'pending', orderId: null },
-            data: { status: 'available' },
+            data: { status: 'available', filledAt: null },
           });
           console.log(`[Trading] Bot ${botId}: 매도 주문 실패 → 그리드 ${executableGrids.sell.id} available로 복구`);
 
@@ -622,7 +622,7 @@ export class TradingService {
                   console.log(`[Trading] User ${userId}: 취소된 주문 감지 - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
                   await prisma.gridLevel.update({
                     where: { id: grid.id },
-                    data: { status: 'available', orderId: null },
+                    data: { status: 'available', orderId: null, filledAt: null },
                   });
                 } else if (order.state === 'wait') {
                   // wait 상태: updatedAt 갱신하여 다음 30분 동안 재조회 방지
@@ -734,7 +734,7 @@ export class TradingService {
         console.log(`[Trading] Grid ${gridId}: 취소된 주문 감지 - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
         await prisma.gridLevel.update({
           where: { id: gridId },
-          data: { status: 'available', orderId: null },
+          data: { status: 'available', orderId: null, filledAt: null },
         });
         return false;
       }

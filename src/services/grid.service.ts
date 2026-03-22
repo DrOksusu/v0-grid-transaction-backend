@@ -234,7 +234,8 @@ export class GridService {
       data: {
         status,
         orderId,
-        filledAt,
+        // pending/available 전환 시 이전 사이클의 filledAt 잔존 방지
+        filledAt: filledAt ?? (status === 'pending' || status === 'available' ? null : undefined),
       },
     });
   }
