@@ -251,11 +251,17 @@ export class TradingService {
 
             if (sellGrid) {
               // 매수/매도 모두 filled → 매수 그리드를 available로 복구
-              await prisma.gridLevel.update({
-                where: { id: buyGrid.id },
+              // Race condition 방지: filled 상태인 경우에만 available로 변경
+              const recoveryResult = await prisma.gridLevel.updateMany({
+                where: {
+                  id: buyGrid.id,
+                  status: 'filled',  // pending으로 이미 변경된 경우 스킵
+                },
                 data: { status: 'available', orderId: null, filledAt: null },
               });
-              console.log(`[Trading] Bot ${botId}: 잠긴 사이클 복구 → 매수 ${buyGrid.price.toLocaleString()}원 (매도 ${sellGrid.price.toLocaleString()}원 체결 후 재주문 실패 복구)`);
+              if (recoveryResult.count > 0) {
+                console.log(`[Trading] Bot ${botId}: 잠긴 사이클 복구 → 매수 ${buyGrid.price.toLocaleString()}원 (매도 ${sellGrid.price.toLocaleString()}원 체결 후 재주문 실패 복구)`);
+              }
             }
           }
         }
@@ -1334,11 +1340,28 @@ export class TradingService {
 
         console.log(`[Trading] Bot ${bot.id}: 매도 그리드 찾음 - id: ${sellGrid.id}, price: ${sellGrid.price}, status: ${sellGrid.status}`);
 
+        // Race condition 방지: 상태가 여전히 inactive/filled인 경우에만 pending으로 변경
+        const sellUpdateResult = await prisma.gridLevel.updateMany({
+          where: {
+            id: sellGrid.id,
+            status: { in: ['inactive', 'filled'] },
+          },
+          data: { status: 'pending' },
+        });
+
+        if (sellUpdateResult.count === 0) {
+          console.log(`[Trading] Bot ${bot.id}: 매도 그리드가 이미 처리 중입니다 (id: ${sellGrid.id}, ${sellPrice}원)`);
+          return;
+        }
+
         // 매도 주문 실행
         const order = await upbit.sellLimit(bot.ticker, sellPrice, volume);
 
-        // 그리드 레벨 상태 업데이트
-        await GridService.updateGridLevel(sellGrid.id, 'pending', order.uuid);
+        // orderId 업데이트
+        await prisma.gridLevel.update({
+          where: { id: sellGrid.id },
+          data: { orderId: order.uuid },
+        });
 
         // 거래 기록 저장
         const newTrade = await prisma.trade.create({
@@ -1414,11 +1437,28 @@ export class TradingService {
 
         console.log(`[Trading] Bot ${bot.id}: 매수 그리드 찾음 - id: ${buyGrid.id}, price: ${buyGrid.price}, status: ${buyGrid.status}`);
 
+        // Race condition 방지: 상태가 여전히 filled인 경우에만 pending으로 변경
+        const buyUpdateResult = await prisma.gridLevel.updateMany({
+          where: {
+            id: buyGrid.id,
+            status: 'filled',
+          },
+          data: { status: 'pending' },
+        });
+
+        if (buyUpdateResult.count === 0) {
+          console.log(`[Trading] Bot ${bot.id}: 매수 그리드가 이미 처리 중입니다 (id: ${buyGrid.id}, ${buyPrice}원)`);
+          return;
+        }
+
         // 매수 주문 실행
         const order = await upbit.buyLimit(bot.ticker, buyPrice, volume);
 
-        // 그리드 레벨 상태 업데이트
-        await GridService.updateGridLevel(buyGrid.id, 'pending', order.uuid);
+        // orderId 업데이트
+        await prisma.gridLevel.update({
+          where: { id: buyGrid.id },
+          data: { orderId: order.uuid },
+        });
 
         // 거래 기록 저장
         const newTrade = await prisma.trade.create({
@@ -1457,6 +1497,40 @@ export class TradingService {
       }
     } catch (error: any) {
       console.error(`[Trading] Bot ${bot.id}: 반대 주문 실행 실패 - ${error.message}`);
+
+      // 주문 실패 시 pending으로 변경된 그리드를 원래 상태로 롤백
+      // (업비트 주문이 실패한 경우, 그리드가 pending에 갇히는 것 방지)
+      try {
+        if (filledGrid.type === 'buy' && filledGrid.sellPrice) {
+          // 매수 체결 → 매도 주문 실패: 매도 그리드를 inactive로 복구
+          const priceMargin = Math.max(filledGrid.sellPrice * 0.001, 0.000001);
+          await prisma.gridLevel.updateMany({
+            where: {
+              botId: bot.id,
+              type: 'sell',
+              status: 'pending',
+              orderId: null,  // orderId가 없는 것만 (주문이 실제 안 나간 것)
+              price: { gte: filledGrid.sellPrice - priceMargin, lte: filledGrid.sellPrice + priceMargin },
+            },
+            data: { status: 'inactive' },
+          });
+        } else if (filledGrid.type === 'sell' && filledGrid.buyPrice) {
+          // 매도 체결 → 매수 주문 실패: 매수 그리드를 filled로 복구
+          const priceMargin = Math.max(filledGrid.buyPrice * 0.001, 0.000001);
+          await prisma.gridLevel.updateMany({
+            where: {
+              botId: bot.id,
+              type: 'buy',
+              status: 'pending',
+              orderId: null,
+              price: { gte: filledGrid.buyPrice - priceMargin, lte: filledGrid.buyPrice + priceMargin },
+            },
+            data: { status: 'filled' },
+          });
+        }
+      } catch (rollbackError: any) {
+        console.error(`[Trading] Bot ${bot.id}: 그리드 상태 롤백 실패 - ${rollbackError.message}`);
+      }
 
       // 잔고 부족 에러는 재시도해도 해결되지 않음
       const isBalanceError = error.message.includes('부족') ||
