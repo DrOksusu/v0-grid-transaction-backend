@@ -216,24 +216,36 @@ export class TradingService {
       // 실행 가능한 그리드 찾기 (가격 크로싱 감지 방식)
       const executableGrids = await GridService.findExecutableGrids(botId, currentPrice, previousPrice);
 
-      // [잔고 복구 스캔] 쿨다운 만료 후, 현재가 위의 놓친 매수 그리드 복구
+      // [잔고 복구 스캔] 쿨다운 만료 후, 놓친 매수 그리드 복구
+      // 잔고 부족으로 실패한 그리드는 available로 복구되지만,
+      // 가격이 이미 지나가면 크로싱이 재발생하지 않아 영영 주문이 안 나감.
+      // 케이스 A: 현재가 > 그리드가격 (가격이 내려갔다 올라옴) → 하방 대기 1개만으로 도달 불가
+      // 케이스 B: 현재가 < 그리드가격 (가격이 계속 아래에 있음) → findExecutableGrids에서 처리 가능
+      // → 케이스 A를 복구해야 함: 현재가보다 아래의 available 매수 그리드 중 하방 대기(1개)에 포함되지 않은 것
       const cooldownExpireForRecovery = balanceErrorCooldownMap.get(botId);
       const isCooldownForRecovery = cooldownExpireForRecovery && Date.now() < cooldownExpireForRecovery;
       if (balanceRecoveryNeeded.get(botId) && !isCooldownForRecovery) {
+        // 현재가보다 아래의 available 매수 그리드 중, 이미 executableGrids에 포함된 것 제외
+        const existingBuyIds = new Set(executableGrids.buys.map((b: any) => b.id));
         const missedBuys = await prisma.gridLevel.findMany({
           where: {
             botId,
             type: 'buy',
             status: 'available',
-            price: { gt: currentPrice },  // 현재가보다 위 = 이미 지나간 그리드
+            price: { lt: currentPrice },  // 현재가보다 아래 = 가격이 내려갔다 올라온 그리드
           },
-          orderBy: { price: 'asc' },  // 현재가에 가까운 것부터
-          take: 3,  // 부하 방지: 한 사이클에 3개씩
+          orderBy: { price: 'desc' },  // 현재가에 가까운 것부터
+          take: 5,  // 중복 제거 후 최대 3개를 확보하기 위해 여유 있게 조회
         });
 
-        if (missedBuys.length > 0) {
-          executableGrids.buys.push(...missedBuys);
-          console.log(`[Trading] Bot ${botId}: 잔고 복구 스캔 → ${missedBuys.length}개 놓친 매수 그리드 발견 (${missedBuys.map((g: any) => g.price).join(', ')}원)`);
+        // 이미 executableGrids에 포함된 것 제외 (하방 대기 1개 등)
+        const newMissedBuys = missedBuys
+          .filter((b: any) => !existingBuyIds.has(b.id))
+          .slice(0, 3);  // 부하 방지: 한 사이클에 최대 3개
+
+        if (newMissedBuys.length > 0) {
+          executableGrids.buys.push(...newMissedBuys);
+          console.log(`[Trading] Bot ${botId}: 잔고 복구 스캔 → ${newMissedBuys.length}개 놓친 매수 그리드 발견 (${newMissedBuys.map((g: any) => g.price.toLocaleString()).join(', ')}원)`);
         } else {
           // 복구할 그리드가 없으면 완료
           balanceRecoveryNeeded.delete(botId);
