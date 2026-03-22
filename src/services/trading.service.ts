@@ -32,6 +32,10 @@ const lastCheckedPriceMap = new Map<number, number>();
 const balanceErrorCooldownMap = new Map<number, number>(); // botId -> 쿨다운 만료 시각
 const BALANCE_ERROR_COOLDOWN_MS = 5 * 60 * 1000; // 5분
 
+// 잠긴 사이클 복구 스캔 쿨다운 (매 사이클 실행 방지, 1분 간격)
+const stuckCycleCheckMap = new Map<number, number>(); // botId -> 마지막 체크 시각
+const STUCK_CYCLE_CHECK_INTERVAL = 60 * 1000; // 1분
+
 
 // 사용자별 자격증명 캐시 (중앙 집중식 조회용)
 interface UserCredentialCache {
@@ -46,6 +50,7 @@ export class TradingService {
   static clearLastCheckedPrice(botId: number) {
     lastCheckedPriceMap.delete(botId);
     balanceErrorCooldownMap.delete(botId);
+    stuckCycleCheckMap.delete(botId);
   }
 
   // 사용자별 자격증명 조회 (중앙 집중식 조회용)
@@ -212,6 +217,49 @@ export class TradingService {
 
       // 실행 가능한 그리드 찾기 (가격 크로싱 감지 방식)
       const executableGrids = await GridService.findExecutableGrids(botId, currentPrice, previousPrice);
+
+      // [잠긴 사이클 복구] 매수/매도 모두 filled인 그리드 = executeOppositeOrder 실패
+      // 매도 체결 후 새 매수 주문이 배치되지 않아 매수 그리드가 filled로 잠긴 케이스
+      // 1분 간격으로만 체크 (매 사이클 실행 방지)
+      const lastStuckCheck = stuckCycleCheckMap.get(botId) || 0;
+      const shouldCheckStuck = (Date.now() - lastStuckCheck) >= STUCK_CYCLE_CHECK_INTERVAL;
+
+      if (shouldCheckStuck) {
+        stuckCycleCheckMap.set(botId, Date.now());
+        const stuckBuyGrids = await prisma.gridLevel.findMany({
+          where: {
+            botId,
+            type: 'buy',
+            status: 'filled',
+            sellPrice: { not: null },
+          },
+          select: { id: true, price: true, sellPrice: true },
+        });
+
+        if (stuckBuyGrids.length > 0) {
+          // 대응 매도 그리드도 filled인 것만 필터 (= 완료된 사이클인데 새 주문 안 나간 것)
+          for (const buyGrid of stuckBuyGrids) {
+            const sellGrid = await prisma.gridLevel.findFirst({
+              where: {
+                botId,
+                type: 'sell',
+                status: 'filled',
+                price: { gte: buyGrid.sellPrice! - 1, lte: buyGrid.sellPrice! + 1 },
+              },
+              select: { id: true, price: true },
+            });
+
+            if (sellGrid) {
+              // 매수/매도 모두 filled → 매수 그리드를 available로 복구
+              await prisma.gridLevel.update({
+                where: { id: buyGrid.id },
+                data: { status: 'available', orderId: null, filledAt: null },
+              });
+              console.log(`[Trading] Bot ${botId}: 잠긴 사이클 복구 → 매수 ${buyGrid.price.toLocaleString()}원 (매도 ${sellGrid.price.toLocaleString()}원 체결 후 재주문 실패 복구)`);
+            }
+          }
+        }
+      }
 
       // [놓친 그리드 복구] DB 상태 기반 — 서버 재시작과 무관하게 동작
       // 잔고 부족 등으로 주문 실패한 그리드가 available로 복구되지만,
