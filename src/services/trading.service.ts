@@ -32,6 +32,9 @@ const lastCheckedPriceMap = new Map<number, number>();
 const balanceErrorCooldownMap = new Map<number, number>(); // botId -> 쿨다운 만료 시각
 const BALANCE_ERROR_COOLDOWN_MS = 5 * 60 * 1000; // 5분
 
+// 잔고 부족 후 복구 스캔 필요 여부 (쿨다운 만료 시 1회 스캔)
+const balanceRecoveryNeeded = new Map<number, boolean>(); // botId -> 복구 필요 여부
+
 // 사용자별 자격증명 캐시 (중앙 집중식 조회용)
 interface UserCredentialCache {
   apiKey: string;
@@ -45,6 +48,7 @@ export class TradingService {
   static clearLastCheckedPrice(botId: number) {
     lastCheckedPriceMap.delete(botId);
     balanceErrorCooldownMap.delete(botId);
+    balanceRecoveryNeeded.delete(botId);
   }
 
   // 사용자별 자격증명 조회 (중앙 집중식 조회용)
@@ -212,6 +216,31 @@ export class TradingService {
       // 실행 가능한 그리드 찾기 (가격 크로싱 감지 방식)
       const executableGrids = await GridService.findExecutableGrids(botId, currentPrice, previousPrice);
 
+      // [잔고 복구 스캔] 쿨다운 만료 후, 현재가 위의 놓친 매수 그리드 복구
+      const cooldownExpireForRecovery = balanceErrorCooldownMap.get(botId);
+      const isCooldownForRecovery = cooldownExpireForRecovery && Date.now() < cooldownExpireForRecovery;
+      if (balanceRecoveryNeeded.get(botId) && !isCooldownForRecovery) {
+        const missedBuys = await prisma.gridLevel.findMany({
+          where: {
+            botId,
+            type: 'buy',
+            status: 'available',
+            price: { gt: currentPrice },  // 현재가보다 위 = 이미 지나간 그리드
+          },
+          orderBy: { price: 'asc' },  // 현재가에 가까운 것부터
+          take: 3,  // 부하 방지: 한 사이클에 3개씩
+        });
+
+        if (missedBuys.length > 0) {
+          executableGrids.buys.push(...missedBuys);
+          console.log(`[Trading] Bot ${botId}: 잔고 복구 스캔 → ${missedBuys.length}개 놓친 매수 그리드 발견 (${missedBuys.map((g: any) => g.price).join(', ')}원)`);
+        } else {
+          // 복구할 그리드가 없으면 완료
+          balanceRecoveryNeeded.delete(botId);
+          console.log(`[Trading] Bot ${botId}: 잔고 복구 스캔 완료 → 복구 대상 없음`);
+        }
+      }
+
       // 실행할 주문이 있을 때만 로깅
       if (executableGrids.buys.length > 0 || executableGrids.sell) {
         console.log(`[Trading] Bot ${botId} (${bot.ticker}): price=${currentPrice.toLocaleString()}, buys:[${executableGrids.buys.map((b: any) => b.price).join(',')}], sell:${executableGrids.sell?.price || '-'}`);
@@ -289,8 +318,10 @@ export class TradingService {
 
             console.log(`[Trading] Bot ${botId}: 지정가 매수 주문 완료 - ${buyGrid.price.toLocaleString()}원`);
 
-            // 매수 성공 시 잔고 부족 쿨다운 해제
+            // 매수 성공 시 잔고 부족 쿨다운 해제 + 복구 완료 처리
             balanceErrorCooldownMap.delete(botId);
+            // 복구 스캔 중 성공했으면 다음 사이클에서 추가 복구 계속 진행
+            // (복구 대상이 0개가 될 때 자동 해제됨)
 
             executed = true;
           }
@@ -310,7 +341,8 @@ export class TradingService {
                                  error.message.includes('balance');
           if (isBalanceError) {
             balanceErrorCooldownMap.set(botId, Date.now() + BALANCE_ERROR_COOLDOWN_MS);
-            console.log(`[Trading] Bot ${botId}: 잔고 부족 → 매수 5분 쿨다운 설정`);
+            balanceRecoveryNeeded.set(botId, true);
+            console.log(`[Trading] Bot ${botId}: 잔고 부족 → 매수 5분 쿨다운 설정 (복구 스캔 예약)`);
 
             // 에러 메시지 저장 + 소켓 알림 (1회만)
             await prisma.bot.update({
