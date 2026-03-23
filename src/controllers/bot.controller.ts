@@ -790,10 +790,15 @@ export const getAllTrades = async (
     }
 
     // 필터 조건 구성
+    const statusFilter = (req.query.status as string) || 'filled';
     const whereClause: any = {
       botId: { in: botIds },
-      status: 'filled', // 체결된 것만
     };
+
+    // status 필터: all이면 조건 없음, 그 외에는 해당 상태만
+    if (statusFilter !== 'all') {
+      whereClause.status = statusFilter;
+    }
 
     if (type) {
       whereClause.type = type;
@@ -805,20 +810,22 @@ export const getAllTrades = async (
     }
 
     if (startDate || endDate) {
-      whereClause.filledAt = {};
+      // pending 주문은 filledAt이 null이므로 createdAt 기준으로 필터
+      const dateField = statusFilter === 'filled' ? 'filledAt' : 'createdAt';
+      whereClause[dateField] = {};
       if (startDate) {
-        whereClause.filledAt.gte = new Date(startDate);
+        whereClause[dateField].gte = new Date(startDate);
       }
       if (endDate) {
-        whereClause.filledAt.lte = new Date(endDate + 'T23:59:59.999Z');
+        whereClause[dateField].lte = new Date(endDate + 'T23:59:59.999Z');
       }
     }
 
-    // 거래 내역 조회
+    // 거래 내역 조회 (pending/all일 때는 createdAt 기준 정렬)
     const [trades, total] = await Promise.all([
       prisma.trade.findMany({
         where: whereClause,
-        orderBy: { filledAt: 'desc' },
+        orderBy: statusFilter === 'filled' ? { filledAt: 'desc' } : { createdAt: 'desc' },
         skip: offset,
         take: limit,
       }),
