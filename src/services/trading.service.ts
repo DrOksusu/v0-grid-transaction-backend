@@ -32,11 +32,6 @@ const lastCheckedPriceMap = new Map<number, number>();
 const balanceErrorCooldownMap = new Map<number, number>(); // botId -> 쿨다운 만료 시각
 const BALANCE_ERROR_COOLDOWN_MS = 5 * 60 * 1000; // 5분
 
-// 잠긴 사이클 복구 스캔 쿨다운 (매 사이클 실행 방지, 1분 간격)
-const stuckCycleCheckMap = new Map<number, number>(); // botId -> 마지막 체크 시각
-const STUCK_CYCLE_CHECK_INTERVAL = 60 * 1000; // 1분
-
-
 // 사용자별 자격증명 캐시 (중앙 집중식 조회용)
 interface UserCredentialCache {
   apiKey: string;
@@ -50,7 +45,6 @@ export class TradingService {
   static clearLastCheckedPrice(botId: number) {
     lastCheckedPriceMap.delete(botId);
     balanceErrorCooldownMap.delete(botId);
-    stuckCycleCheckMap.delete(botId);
   }
 
   // 사용자별 자격증명 조회 (중앙 집중식 조회용)
@@ -217,84 +211,6 @@ export class TradingService {
 
       // 실행 가능한 그리드 찾기 (가격 크로싱 감지 방식)
       const executableGrids = await GridService.findExecutableGrids(botId, currentPrice, previousPrice);
-
-      // [잠긴 사이클 복구] 매수/매도 모두 filled인 그리드 = executeOppositeOrder 실패
-      // 매도 체결 후 새 매수 주문이 배치되지 않아 매수 그리드가 filled로 잠긴 케이스
-      // 1분 간격으로만 체크 (매 사이클 실행 방지)
-      const lastStuckCheck = stuckCycleCheckMap.get(botId) || 0;
-      const shouldCheckStuck = (Date.now() - lastStuckCheck) >= STUCK_CYCLE_CHECK_INTERVAL;
-
-      if (shouldCheckStuck) {
-        stuckCycleCheckMap.set(botId, Date.now());
-        const stuckBuyGrids = await prisma.gridLevel.findMany({
-          where: {
-            botId,
-            type: 'buy',
-            status: 'filled',
-            sellPrice: { not: null },
-          },
-          select: { id: true, price: true, sellPrice: true },
-        });
-
-        if (stuckBuyGrids.length > 0) {
-          // 대응 매도 그리드도 filled인 것만 필터 (= 완료된 사이클인데 새 주문 안 나간 것)
-          for (const buyGrid of stuckBuyGrids) {
-            const sellGrid = await prisma.gridLevel.findFirst({
-              where: {
-                botId,
-                type: 'sell',
-                status: 'filled',
-                price: { gte: buyGrid.sellPrice! - 1, lte: buyGrid.sellPrice! + 1 },
-              },
-              select: { id: true, price: true },
-            });
-
-            if (sellGrid) {
-              // 매수/매도 모두 filled → 매수 그리드를 available로 복구
-              // Race condition 방지: filled 상태인 경우에만 available로 변경
-              const recoveryResult = await prisma.gridLevel.updateMany({
-                where: {
-                  id: buyGrid.id,
-                  status: 'filled',  // pending으로 이미 변경된 경우 스킵
-                },
-                data: { status: 'available', orderId: null, filledAt: null },
-              });
-              if (recoveryResult.count > 0) {
-                console.log(`[Trading] Bot ${botId}: 잠긴 사이클 복구 → 매수 ${buyGrid.price.toLocaleString()}원 (매도 ${sellGrid.price.toLocaleString()}원 체결 후 재주문 실패 복구)`);
-              }
-            }
-          }
-        }
-      }
-
-      // [놓친 그리드 복구] DB 상태 기반 — 서버 재시작과 무관하게 동작
-      // 잔고 부족 등으로 주문 실패한 그리드가 available로 복구되지만,
-      // 가격이 이미 지나가면 크로싱이 재발생하지 않아 영영 주문이 안 나감.
-      // findExecutableGrids는 하방 매수 대기를 1개만 잡으므로,
-      // 현재가보다 아래에 available 매수 그리드가 2개 이상이면 = 놓친 그리드가 있다는 뜻.
-      // 쿨다운 중에는 스킵 (잔고 부족 상태에서 반복 조회 방지)
-      const cooldownExpireForRecovery = balanceErrorCooldownMap.get(botId);
-      const isCooldownForRecovery = cooldownExpireForRecovery && Date.now() < cooldownExpireForRecovery;
-      if (!isCooldownForRecovery) {
-        const existingBuyIds = new Set(executableGrids.buys.map((b: any) => b.id));
-        // 현재가보다 아래의 available 매수 그리드 중, 이미 executableGrids에 포함된 것 제외
-        const missedBuys = await prisma.gridLevel.findMany({
-          where: {
-            botId,
-            type: 'buy',
-            status: 'available',
-            price: { lt: currentPrice },
-            id: { notIn: [...existingBuyIds] },  // 하방 대기 1개 등 이미 잡힌 것 제외
-          },
-          orderBy: { price: 'desc' },  // 현재가에 가까운 것부터
-          take: 3,  // 부하 방지: 한 사이클에 최대 3개
-        });
-
-        if (missedBuys.length > 0) {
-          executableGrids.buys.push(...missedBuys);
-          console.log(`[Trading] Bot ${botId}: 놓친 매수 그리드 복구 → ${missedBuys.length}개 발견 (${missedBuys.map((g: any) => g.price.toLocaleString()).join(', ')}원)`);
-        }
-      }
 
       // 실행할 주문이 있을 때만 로깅
       if (executableGrids.buys.length > 0 || executableGrids.sell) {
@@ -1284,7 +1200,7 @@ export class TradingService {
   private static async executeOppositeOrder(
     upbit: UpbitService,
     bot: { id: number; ticker: string; orderAmount: number },
-    filledGrid: { id: number; type: string; sellPrice: number | null; buyPrice: number | null; botId: number; _processStartTime?: number; _actualFilledAt?: Date },
+    filledGrid: { id: number; type: string; price: number; sellPrice: number | null; buyPrice: number | null; botId: number; _processStartTime?: number; _actualFilledAt?: Date },
     retryCount: number = 0
   ): Promise<void> {
     const MAX_RETRIES = 3;
@@ -1304,6 +1220,13 @@ export class TradingService {
       if (filledGrid.type === 'buy' && filledGrid.sellPrice) {
         // 매수 체결 → 즉시 매도 주문
         const sellPrice = filledGrid.sellPrice;
+
+        // 매수가 == 매도가 가드: 동일 가격이면 즉시 체결되어 수수료만 손실되는 무한반복 발생
+        if (sellPrice <= filledGrid.price) {
+          console.warn(`[Trading] Bot ${bot.id}: ⚠️ 매도가(${sellPrice}) <= 매수가(${filledGrid.price}) → 무한반복 방지를 위해 매도 주문 스킵 (grid id: ${filledGrid.id})`);
+          return;
+        }
+
         const volume = bot.orderAmount / sellPrice;
 
         console.log(`[Trading] Bot ${bot.id}: 매수 체결 후 즉시 매도 주문 - ${sellPrice.toLocaleString()}원`);
@@ -1401,6 +1324,13 @@ export class TradingService {
       } else if (filledGrid.type === 'sell' && filledGrid.buyPrice) {
         // 매도 체결 → 즉시 매수 주문
         const buyPrice = filledGrid.buyPrice;
+
+        // 매수가 >= 매도가 가드: 동일 가격이면 즉시 체결되어 수수료만 손실되는 무한반복 발생
+        if (buyPrice >= filledGrid.price) {
+          console.warn(`[Trading] Bot ${bot.id}: ⚠️ 매수가(${buyPrice}) >= 매도가(${filledGrid.price}) → 무한반복 방지를 위해 매수 주문 스킵 (grid id: ${filledGrid.id})`);
+          return;
+        }
+
         const volume = bot.orderAmount / buyPrice;
 
         console.log(`[Trading] Bot ${bot.id}: 매도 체결 후 즉시 매수 주문 - ${buyPrice.toLocaleString()}원`);
