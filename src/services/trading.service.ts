@@ -540,27 +540,37 @@ export class TradingService {
           let totalFilledCount = 0;
           const processedGridIds = new Set<number>();
 
-          // ===== 1단계: 전체 마켓 최근 체결 100건 조회 (API 1회로 최적화) =====
+          // ===== 1단계: 마켓별 최근 체결 100건 조회 =====
+          // (이전: 전체 마켓 100건 → 봇 많은 사용자에서 최신 체결만 잡히고 오래된 체결은 리스트 밖으로 밀림)
           try {
             const gridByOrderId = new Map(grids.filter(g => g.orderId).map(g => [g.orderId, g]));
-            const filledOrders = await upbit.getFilledOrders(undefined, 100); // 전체 마켓
 
-            for (const order of filledOrders) {
-              const grid = gridByOrderId.get(order.uuid);
-              if (grid && order.state === 'done') {
-                await this.processFilledOrder(grid, order, upbit, userId);
-                processedGridIds.add(grid.id);
-                totalFilledCount++;
+            for (const [market, marketGrids] of gridsByMarket) {
+              if (marketGrids.length === 0) continue;
+              try {
+                const filledOrders = await upbit.getFilledOrders(market, 100);
+                for (const order of filledOrders) {
+                  const grid = gridByOrderId.get(order.uuid);
+                  if (grid && order.state === 'done' && !processedGridIds.has(grid.id)) {
+                    await this.processFilledOrder(grid, order, upbit, userId);
+                    processedGridIds.add(grid.id);
+                    totalFilledCount++;
+                  }
+                }
+              } catch (marketError: any) {
+                console.error(`[Trading] User ${userId} 마켓 ${market} 체결 조회 실패:`, marketError.message);
               }
             }
           } catch (error: any) {
             console.error(`[Trading] User ${userId} 체결 조회 실패:`, error.message);
           }
 
-          // ===== 2단계: 30분 이상 오래된 pending만 orderId로 직접 조회 (누락 방지) =====
-          // API rate limit 방지를 위해 사용자당 최대 20개만 처리
-          const STALE_THRESHOLD = 30 * 60 * 1000; // 30분
-          const MAX_STALE_CHECK_PER_USER = 20;
+          // ===== 2단계: 오래된 pending을 orderId로 직접 배치 조회 (누락 방지) =====
+          // pending 수에 비례하여 배치 크기 동적 조정 (stale starvation 방지)
+          const STALE_THRESHOLD = 10 * 60 * 1000; // 10분 (이전 30분 → 단축)
+          const pendingCount = grids.length;
+          // pending 10% 혹은 최소 50, 최대 300
+          const MAX_STALE_CHECK_PER_USER = Math.min(300, Math.max(50, Math.ceil(pendingCount * 0.1)));
           const now = Date.now();
 
           const staleGrids = grids
@@ -569,10 +579,10 @@ export class TradingService {
               !processedGridIds.has(g.id) &&
               (now - new Date(g.updatedAt).getTime()) > STALE_THRESHOLD
             )
-            .slice(0, MAX_STALE_CHECK_PER_USER); // 최대 20개만
+            .slice(0, MAX_STALE_CHECK_PER_USER);
 
           if (staleGrids.length > 0) {
-            console.log(`[Trading] User ${userId}: ${staleGrids.length}개 오래된 pending 주문 직접 확인 (30분+)`);
+            console.log(`[Trading] User ${userId}: ${staleGrids.length}개 오래된 pending 주문 직접 확인 (10분+, max=${MAX_STALE_CHECK_PER_USER})`);
 
             const staleOrderIds = staleGrids.map(g => g.orderId!);
 
@@ -594,13 +604,9 @@ export class TradingService {
                     where: { id: grid.id },
                     data: { status: 'available', orderId: null, filledAt: null },
                   });
-                } else if (order.state === 'wait') {
-                  // wait 상태: updatedAt 갱신하여 다음 30분 동안 재조회 방지
-                  await prisma.gridLevel.update({
-                    where: { id: grid.id },
-                    data: { updatedAt: new Date() },
-                  });
                 }
+                // wait 상태: updatedAt 갱신하지 않음 — 다음 사이클에서 재확인되어야 체결 감지 누락 방지
+                // (이전 구현: wait시 updatedAt을 now로 찍어 30분 동안 재조회 배제 → 체결이 그 사이 일어나면 수시간~며칠 미감지)
               }
             } catch (staleError: any) {
               console.error(`[Trading] User ${userId} 오래된 주문 조회 실패:`, staleError.message);
