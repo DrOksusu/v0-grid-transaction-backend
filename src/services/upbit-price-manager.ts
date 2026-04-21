@@ -557,8 +557,28 @@ const stablecoinOrderbook = new Map<string, OrderbookTop>();
 const orderbookListeners = new Set<OrderbookListener>();
 let orderbookWs: WebSocket | null = null;
 let orderbookReconnectTimer: NodeJS.Timeout | null = null;
+let orderbookReconnectAttempts = 0;
+const MAX_ORDERBOOK_RECONNECT_ATTEMPTS = 10;
 
 const UPBIT_WS_URL = 'wss://api.upbit.com/websocket/v1';
+
+/**
+ * 지수 백오프 재연결 스케줄링 (1s, 2s, 4s, ... 최대 30s)
+ * 최대 시도 횟수 초과 시 중단
+ */
+function scheduleOrderbookReconnect(): void {
+  if (orderbookReconnectAttempts >= MAX_ORDERBOOK_RECONNECT_ATTEMPTS) {
+    console.error(`[StablecoinArb] 최대 재연결 횟수(${MAX_ORDERBOOK_RECONNECT_ATTEMPTS}) 초과. 중단.`);
+    return;
+  }
+  const delay = Math.min(1000 * Math.pow(2, orderbookReconnectAttempts), 30000);
+  orderbookReconnectAttempts++;
+  console.log(`[StablecoinArb] ${delay}ms 후 재연결 (${orderbookReconnectAttempts}/${MAX_ORDERBOOK_RECONNECT_ATTEMPTS})`);
+  orderbookReconnectTimer = setTimeout(() => {
+    orderbookReconnectTimer = null;
+    subscribeStablecoinOrderbooks();
+  }, delay);
+}
 
 /**
  * 5종 스테이블코인 KRW 마켓 orderbook WebSocket 구독 시작
@@ -572,6 +592,9 @@ export function subscribeStablecoinOrderbooks(): void {
   orderbookWs = new WebSocket(UPBIT_WS_URL);
 
   orderbookWs.on('open', () => {
+    // 연결 성공 → 재시도 카운터 리셋
+    orderbookReconnectAttempts = 0;
+
     // Upbit WS 구독 메시지: ticket + type + codes
     const msg = [
       { ticket: `stablecoin-arb-${Date.now()}` },
@@ -614,8 +637,18 @@ export function subscribeStablecoinOrderbooks(): void {
   });
 
   orderbookWs.on('close', () => {
-    console.warn('[StablecoinArb] orderbook WS 닫힘 - 5초 후 재연결');
-    orderbookReconnectTimer = setTimeout(() => subscribeStablecoinOrderbooks(), 5000);
+    console.warn('[StablecoinArb] orderbook WS 닫힘 - 재연결 예약');
+    // 기존 ws 인스턴스 리스너 정리 (listener leak 방지)
+    if (orderbookWs) {
+      orderbookWs.removeAllListeners();
+      orderbookWs = null;
+    }
+    // 중복 close 이벤트에 의한 타이머 중복 예약 방지
+    if (orderbookReconnectTimer) {
+      clearTimeout(orderbookReconnectTimer);
+      orderbookReconnectTimer = null;
+    }
+    scheduleOrderbookReconnect();
   });
 
   orderbookWs.on('error', (err: Error) => {
@@ -637,6 +670,8 @@ export function unsubscribeStablecoinOrderbooks(): void {
     orderbookWs = null;
   }
   stablecoinOrderbook.clear();
+  orderbookListeners.clear();
+  orderbookReconnectAttempts = 0;
 }
 
 /**
@@ -649,7 +684,7 @@ export function getStablecoinOrderbook(market: string): OrderbookTop | undefined
 /**
  * 전체 스테이블코인 호가 캐시 조회 (불변 복사본 반환)
  */
-export function getAllStablecoinOrderbooks(): Map<string, OrderbookTop> {
+export function getAllStablecoinOrderbooks(): ReadonlyMap<string, OrderbookTop> {
   return new Map(stablecoinOrderbook);
 }
 
