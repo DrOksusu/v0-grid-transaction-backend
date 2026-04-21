@@ -599,6 +599,30 @@ model StablecoinArbOpportunity {
   @@map("stablecoin_arb_opportunities")
 }
 
+// Upbit-Bithumb 거래소 간 호가 스냅샷 (크로스 거래소 관찰용)
+model CrossExchangeSnapshot {
+  id           BigInt   @id @default(autoincrement())
+  timestamp    DateTime // DATETIME(3) — 코드베이스 표준에 맞춤 (@db.Timestamp 미사용)
+  market       String   // "USDT", "USDC" 등 코인 심볼 (KRW 제외)
+
+  upbitBid     Decimal  @db.Decimal(18, 4)
+  upbitAsk     Decimal  @db.Decimal(18, 4)
+  bithumbBid   Decimal  @db.Decimal(18, 4)
+  bithumbAsk   Decimal  @db.Decimal(18, 4)
+
+  // 양방향 크로스 스프레드 (bp 단위, floor 값)
+  // ubSpreadBps = (upbit_bid / bithumb_ask - 1) * 10000 — 양수면 Upbit→Bithumb 방향 차익 가능
+  // buSpreadBps = (bithumb_bid / upbit_ask - 1) * 10000 — 양수면 Bithumb→Upbit 방향 차익 가능
+  ubSpreadBps  Int
+  buSpreadBps  Int
+  maxSpreadBps Int      // max(ubSpreadBps, buSpreadBps)
+
+  @@index([timestamp])
+  @@index([market, timestamp])
+  @@index([maxSpreadBps])
+  @@map("cross_exchange_snapshots")
+}
+
 // 아비트리지 거래 상태 열거형
 enum ArbTradeStatus {
   DETECTED
