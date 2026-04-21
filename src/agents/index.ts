@@ -5,3 +5,4 @@ export { GridAgent } from './grid-agent';
 export { InfiniteBuyAgent } from './infinite-buy-agent';
 export { TestAgent } from './test-agent';
 export { VRAgent } from './vr-agent';
+export { StablecoinArbAgent } from './stablecoin-arb-agent';

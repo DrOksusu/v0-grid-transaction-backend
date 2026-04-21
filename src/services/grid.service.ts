@@ -116,6 +116,12 @@ export class GridService {
         const buyPrice = prices[i];
         const sellPrice = prices[i + 1];
 
+        // 매수가 == 매도가면 수수료만 손실되는 무한반복 발생 → 스킵
+        if (buyPrice === sellPrice) {
+          console.log(`[GridService] Bot ${botId}: 매수가=매도가(${buyPrice}) 스킵 (틱사이즈보다 그리드 간격이 작음)`);
+          continue;
+        }
+
         // 매수 레벨 - 활성화
         gridLevels.push({
           botId,
