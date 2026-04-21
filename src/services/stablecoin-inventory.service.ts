@@ -34,26 +34,33 @@ export async function fetchAllBalances(
   apiKey: string,
   secretKey: string
 ): Promise<Record<string, number>> {
-  const payload = {
-    access_key: apiKey,
-    nonce: uuidv4(),
-  };
+  const payload = { access_key: apiKey, nonce: uuidv4() };
   const token = jwt.sign(payload, secretKey);
 
-  const response = await axios.get(`${UPBIT_API_URL}/accounts`, {
-    headers: { Authorization: `Bearer ${token}` },
-    timeout: 10000,
-  });
+  try {
+    const response = await axios.get(`${UPBIT_API_URL}/accounts`, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 10000,
+    });
 
-  const balances: Record<string, number> = {};
-  for (const acc of response.data) {
-    const total =
-      parseFloat(acc.balance || '0') + parseFloat(acc.locked || '0');
-    if (total > 0) {
-      balances[acc.currency] = total;
+    // Upbit 정상 응답은 배열 형태. 형식 불일치 시 즉시 실패.
+    if (!Array.isArray(response.data)) {
+      throw new Error('Upbit /accounts 응답 형식 이상');
     }
+
+    const balances: Record<string, number> = {};
+    for (const acc of response.data) {
+      const total = parseFloat(acc.balance) + parseFloat(acc.locked || '0');
+      if (total > 0) {
+        balances[acc.currency] = total;
+      }
+    }
+    return balances;
+  } catch (error: any) {
+    // Upbit 에러 스키마: { error: { name, message } }
+    const detail = error.response?.data?.error?.message || error.message;
+    throw new Error(`Upbit 잔고 조회 실패: ${detail}`);
   }
-  return balances;
 }
 
 /**
@@ -165,6 +172,15 @@ export function computeDepegStatus(
     result[coin] = Math.abs(v - mid) >= allowedDeviation;
   }
   return result;
+}
+
+/**
+ * 테스트 전용 — 인메모리 캐시 초기화
+ *
+ * 프로덕션 코드에서 호출 금지. 테스트 간 격리용.
+ */
+export function _clearCacheForTesting(): void {
+  inventoryCache.clear();
 }
 
 export { STABLECOINS };
