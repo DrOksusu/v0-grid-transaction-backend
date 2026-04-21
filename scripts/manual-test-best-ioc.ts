@@ -2,30 +2,60 @@
  * Upbit best+ioc 주문 수동 테스트 스크립트
  *
  * 사용법:
- *   npx ts-node scripts/manual-test-best-ioc.ts <market> <side> <amount>
+ *   npx ts-node scripts/manual-test-best-ioc.ts <market> <side> <amount> [userEmail]
  *
- *   market: KRW-USDT | KRW-USDC | KRW-USDS | KRW-USD1 | KRW-USDE
- *   side:   bid (매수) | ask (매도)
- *   amount: bid면 KRW 금액 (예: "10000"), ask면 코인 수량 (예: "7.15")
+ *   market:    KRW-USDT | KRW-USDC | KRW-USDS | KRW-USD1 | KRW-USDE
+ *   side:      bid (매수) | ask (매도)
+ *   amount:    bid면 KRW 금액 (예: "10000"), ask면 코인 수량 (예: "7.15")
+ *   userEmail: (선택) 관리자 유저 이메일. 미지정 시 ADMIN_EMAIL 환경변수 또는
+ *              기본값 'ok4192@hanmail.net' 사용.
  *
  * 예:
  *   npx ts-node scripts/manual-test-best-ioc.ts KRW-USDT bid 10000
  *   npx ts-node scripts/manual-test-best-ioc.ts KRW-USDT ask 7.15
  *
- * 환경 변수(.env.local 또는 process.env):
- *   UPBIT_ADMIN_API_KEY    — 관리자 Upbit access key
- *   UPBIT_ADMIN_SECRET_KEY — 관리자 Upbit secret key
+ * 동작:
+ *   DB에서 해당 유저의 upbit credential(purpose='default')을 조회하여 복호화 후 사용.
+ *   별도 .env.local 세팅 불필요.
  *
  * ⚠️ 이 스크립트는 실제 거래를 발생시킵니다. 관리자 본인 계정에서만 실행하세요.
  */
 import 'dotenv/config';
+import { PrismaClient } from '@prisma/client';
 import { UpbitService } from '../src/services/upbit.service';
+import { decrypt } from '../src/utils/encryption';
+
+const DEFAULT_ADMIN_EMAIL = 'ok4192@hanmail.net';
+
+async function loadAdminCredentials(email: string) {
+  const prisma = new PrismaClient();
+  try {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) throw new Error(`유저를 찾을 수 없음: ${email}`);
+
+    const cred = await prisma.credential.findFirst({
+      where: { userId: user.id, exchange: 'upbit', purpose: 'default' },
+    });
+    if (!cred) throw new Error(`유저 ${email}에게 upbit credential(purpose=default)이 없음`);
+    if (!cred.isValid) {
+      console.warn(`⚠️  credential.isValid=false (lastValidatedAt: ${cred.lastValidatedAt})`);
+    }
+
+    return {
+      userId: user.id,
+      accessKey: decrypt(cred.apiKey),
+      secretKey: decrypt(cred.secretKey),
+    };
+  } finally {
+    await prisma.$disconnect();
+  }
+}
 
 async function main() {
-  const [market, side, amount] = process.argv.slice(2);
+  const [market, side, amount, emailArg] = process.argv.slice(2);
 
   if (!market || !side || !amount) {
-    console.error('사용법: npx ts-node scripts/manual-test-best-ioc.ts <market> <side> <amount>');
+    console.error('사용법: npx ts-node scripts/manual-test-best-ioc.ts <market> <side> <amount> [userEmail]');
     console.error('예: npx ts-node scripts/manual-test-best-ioc.ts KRW-USDT bid 10000');
     process.exit(1);
   }
@@ -35,18 +65,20 @@ async function main() {
     process.exit(1);
   }
 
-  const accessKey = process.env.UPBIT_ADMIN_API_KEY;
-  const secretKey = process.env.UPBIT_ADMIN_SECRET_KEY;
-  if (!accessKey || !secretKey) {
-    console.error('UPBIT_ADMIN_API_KEY / UPBIT_ADMIN_SECRET_KEY 환경변수 필요');
-    console.error('.env.local 파일에 설정하거나 shell에 export');
+  const email = emailArg || process.env.ADMIN_EMAIL || DEFAULT_ADMIN_EMAIL;
+
+  let creds;
+  try {
+    creds = await loadAdminCredentials(email);
+  } catch (err: any) {
+    console.error('credential 로드 실패:', err.message);
     process.exit(1);
   }
 
-  console.log(`\n=== Manual Test: ${market} ${side} ${amount} (best+ioc) ===\n`);
+  console.log(`\n=== Manual Test: ${market} ${side} ${amount} (best+ioc) ===`);
+  console.log(`관리자: ${email} (userId=${creds.userId})\n`);
 
-  // UpbitService 생성자: constructor(credentials: { accessKey: string; secretKey: string })
-  const upbit = new UpbitService({ accessKey, secretKey });
+  const upbit = new UpbitService({ accessKey: creds.accessKey, secretKey: creds.secretKey });
 
   // bid면 price(KRW 금액), ask면 volume(코인 수량)으로 파라미터 분기
   const params: { price?: string; volume?: string } =
