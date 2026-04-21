@@ -22,7 +22,6 @@ model User {
   passwordResets    PasswordReset[]
   profitSnapshots   ProfitSnapshot[]
   pushSubscriptions PushSubscription[]
-  stablecoinArbBot  StablecoinArbBot?
   subscription      Subscription?
   upbitDonations    UpbitDonation[]
   usdtDeposits      UsdtDeposit[]
@@ -431,7 +430,6 @@ enum TradeStatus {
 enum CredentialPurpose {
   default
   infinite_buy
-  stablecoin_arb
   vr
 }
 
@@ -497,118 +495,4 @@ enum WhaleSignal {
   bullish
   bearish
   neutral
-}
-
-// 스테이블코인 아비트리지 봇 설정 및 상태
-model StablecoinArbBot {
-  id                Int       @id @default(autoincrement())
-  userId            Int       @unique
-  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  enabled           Boolean   @default(false)
-  killSwitch        Boolean   @default(false)
-
-  coinsEnabled      Json
-
-  entryThresholdBps Int       @default(20)
-  tradeSizeKrw      Int       @default(50000)
-
-  perCoinMinUsd     Decimal   @default(10)  @db.Decimal(10, 2)
-  perCoinMaxUsd     Decimal   @default(500) @db.Decimal(10, 2)
-
-  depegBps          Int       @default(200)
-  maxDailyTrades    Int       @default(30)
-  dailyLossLimitKrw Int       @default(50000)
-
-  totalTrades       Int       @default(0)
-  totalProfitUsd    Decimal   @default(0) @db.Decimal(14, 6)
-  lastExecutedAt    DateTime?
-
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-
-  trades            StablecoinArbTrade[]
-  opportunities     StablecoinArbOpportunity[]
-
-  @@map("stablecoin_arb_bots")
-}
-
-// 스테이블코인 아비트리지 개별 거래 기록
-model StablecoinArbTrade {
-  id                Int              @id @default(autoincrement())
-  botId             Int
-  bot               StablecoinArbBot @relation(fields: [botId], references: [id], onDelete: Cascade)
-
-  soldCoin          String
-  boughtCoin        String
-  detectedAt        DateTime
-  bidSoldKrw        Decimal          @db.Decimal(18, 4)
-  askBoughtKrw      Decimal          @db.Decimal(18, 4)
-  expectedSpreadBps Int
-  plannedSizeCoin   Decimal          @db.Decimal(20, 8)
-
-  status            ArbTradeStatus
-
-  leg1OrderUuid     String?
-  leg1FilledVol     Decimal?         @db.Decimal(20, 8)
-  leg1ReceivedKrw   Decimal?         @db.Decimal(20, 4)
-  leg1FeeKrw        Decimal?         @db.Decimal(14, 4)
-  leg1CompletedAt   DateTime?
-
-  leg2OrderUuid     String?
-  leg2FilledVol     Decimal?         @db.Decimal(20, 8)
-  leg2SpentKrw      Decimal?         @db.Decimal(20, 4)
-  leg2FeeKrw        Decimal?         @db.Decimal(14, 4)
-  leg2CompletedAt   DateTime?
-
-  fallbackOrderUuid String?
-  fallbackFilledVol Decimal?         @db.Decimal(20, 8)
-  fallbackFeeKrw    Decimal?         @db.Decimal(14, 4)
-
-  realizedSpreadBps Int?
-  profitUsd         Decimal?         @db.Decimal(12, 6)
-  totalFeeKrw       Decimal?         @db.Decimal(14, 4)
-
-  error             String?          @db.Text
-  completedAt       DateTime?
-
-  @@index([botId, detectedAt])
-  @@index([status])
-  @@map("stablecoin_arb_trades")
-}
-
-// 스테이블코인 아비트리지 기회 로그 (실행 여부 무관)
-model StablecoinArbOpportunity {
-  id             BigInt           @id @default(autoincrement())
-  botId          Int
-  bot            StablecoinArbBot @relation(fields: [botId], references: [id], onDelete: Cascade)
-
-  detectedAt     DateTime
-  soldCoin       String
-  boughtCoin     String
-  bidSoldKrw     Decimal          @db.Decimal(18, 4)
-  askBoughtKrw   Decimal          @db.Decimal(18, 4)
-  spreadBps      Int
-
-  executed       Boolean          @default(false)
-  skipReason     String?
-
-  @@index([botId, detectedAt])
-  @@index([soldCoin, boughtCoin, detectedAt])
-  @@index([detectedAt])
-  @@map("stablecoin_arb_opportunities")
-}
-
-// 아비트리지 거래 상태 열거형
-enum ArbTradeStatus {
-  DETECTED
-  LEG1_SUBMITTED
-  LEG1_FILLED
-  LEG1_PARTIAL
-  LEG2_SUBMITTED
-  COMPLETED
-  FALLBACK_DONE
-  FAILED
-  ABORTED
-  EMERGENCY
 }

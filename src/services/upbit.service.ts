@@ -131,27 +131,9 @@ interface UpbitCredentials {
 interface OrderParams {
   market: string;
   side: 'bid' | 'ask'; // bid: 매수, ask: 매도
-  ord_type: 'limit' | 'price' | 'market' | 'best';
+  ord_type: 'limit' | 'price' | 'market';
   price?: string;
   volume?: string;
-  time_in_force?: 'ioc' | 'fok'; // IOC: 즉시 체결 후 미체결 취소, FOK: 전량 즉시 체결 또는 전체 취소
-}
-
-/**
- * Upbit 주문 응답 공통 타입
- * POST /v1/orders 및 관련 API 응답에서 공통으로 반환되는 필드 정의
- */
-export interface UpbitOrderResponse {
-  uuid: string;
-  side: 'bid' | 'ask';
-  ord_type: string;
-  state: string;
-  market: string;
-  created_at: string;
-  executed_volume?: string;
-  executed_funds?: string;
-  paid_fee?: string;
-  trades_count?: number;
 }
 
 export class UpbitService {
@@ -306,54 +288,6 @@ export class UpbitService {
     } catch (error: any) {
       throw new Error(`매도 주문 실패: ${error.response?.data?.error?.message || error.message}`);
     }
-  }
-
-  /**
-   * best + IOC 주문 (즉시 체결 가능한 최유리 호가 주문, 미체결분 자동 취소)
-   *
-   * @param market "KRW-USDT" 형식
-   * @param side "bid" (매수) | "ask" (매도)
-   * @param params 매수면 price(KRW 금액), 매도면 volume(코인 수량)
-   * @returns Upbit 주문 응답 (uuid, state, executed_volume 등)
-   *
-   * @note IOC 주문은 부분 체결돼도 state='cancel'로 반환됨.
-   *       실제 체결량은 executed_volume 필드로 확인 필요.
-   *       미체결분은 자동 취소된다.
-   */
-  async placeBestIoc(
-    market: string,
-    side: 'bid' | 'ask',
-    params: { price?: string; volume?: string }
-  ): Promise<UpbitOrderResponse> {
-    await throttleOrderApi();
-
-    const body: OrderParams = {
-      market,
-      side,
-      ord_type: 'best',
-      time_in_force: 'ioc',
-    };
-
-    if (side === 'bid') {
-      if (!params.price) throw new Error('bid 주문은 price(KRW) 필요');
-      body.price = params.price;
-    } else {
-      if (!params.volume) throw new Error('ask 주문은 volume 필요');
-      body.volume = params.volume;
-    }
-
-    const queryString = new URLSearchParams(body as any).toString();
-
-    return executeWithRetry(async () => {
-      const response = await axiosInstance.post(
-        `${UPBIT_API_URL}/orders`,
-        body,
-        {
-          headers: this.getHeaders(queryString),
-        }
-      );
-      return response.data as UpbitOrderResponse;
-    }, `placeBestIoc(${market}, ${side})`);
   }
 
   // 주문 취소
