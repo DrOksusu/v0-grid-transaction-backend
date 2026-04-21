@@ -525,3 +525,141 @@ class UpbitPriceManager {
 
 // 싱글톤 인스턴스 export
 export const priceManager = UpbitPriceManager.getInstance();
+
+// ─────────────────────────────────────────────────────────────
+// 스테이블코인 차익거래용 호가 WebSocket (모듈 레벨)
+// ─────────────────────────────────────────────────────────────
+
+/** 단일 호가 레벨 (가격 + 수량) */
+export interface OrderbookLevel {
+  price: number; // KRW
+  size: number;  // 코인 수량
+}
+
+/** 최우선 매수/매도 호가 스냅샷 */
+export interface OrderbookTop {
+  market: string;      // 예: "KRW-USDT"
+  bid: OrderbookLevel; // 최우선 매수호가
+  ask: OrderbookLevel; // 최우선 매도호가
+  timestamp: number;   // 수신 시각 (ms)
+}
+
+/** 구독 대상 KRW 스테이블코인 마켓 목록 */
+export const STABLECOIN_MARKETS = [
+  'KRW-USDT', 'KRW-USDC', 'KRW-USDS', 'KRW-USD1', 'KRW-USDE',
+] as const;
+export type StablecoinMarket = typeof STABLECOIN_MARKETS[number];
+
+type OrderbookListener = (top: OrderbookTop) => void;
+
+// 모듈 레벨 상태
+const stablecoinOrderbook = new Map<string, OrderbookTop>();
+const orderbookListeners = new Set<OrderbookListener>();
+let orderbookWs: WebSocket | null = null;
+let orderbookReconnectTimer: NodeJS.Timeout | null = null;
+
+const UPBIT_WS_URL = 'wss://api.upbit.com/websocket/v1';
+
+/**
+ * 5종 스테이블코인 KRW 마켓 orderbook WebSocket 구독 시작
+ * 이미 연결된 경우 no-op
+ */
+export function subscribeStablecoinOrderbooks(): void {
+  if (orderbookWs && orderbookWs.readyState === WebSocket.OPEN) {
+    return; // 이미 연결되어 있으면 no-op
+  }
+
+  orderbookWs = new WebSocket(UPBIT_WS_URL);
+
+  orderbookWs.on('open', () => {
+    // Upbit WS 구독 메시지: ticket + type + codes
+    const msg = [
+      { ticket: `stablecoin-arb-${Date.now()}` },
+      { type: 'orderbook', codes: [...STABLECOIN_MARKETS] },
+      { format: 'DEFAULT' },
+    ];
+    orderbookWs!.send(JSON.stringify(msg));
+    console.log('[StablecoinArb] orderbook WebSocket 구독 시작');
+  });
+
+  orderbookWs.on('message', (data: Buffer) => {
+    try {
+      const parsed = JSON.parse(data.toString());
+      if (parsed.type !== 'orderbook') return;
+
+      const units = parsed.orderbook_units || [];
+      if (units.length === 0) return;
+      const best = units[0]; // 최우선 호가
+
+      const top: OrderbookTop = {
+        market: parsed.code,
+        bid: { price: best.bid_price, size: best.bid_size },
+        ask: { price: best.ask_price, size: best.ask_size },
+        timestamp: parsed.timestamp || Date.now(),
+      };
+
+      stablecoinOrderbook.set(top.market, top);
+
+      // 리스너 전파 (에러 격리)
+      orderbookListeners.forEach(fn => {
+        try {
+          fn(top);
+        } catch (err) {
+          console.error('[StablecoinArb] listener error:', err);
+        }
+      });
+    } catch (err) {
+      console.error('[StablecoinArb] message parse error:', err);
+    }
+  });
+
+  orderbookWs.on('close', () => {
+    console.warn('[StablecoinArb] orderbook WS 닫힘 - 5초 후 재연결');
+    orderbookReconnectTimer = setTimeout(() => subscribeStablecoinOrderbooks(), 5000);
+  });
+
+  orderbookWs.on('error', (err: Error) => {
+    console.error('[StablecoinArb] orderbook WS 에러:', err.message);
+  });
+}
+
+/**
+ * 스테이블코인 orderbook WebSocket 구독 해제 및 상태 초기화
+ */
+export function unsubscribeStablecoinOrderbooks(): void {
+  if (orderbookReconnectTimer) {
+    clearTimeout(orderbookReconnectTimer);
+    orderbookReconnectTimer = null;
+  }
+  if (orderbookWs) {
+    orderbookWs.removeAllListeners();
+    orderbookWs.close();
+    orderbookWs = null;
+  }
+  stablecoinOrderbook.clear();
+}
+
+/**
+ * 특정 마켓의 최우선 호가 조회
+ */
+export function getStablecoinOrderbook(market: string): OrderbookTop | undefined {
+  return stablecoinOrderbook.get(market);
+}
+
+/**
+ * 전체 스테이블코인 호가 캐시 조회 (불변 복사본 반환)
+ */
+export function getAllStablecoinOrderbooks(): Map<string, OrderbookTop> {
+  return new Map(stablecoinOrderbook);
+}
+
+/**
+ * 호가 업데이트 리스너 등록
+ * @returns unsubscribe 함수
+ */
+export function onStablecoinOrderbookUpdate(listener: OrderbookListener): () => void {
+  orderbookListeners.add(listener);
+  return () => {
+    orderbookListeners.delete(listener);
+  };
+}
