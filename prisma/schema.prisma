@@ -583,7 +583,7 @@ model StablecoinArbOpportunity {
   botId          Int
   bot            StablecoinArbBot @relation(fields: [botId], references: [id], onDelete: Cascade)
 
-  detectedAt     DateTime         @db.Timestamp(3)
+  detectedAt     DateTime
   soldCoin       String
   boughtCoin     String
   bidSoldKrw     Decimal          @db.Decimal(18, 4)
@@ -595,6 +595,7 @@ model StablecoinArbOpportunity {
 
   @@index([botId, detectedAt])
   @@index([soldCoin, boughtCoin, detectedAt])
+  @@index([detectedAt])
   @@map("stablecoin_arb_opportunities")
 }
 
