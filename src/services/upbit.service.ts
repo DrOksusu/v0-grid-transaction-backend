@@ -131,9 +131,10 @@ interface UpbitCredentials {
 interface OrderParams {
   market: string;
   side: 'bid' | 'ask'; // bid: 매수, ask: 매도
-  ord_type: 'limit' | 'price' | 'market';
+  ord_type: 'limit' | 'price' | 'market' | 'best';
   price?: string;
   volume?: string;
+  time_in_force?: 'ioc' | 'fok'; // IOC: 즉시 체결 후 미체결 취소, FOK: 전량 즉시 체결 또는 전체 취소
 }
 
 export class UpbitService {
@@ -574,4 +575,96 @@ export class UpbitService {
 
     return priceMap;
   }
+}
+
+/**
+ * best + IOC 주문 (즉시 체결 가능한 최유리 호가 주문, 미체결분 자동 취소)
+ *
+ * @param apiKey Upbit access key
+ * @param secretKey Upbit secret key
+ * @param market "KRW-USDT" 형식
+ * @param side "bid" (매수) | "ask" (매도)
+ * @param params 매수면 price(KRW 금액), 매도면 volume(코인 수량)
+ * @returns Upbit 주문 응답 (uuid, state, executed_volume 등)
+ */
+export async function placeBestIocOrder(
+  apiKey: string,
+  secretKey: string,
+  market: string,
+  side: 'bid' | 'ask',
+  params: { price?: string; volume?: string }
+): Promise<any> {
+  await throttleOrderApi();
+
+  const body: Record<string, string> = {
+    market,
+    side,
+    ord_type: 'best',
+    time_in_force: 'ioc',
+  };
+
+  if (side === 'bid') {
+    if (!params.price) throw new Error('bid 주문은 price(KRW) 필요');
+    body.price = params.price;
+  } else {
+    if (!params.volume) throw new Error('ask 주문은 volume 필요');
+    body.volume = params.volume;
+  }
+
+  const query = new URLSearchParams(body).toString();
+  const queryHash = crypto.createHash('sha512').update(query).digest('hex');
+
+  const payload = {
+    access_key: apiKey,
+    nonce: uuidv4(),
+    query_hash: queryHash,
+    query_hash_alg: 'SHA512',
+  };
+
+  const token = jwt.sign(payload, secretKey);
+
+  return executeWithRetry(async () => {
+    const response = await axiosInstance.post(
+      `${UPBIT_API_URL}/orders`,
+      body,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    return response.data;
+  }, `placeBestIocOrder(${market}, ${side})`);
+}
+
+/**
+ * 주문 상세 조회 (체결 결과 확인용)
+ *
+ * @param apiKey Upbit access key
+ * @param secretKey Upbit secret key
+ * @param uuid 조회할 주문 UUID
+ * @returns Upbit 주문 상세 응답 (state, executed_volume, trades 등)
+ */
+export async function getOrderDetail(
+  apiKey: string,
+  secretKey: string,
+  uuid: string
+): Promise<any> {
+  await throttlePublicApi();
+
+  const query = `uuid=${uuid}`;
+  const queryHash = crypto.createHash('sha512').update(query).digest('hex');
+
+  const payload = {
+    access_key: apiKey,
+    nonce: uuidv4(),
+    query_hash: queryHash,
+    query_hash_alg: 'SHA512',
+  };
+
+  const token = jwt.sign(payload, secretKey);
+
+  return executeWithRetry(async () => {
+    const response = await axiosInstance.get(
+      `${UPBIT_API_URL}/order?uuid=${uuid}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    return response.data;
+  }, `getOrderDetail(${uuid})`);
 }
