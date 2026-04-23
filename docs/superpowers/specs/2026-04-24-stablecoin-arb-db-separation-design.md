@@ -4,7 +4,8 @@
 > **작성자**: Claude (사용자 결정 반영)
 > **상태**: 승인됨 (구현 준비)
 > **범위**: 세션 스코프 — **DB 분리만** (M3 실행 엔진은 다음 세션)
-> **베이스 브랜치**: `feat/stablecoin-arb` (origin)
+> **작업 브랜치**: `feat/stablecoin-arb-db-sep` (신규, main에서 분기)
+> **스테이블 코드 복구 방식**: Option B — `git revert`로 기존 main의 2개 revert 커밋(`f15c6ea`, `4ed91c5`)을 되돌려 stablecoin 코드 재도입
 
 ## 0. 한 줄 요약
 
@@ -42,7 +43,7 @@
 | # | 결정 항목 | 선택 |
 |---|---|---|
 | 1 | 세션 범위 | **DB 분리만** (M3는 다음 세션) |
-| 2 | 브랜치 전략 | `feat/stablecoin-arb` 브랜치 **이어서 작업** (21 커밋 재활용) |
+| 2 | 브랜치 전략 | **신규 `feat/stablecoin-arb-db-sep`** (main에서 분기) + `git revert f15c6ea && git revert 4ed91c5`로 stablecoin 코드 복구 (세션 6 인프라 보존을 위해 Option A 대신 B 채택) |
 | 3 | User ↔ StablecoinArbBot 관계 | **relation 삭제**, `userId Int @unique`만 유지 (cross-DB relation 불가) |
 | 4 | `CrossExchangeSnapshot` 모델 위치 | 기존 `grid_transaction` 유지 (스테이블과 무관한 별개 기능) |
 | 5 | Prisma 디렉토리 구조 | 기존 `prisma/` **유지** + `prisma-stablecoin/` 신설 |
@@ -430,7 +431,7 @@ WHERE migration_name IN (
 |---|---|
 | DB/유저만 생성 상태 | dbmasteruser로 `DROP DATABASE grid_stablecoin_arb; DROP USER 'grid_stablecoin_app'@'%'; DROP USER 'grid_stablecoin_migrate'@'%';` |
 | 코드 커밋 후 push 전 | `git reset --soft HEAD~N` (여러 커밋 이면 N 조정) |
-| Push 후 배포 실패 | GitHub Actions 실패 시 롤백 불필요 (기존 컨테이너 계속 동작). 커밋 revert: `git revert <hash> && git push origin feat/stablecoin-arb` |
+| Push 후 배포 실패 | GitHub Actions 실패 시 롤백 불필요 (기존 컨테이너 계속 동작). 커밋 revert: `git revert <hash> && git push origin feat/stablecoin-arb-db-sep` |
 | 배포 성공 후 기능 문제 | 새 DB는 건드리지 않음 → revert + redeploy 시 기존 grid_transaction만 사용하는 상태로 복원됨 |
 | 치명적 문제 | AWS Lightsail 스냅샷 `pre-stablecoin-db-separation-20260424`로 복원 |
 
@@ -442,7 +443,7 @@ implementation plan은 별도 문서(writing-plans 결과물)로 작성되지만
 
 1. **사전 안전장치** — AWS 수동 스냅샷 생성 (사용자 콘솔)
 2. **DB/유저 생성** — dbmasteruser로 CREATE DATABASE + CREATE USER + GRANT + 검증
-3. **브랜치 준비** — `git checkout feat/stablecoin-arb && git pull origin feat/stablecoin-arb`
+3. **브랜치 준비** — `feat/stablecoin-arb-db-sep` 이미 생성됨 (main 기반 + revert-of-revert 2개 적용). 현재 HEAD는 `6e7989d`.
 4. **Prisma 스키마 분리** — 기존 schema에서 stablecoin 모델 제거, `prisma-stablecoin/` 신설
 5. **마이그레이션 생성** — 기존 2개 삭제, `prisma migrate dev --schema=prisma-stablecoin/...`로 init 1개 생성
 6. **Prisma client 생성 + 코드 수정** — `database.ts` 확장, 스테이블 서비스/에이전트 import 경로 변경
