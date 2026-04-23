@@ -58,4 +58,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3010/api/health || exit 1
 
 # Start the application (migrate deploy 후 서버 시작)
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+# 마이그레이션은 grid_migrate(ALL PRIVILEGES), 런타임은 DATABASE_URL=grid_app(DML only)로 권한 분리
+CMD ["sh", "-c", "DATABASE_URL=\"$MIGRATE_DATABASE_URL\" npx prisma migrate deploy && node dist/index.js"]
