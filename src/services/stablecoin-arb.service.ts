@@ -1,5 +1,5 @@
-import prisma from '../config/database';
-import { Prisma } from '@prisma/client';
+import { stablecoinPrisma as prisma } from '../config/database';
+import { Prisma } from '.prisma/client-stablecoin';
 
 /**
  * 유저의 봇 조회 또는 기본값으로 생성

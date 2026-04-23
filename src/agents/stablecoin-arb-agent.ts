@@ -7,7 +7,7 @@ import {
 } from '../services/upbit-price-manager';
 import { findBestOpportunity } from '../services/stablecoin-arb-detector';
 import * as arbService from '../services/stablecoin-arb.service';
-import prisma from '../config/database';
+import { stablecoinPrisma as prisma } from '../config/database';
 
 /**
  * M2 단계 detection-only 에이전트.
