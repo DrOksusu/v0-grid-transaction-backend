@@ -89,6 +89,8 @@ jobs:
               -e PORT=3010 \
               -e "DATABASE_URL=${{ secrets.DATABASE_URL }}" \
               -e "MIGRATE_DATABASE_URL=${{ secrets.MIGRATE_DATABASE_URL }}" \
+              -e "STABLECOIN_DATABASE_URL=${{ secrets.STABLECOIN_DATABASE_URL }}" \
+              -e "STABLECOIN_MIGRATE_DATABASE_URL=${{ secrets.STABLECOIN_MIGRATE_DATABASE_URL }}" \
               -e "JWT_SECRET=${{ secrets.JWT_SECRET }}" \
               -e JWT_ACCESS_EXPIRY=1h \
               -e JWT_REFRESH_EXPIRY=7d \
