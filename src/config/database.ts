@@ -1,4 +1,7 @@
 import { PrismaClient } from '@prisma/client';
+// 스테이블코인 아비트리지 전용 별도 DB client (grid_stablecoin_arb)
+// prisma-stablecoin/schema.prisma에서 생성됨
+import { PrismaClient as StablecoinPrismaClient } from '.prisma/client-stablecoin';
 
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -134,6 +137,28 @@ setInterval(() => {
 
 if (!isProduction) globalForPrisma.prisma = prisma;
 
+// Stablecoin arbitrage DB client (별도 database: grid_stablecoin_arb)
+// 싱글톤 패턴 + HMR 대응
+const globalForStablecoinPrisma = globalThis as unknown as {
+  stablecoinPrisma: StablecoinPrismaClient | undefined;
+};
+
+export const stablecoinPrisma =
+  globalForStablecoinPrisma.stablecoinPrisma ??
+  new StablecoinPrismaClient({
+    log: [
+      { level: 'warn', emit: 'stdout' },
+      { level: 'error', emit: 'stdout' },
+    ],
+    datasources: {
+      db: {
+        url: process.env.STABLECOIN_DATABASE_URL,
+      },
+    },
+  });
+
+if (!isProduction) globalForStablecoinPrisma.stablecoinPrisma = stablecoinPrisma;
+
 // 연결 상태 확인 및 재연결 헬퍼
 export const ensureConnection = async () => {
   try {
@@ -149,7 +174,10 @@ export const ensureConnection = async () => {
 
 // Graceful shutdown
 process.on('beforeExit', async () => {
-  await prisma.$disconnect();
+  await Promise.allSettled([
+    prisma.$disconnect(),
+    stablecoinPrisma.$disconnect(),
+  ]);
 });
 
 // Connection pool 타임아웃 에러 감지
