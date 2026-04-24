@@ -18,75 +18,75 @@ datasource db {
 // 스테이블코인 아비트리지 봇 설정 및 상태
 // userId: grid_transaction.users.id 참조 (relation 없음)
 model StablecoinArbBot {
-  id                Int       @id @default(autoincrement())
-  userId            Int       @unique
+  id     Int @id @default(autoincrement())
+  userId Int @unique
 
-  enabled           Boolean   @default(false)
-  killSwitch        Boolean   @default(false)
+  enabled    Boolean @default(false)
+  killSwitch Boolean @default(false)
 
-  coinsEnabled      Json
+  coinsEnabled Json
 
-  entryThresholdBps Int       @default(20)
-  tradeSizeKrw      Int       @default(50000)
+  entryThresholdBps Int @default(20)
+  tradeSizeKrw      Int @default(50000)
 
-  perCoinMinUsd     Decimal   @default(10)  @db.Decimal(10, 2)
-  perCoinMaxUsd     Decimal   @default(500) @db.Decimal(10, 2)
+  perCoinMinUsd Decimal @default(10) @db.Decimal(10, 2)
+  perCoinMaxUsd Decimal @default(500) @db.Decimal(10, 2)
 
-  depegBps          Int       @default(200)
-  maxDailyTrades    Int       @default(30)
-  dailyLossLimitKrw Int       @default(50000)
+  depegBps          Int @default(200)
+  maxDailyTrades    Int @default(30)
+  dailyLossLimitKrw Int @default(50000)
 
-  totalTrades       Int       @default(0)
-  totalProfitUsd    Decimal   @default(0) @db.Decimal(14, 6)
-  lastExecutedAt    DateTime?
+  totalTrades    Int       @default(0)
+  totalProfitUsd Decimal   @default(0) @db.Decimal(14, 6)
+  lastExecutedAt DateTime?
 
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  trades            StablecoinArbTrade[]
-  opportunities     StablecoinArbOpportunity[]
+  trades        StablecoinArbTrade[]
+  opportunities StablecoinArbOpportunity[]
 
   @@map("stablecoin_arb_bots")
 }
 
 // 스테이블코인 아비트리지 개별 거래 기록
 model StablecoinArbTrade {
-  id                Int              @id @default(autoincrement())
-  botId             Int
-  bot               StablecoinArbBot @relation(fields: [botId], references: [id], onDelete: Cascade)
+  id    Int              @id @default(autoincrement())
+  botId Int
+  bot   StablecoinArbBot @relation(fields: [botId], references: [id], onDelete: Cascade)
 
   soldCoin          String
   boughtCoin        String
   detectedAt        DateTime
-  bidSoldKrw        Decimal          @db.Decimal(18, 4)
-  askBoughtKrw      Decimal          @db.Decimal(18, 4)
+  bidSoldKrw        Decimal  @db.Decimal(18, 4)
+  askBoughtKrw      Decimal  @db.Decimal(18, 4)
   expectedSpreadBps Int
-  plannedSizeCoin   Decimal          @db.Decimal(20, 8)
+  plannedSizeCoin   Decimal  @db.Decimal(20, 8)
 
-  status            ArbTradeStatus
+  status ArbTradeStatus
 
-  leg1OrderUuid     String?
-  leg1FilledVol     Decimal?         @db.Decimal(20, 8)
-  leg1ReceivedKrw   Decimal?         @db.Decimal(20, 4)
-  leg1FeeKrw        Decimal?         @db.Decimal(14, 4)
-  leg1CompletedAt   DateTime?
+  leg1OrderUuid   String?
+  leg1FilledVol   Decimal?  @db.Decimal(20, 8)
+  leg1ReceivedKrw Decimal?  @db.Decimal(20, 4)
+  leg1FeeKrw      Decimal?  @db.Decimal(14, 4)
+  leg1CompletedAt DateTime?
 
-  leg2OrderUuid     String?
-  leg2FilledVol     Decimal?         @db.Decimal(20, 8)
-  leg2SpentKrw      Decimal?         @db.Decimal(20, 4)
-  leg2FeeKrw        Decimal?         @db.Decimal(14, 4)
-  leg2CompletedAt   DateTime?
+  leg2OrderUuid   String?
+  leg2FilledVol   Decimal?  @db.Decimal(20, 8)
+  leg2SpentKrw    Decimal?  @db.Decimal(20, 4)
+  leg2FeeKrw      Decimal?  @db.Decimal(14, 4)
+  leg2CompletedAt DateTime?
 
   fallbackOrderUuid String?
-  fallbackFilledVol Decimal?         @db.Decimal(20, 8)
-  fallbackFeeKrw    Decimal?         @db.Decimal(14, 4)
+  fallbackFilledVol Decimal? @db.Decimal(20, 8)
+  fallbackFeeKrw    Decimal? @db.Decimal(14, 4)
 
   realizedSpreadBps Int?
-  profitUsd         Decimal?         @db.Decimal(12, 6)
-  totalFeeKrw       Decimal?         @db.Decimal(14, 4)
+  profitUsd         Decimal? @db.Decimal(12, 6)
+  totalFeeKrw       Decimal? @db.Decimal(14, 4)
 
-  error             String?          @db.Text
-  completedAt       DateTime?
+  error       String?   @db.Text
+  completedAt DateTime?
 
   @@index([botId, detectedAt])
   @@index([status])
@@ -95,19 +95,19 @@ model StablecoinArbTrade {
 
 // 스테이블코인 아비트리지 기회 로그 (실행 여부 무관)
 model StablecoinArbOpportunity {
-  id             BigInt           @id @default(autoincrement())
-  botId          Int
-  bot            StablecoinArbBot @relation(fields: [botId], references: [id], onDelete: Cascade)
+  id    BigInt           @id @default(autoincrement())
+  botId Int
+  bot   StablecoinArbBot @relation(fields: [botId], references: [id], onDelete: Cascade)
 
-  detectedAt     DateTime
-  soldCoin       String
-  boughtCoin     String
-  bidSoldKrw     Decimal          @db.Decimal(18, 4)
-  askBoughtKrw   Decimal          @db.Decimal(18, 4)
-  spreadBps      Int
+  detectedAt   DateTime
+  soldCoin     String
+  boughtCoin   String
+  bidSoldKrw   Decimal  @db.Decimal(18, 4)
+  askBoughtKrw Decimal  @db.Decimal(18, 4)
+  spreadBps    Int
 
-  executed       Boolean          @default(false)
-  skipReason     String?
+  executed   Boolean @default(false)
+  skipReason String?
 
   @@index([botId, detectedAt])
   @@index([soldCoin, boughtCoin, detectedAt])
@@ -127,4 +127,66 @@ enum ArbTradeStatus {
   FAILED
   ABORTED
   EMERGENCY
+}
+
+// Maker-Taker 시뮬레이터 봇 설정
+// 실거래 없이 DB에 가상 기록만 수행. 2~3일 관찰 후 실거래 도입 여부 판단.
+model MakerTakerSimBot {
+  id     Int @id @default(autoincrement())
+  userId Int
+
+  enabled    Boolean @default(true)
+  killSwitch Boolean @default(false)
+
+  makerCoin    String
+  takerCoin    String
+  bidOffsetKrw Int
+  quantity     Decimal @db.Decimal(20, 8)
+  maxPendingMs Int     @default(3600000)
+
+  minTakerBidKrw Int?
+
+  makerFeeBps Int @default(5)
+  takerFeeBps Int @default(5)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  trades MakerTakerSimTrade[]
+
+  @@map("maker_taker_sim_bots")
+}
+
+// Maker-Taker 시뮬레이터 개별 가상 거래 기록
+// 각 row는 PENDING 주문 생성부터 FILLED/EXPIRED/CANCELLED 까지의 전체 lifecycle.
+model MakerTakerSimTrade {
+  id    BigInt           @id @default(autoincrement())
+  botId Int
+  bot   MakerTakerSimBot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  makerCoin String
+  takerCoin String
+
+  makerOrderPrice  Int
+  makerFilledAt    DateTime?
+  makerFilledPrice Int?
+
+  takerExecutedAt  DateTime?
+  takerMarketBid   Int?
+  takerSlippageBps Int?
+
+  quantity Decimal @db.Decimal(20, 8)
+
+  grossProfitKrw    Decimal? @db.Decimal(18, 4)
+  feeKrw            Decimal? @db.Decimal(14, 4)
+  netProfitKrw      Decimal? @db.Decimal(18, 4)
+  realizedSpreadBps Int?
+
+  status String
+  notes  String? @db.Text
+
+  @@index([botId, createdAt])
+  @@index([status])
+  @@map("maker_taker_sim_trades")
 }
