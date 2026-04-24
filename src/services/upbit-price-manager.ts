@@ -559,6 +559,9 @@ let orderbookWs: WebSocket | null = null;
 let orderbookReconnectTimer: NodeJS.Timeout | null = null;
 let orderbookReconnectAttempts = 0;
 const MAX_ORDERBOOK_RECONNECT_ATTEMPTS = 10;
+// 외부 구독자 수 (에이전트별로 subscribe/unsubscribe 호출 시 증감).
+// reconnect 경로는 이 값에 영향을 주지 않는다 (connectOrderbookWsInternal 직접 호출).
+let orderbookSubscriberCount = 0;
 
 const UPBIT_WS_URL = 'wss://api.upbit.com/websocket/v1';
 
@@ -576,36 +579,61 @@ function scheduleOrderbookReconnect(): void {
   console.log(`[StablecoinArb] ${delay}ms 후 재연결 (${orderbookReconnectAttempts}/${MAX_ORDERBOOK_RECONNECT_ATTEMPTS})`);
   orderbookReconnectTimer = setTimeout(() => {
     orderbookReconnectTimer = null;
-    subscribeStablecoinOrderbooks();
+    // reconnect는 subscriberCount를 건드리지 않고 WS만 재연결
+    connectOrderbookWsInternal();
   }, delay);
 }
 
 /**
  * 5종 스테이블코인 KRW 마켓 orderbook WebSocket 구독 시작
- * 이미 연결된 경우 no-op
+ *
+ * 외부 에이전트가 호출하는 API. subscriberCount를 증가시키고,
+ * WS가 아직 없으면 연결한다.
+ *
+ * 여러 에이전트(StablecoinArbAgent, MakerTakerSimulatorAgent 등)가 각자
+ * subscribe/unsubscribe를 호출해도 ref count로 안전하게 공유된다.
  */
 export function subscribeStablecoinOrderbooks(): void {
-  if (orderbookWs && orderbookWs.readyState === WebSocket.OPEN) {
-    return; // 이미 연결되어 있으면 no-op
+  orderbookSubscriberCount++;
+  if (orderbookWs && (orderbookWs.readyState === WebSocket.OPEN || orderbookWs.readyState === WebSocket.CONNECTING)) {
+    return; // 이미 연결됐거나 연결 중 → no-op (중복 WS 생성 방지)
   }
+  connectOrderbookWsInternal();
+}
 
-  orderbookWs = new WebSocket(UPBIT_WS_URL);
+/**
+ * 실제 WebSocket 연결 로직 (subscriberCount 영향 없음).
+ * reconnect 타이머와 subscribeStablecoinOrderbooks 모두 이 함수를 호출한다.
+ *
+ * 주의: OPEN/CONNECTING 상태면 중복 연결을 만들지 않음.
+ * handler 내부에서는 orderbookWs 전역이 아닌 closure의 ws를 참조해
+ * 빠른 재연결 시 이전 WS가 새 WS의 메시지를 가로채는 상황 방지.
+ */
+function connectOrderbookWsInternal(): void {
+  if (orderbookWs && (orderbookWs.readyState === WebSocket.OPEN || orderbookWs.readyState === WebSocket.CONNECTING)) return;
 
-  orderbookWs.on('open', () => {
-    // 연결 성공 → 재시도 카운터 리셋
+  const ws = new WebSocket(UPBIT_WS_URL);
+  orderbookWs = ws;
+
+  ws.on('open', () => {
+    // 전역이 다른 WS로 교체됐다면 이 WS는 orphan → 송신 스킵
+    if (orderbookWs !== ws) {
+      try { ws.close(); } catch { /* ignore */ }
+      return;
+    }
     orderbookReconnectAttempts = 0;
-
-    // Upbit WS 구독 메시지: ticket + type + codes
     const msg = [
       { ticket: `stablecoin-arb-${Date.now()}` },
       { type: 'orderbook', codes: [...STABLECOIN_MARKETS] },
       { format: 'DEFAULT' },
     ];
-    orderbookWs!.send(JSON.stringify(msg));
+    ws.send(JSON.stringify(msg));
     console.log('[StablecoinArb] orderbook WebSocket 구독 시작');
   });
 
-  orderbookWs.on('message', (data: Buffer) => {
+  ws.on('message', (data: Buffer) => {
+    // orphan WS가 메시지를 전파하지 않도록 방어
+    if (orderbookWs !== ws) return;
     try {
       const parsed = JSON.parse(data.toString());
       if (parsed.type !== 'orderbook') return;
@@ -636,30 +664,45 @@ export function subscribeStablecoinOrderbooks(): void {
     }
   });
 
-  orderbookWs.on('close', () => {
-    console.warn('[StablecoinArb] orderbook WS 닫힘 - 재연결 예약');
-    // 기존 ws 인스턴스 리스너 정리 (listener leak 방지)
-    if (orderbookWs) {
-      orderbookWs.removeAllListeners();
-      orderbookWs = null;
+  ws.on('close', () => {
+    // 이 close가 orphan WS의 것이면 reconnect 예약하지 않음
+    if (orderbookWs !== ws) {
+      ws.removeAllListeners();
+      return;
     }
-    // 중복 close 이벤트에 의한 타이머 중복 예약 방지
+    console.warn('[StablecoinArb] orderbook WS 닫힘 - 재연결 예약');
+    orderbookWs.removeAllListeners();
+    orderbookWs = null;
     if (orderbookReconnectTimer) {
       clearTimeout(orderbookReconnectTimer);
       orderbookReconnectTimer = null;
     }
-    scheduleOrderbookReconnect();
+    // 구독자 0이면 재연결도 불필요
+    if (orderbookSubscriberCount > 0) {
+      scheduleOrderbookReconnect();
+    }
   });
 
-  orderbookWs.on('error', (err: Error) => {
+  ws.on('error', (err: Error) => {
     console.error('[StablecoinArb] orderbook WS 에러:', err.message);
   });
 }
 
 /**
- * 스테이블코인 orderbook WebSocket 구독 해제 및 상태 초기화
+ * 스테이블코인 orderbook WebSocket 구독 해제
+ *
+ * subscriberCount를 감소시키고, 남은 구독자가 있으면 WS를 유지한다.
+ * 마지막 구독자가 내려갈 때만 실제 cleanup (WS close + state clear).
  */
 export function unsubscribeStablecoinOrderbooks(): void {
+  orderbookSubscriberCount = Math.max(0, orderbookSubscriberCount - 1);
+  if (orderbookSubscriberCount > 0) {
+    // 다른 에이전트가 아직 구독 중 → WS 유지. 내 리스너는 onStablecoinOrderbookUpdate
+    // 가 반환한 unsubscribe 함수로 이미 해제됐다고 가정.
+    return;
+  }
+
+  // 마지막 구독자 → 실제 cleanup
   if (orderbookReconnectTimer) {
     clearTimeout(orderbookReconnectTimer);
     orderbookReconnectTimer = null;
@@ -672,6 +715,11 @@ export function unsubscribeStablecoinOrderbooks(): void {
   stablecoinOrderbook.clear();
   orderbookListeners.clear();
   orderbookReconnectAttempts = 0;
+}
+
+// 테스트용 내부 상태 조회 (runtime에서는 호출 안 함)
+export function _debugStablecoinSubscriberCount(): number {
+  return orderbookSubscriberCount;
 }
 
 /**

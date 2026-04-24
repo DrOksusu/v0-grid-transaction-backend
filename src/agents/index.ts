@@ -7,3 +7,4 @@ export { TestAgent } from './test-agent';
 export { VRAgent } from './vr-agent';
 export { StablecoinArbAgent } from './stablecoin-arb-agent';
 export { CrossExchangeObserverAgent } from './cross-exchange-observer-agent';
+export { MakerTakerSimulatorAgent } from './maker-taker-simulator-agent';
