@@ -18,6 +18,8 @@ const config: Config = {
   // 커버리지 설정
   collectCoverageFrom: ['src/services/**/*.ts'],
   coverageDirectory: 'coverage',
+  // 모든 테스트 실행 전 환경변수 주입 (ADMIN_EMAIL 등)
+  setupFiles: ['<rootDir>/__tests__/jest.setup.ts'],
 };
 
 export default config;
