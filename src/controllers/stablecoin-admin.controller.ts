@@ -13,7 +13,17 @@ export const getBot = async (req: AuthRequest, res: Response, next: NextFunction
   try {
     const userId = req.userId!;
     const bot = await arbService.getBot(userId);
-    res.json(bot ?? {});
+    if (!bot) {
+      res.json({});
+      return;
+    }
+    // Prisma Decimal은 JSON.stringify 시 빈 객체가 되므로 string 변환
+    res.json({
+      ...bot,
+      totalProfitUsd: bot.totalProfitUsd.toString(),
+      perCoinMinUsd: bot.perCoinMinUsd.toString(),
+      perCoinMaxUsd: bot.perCoinMaxUsd.toString(),
+    });
   } catch (error) {
     next(error);
   }
@@ -112,7 +122,13 @@ export const postKillswitch = async (req: AuthRequest, res: Response, next: Next
     }
 
     const updated = await arbService.setKillSwitch(userId, enable);
-    res.json(updated);
+    // Prisma Decimal은 JSON.stringify 시 빈 객체가 되므로 string 변환
+    res.json({
+      ...updated,
+      totalProfitUsd: updated.totalProfitUsd.toString(),
+      perCoinMinUsd: updated.perCoinMinUsd.toString(),
+      perCoinMaxUsd: updated.perCoinMaxUsd.toString(),
+    });
   } catch (error: any) {
     if (error.code === 'P2025') {
       return next(new AppError('Bot not found', 404));

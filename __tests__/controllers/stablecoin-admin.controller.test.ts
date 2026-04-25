@@ -32,8 +32,12 @@ describe('stablecoin-admin.controller', () => {
   describe('getBot', () => {
     it('userId의 봇을 조회해 200으로 반환한다', async () => {
       req = { userId: 2 };
+      const mockDecimal = (v: string) => ({ toString: () => v });
       (arbService.getBot as jest.Mock).mockResolvedValueOnce({
         id: 1, userId: 2, enabled: true, killSwitch: false,
+        totalProfitUsd: mockDecimal('0'),
+        perCoinMinUsd: mockDecimal('10'),
+        perCoinMaxUsd: mockDecimal('500'),
       });
 
       await getBot(req as AuthRequest, res as Response, next);
@@ -59,6 +63,25 @@ describe('stablecoin-admin.controller', () => {
       await getBot(req as AuthRequest, res as Response, next);
 
       expect(next).toHaveBeenCalledWith(err);
+    });
+
+    it('Decimal 필드를 string으로 직렬화한다', async () => {
+      req = { userId: 2 };
+      // Prisma Decimal mock — toString() 메서드를 가진 객체로 시뮬레이션
+      const mockDecimal = (v: string) => ({ toString: () => v });
+      (arbService.getBot as jest.Mock).mockResolvedValueOnce({
+        id: 1, userId: 2, enabled: true, killSwitch: false,
+        totalProfitUsd: mockDecimal('0.000000'),
+        perCoinMinUsd: mockDecimal('10.00'),
+        perCoinMaxUsd: mockDecimal('500.00'),
+      });
+
+      await getBot(req as AuthRequest, res as Response, next);
+
+      const sent = jsonMock.mock.calls[0][0];
+      expect(sent.totalProfitUsd).toBe('0.000000');
+      expect(sent.perCoinMinUsd).toBe('10.00');
+      expect(sent.perCoinMaxUsd).toBe('500.00');
     });
   });
 
@@ -89,6 +112,17 @@ describe('stablecoin-admin.controller', () => {
       expect(jsonMock).toHaveBeenCalledWith(
         expect.objectContaining({ books: {} })
       );
+    });
+
+    it('priceManager 에러 시 next(error)를 호출한다', async () => {
+      const err = new Error('cache not ready');
+      (priceManager.getAllStablecoinOrderbooks as jest.Mock).mockImplementationOnce(() => {
+        throw err;
+      });
+
+      await getOrderbooks(req as AuthRequest, res as Response, next);
+
+      expect(next).toHaveBeenCalledWith(err);
     });
   });
 
@@ -175,8 +209,12 @@ describe('stablecoin-admin.controller', () => {
   describe('postKillswitch', () => {
     it('enable=true 시 setKillSwitch(userId, true)를 호출한다', async () => {
       req = { userId: 2, body: { enable: true } } as any;
+      const mockDecimal = (v: string) => ({ toString: () => v });
       (arbService.setKillSwitch as jest.Mock).mockResolvedValueOnce({
         id: 1, userId: 2, killSwitch: true,
+        totalProfitUsd: mockDecimal('0'),
+        perCoinMinUsd: mockDecimal('10'),
+        perCoinMaxUsd: mockDecimal('500'),
       });
 
       await postKillswitch(req as AuthRequest, res as Response, next);
@@ -187,8 +225,12 @@ describe('stablecoin-admin.controller', () => {
 
     it('enable=false 시 setKillSwitch(userId, false)를 호출한다', async () => {
       req = { userId: 2, body: { enable: false } } as any;
+      const mockDecimal = (v: string) => ({ toString: () => v });
       (arbService.setKillSwitch as jest.Mock).mockResolvedValueOnce({
         id: 1, userId: 2, killSwitch: false,
+        totalProfitUsd: mockDecimal('0'),
+        perCoinMinUsd: mockDecimal('10'),
+        perCoinMaxUsd: mockDecimal('500'),
       });
 
       await postKillswitch(req as AuthRequest, res as Response, next);
