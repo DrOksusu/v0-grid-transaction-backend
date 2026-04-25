@@ -5,6 +5,7 @@ import * as priceManager from '../../src/services/upbit-price-manager';
 import {
   getBot,
   getOrderbooks,
+  getOpportunityStats,
 } from '../../src/controllers/stablecoin-admin.controller';
 
 jest.mock('../../src/services/stablecoin-arb.service');
@@ -85,6 +86,29 @@ describe('stablecoin-admin.controller', () => {
       expect(jsonMock).toHaveBeenCalledWith(
         expect.objectContaining({ books: {} })
       );
+    });
+  });
+
+  describe('getOpportunityStats', () => {
+    it('서비스 결과를 그대로 반환한다', async () => {
+      (arbService.getOpportunityStats as jest.Mock).mockResolvedValueOnce({
+        total: 373, last24h: 370, last1h: 0, ge20bpLast24h: 19,
+      });
+
+      await getOpportunityStats(req as AuthRequest, res as Response, next);
+
+      expect(jsonMock).toHaveBeenCalledWith({
+        total: 373, last24h: 370, last1h: 0, ge20bpLast24h: 19,
+      });
+    });
+
+    it('서비스 에러 시 next(error)를 호출한다', async () => {
+      const err = new Error('DB');
+      (arbService.getOpportunityStats as jest.Mock).mockRejectedValueOnce(err);
+
+      await getOpportunityStats(req as AuthRequest, res as Response, next);
+
+      expect(next).toHaveBeenCalledWith(err);
     });
   });
 });

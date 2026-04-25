@@ -1,6 +1,7 @@
 import { Response, NextFunction } from 'express';
 import { AuthRequest } from '../types';
 import * as arbService from '../services/stablecoin-arb.service';
+import type { OpportunityStats } from '../services/stablecoin-arb.service';
 import { getAllStablecoinOrderbooks } from '../services/upbit-price-manager';
 import { AppError } from '../middlewares/errorHandler';
 
@@ -29,6 +30,18 @@ export const getOrderbooks = async (_req: AuthRequest, res: Response, next: Next
       updatedAt: new Date().toISOString(),
       books,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /api/admin/stablecoin/opportunities/stats
+ */
+export const getOpportunityStats = async (_req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const stats: OpportunityStats = await arbService.getOpportunityStats();
+    res.json(stats);
   } catch (error) {
     next(error);
   }
