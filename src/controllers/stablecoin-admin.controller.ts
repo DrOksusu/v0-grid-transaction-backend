@@ -68,3 +68,32 @@ export const getRecentOpportunities = async (req: AuthRequest, res: Response, ne
     next(error);
   }
 };
+
+/**
+ * GET /api/admin/stablecoin/sim/overview
+ */
+export const getSimOverview = async (_req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const overview = await arbService.getSimOverview();
+
+    const serialized = {
+      bots: overview.bots.map((b: any) => ({
+        ...b,
+        quantity: b.quantity?.toString() ?? null,
+      })),
+      stats: overview.stats,
+      recentTrades: overview.recentTrades.map((t: any) => ({
+        ...t,
+        id: t.id.toString(),
+        netProfitKrw: t.netProfitKrw?.toString() ?? null,
+        grossProfitKrw: t.grossProfitKrw?.toString() ?? null,
+        feeKrw: t.feeKrw?.toString() ?? null,
+        quantity: t.quantity?.toString() ?? null,
+      })),
+    };
+
+    res.json(serialized);
+  } catch (error) {
+    next(error);
+  }
+};

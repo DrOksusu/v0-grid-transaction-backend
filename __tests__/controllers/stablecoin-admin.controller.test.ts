@@ -7,6 +7,7 @@ import {
   getOrderbooks,
   getOpportunityStats,
   getRecentOpportunities,
+  getSimOverview,
 } from '../../src/controllers/stablecoin-admin.controller';
 
 jest.mock('../../src/services/stablecoin-arb.service');
@@ -146,6 +147,27 @@ describe('stablecoin-admin.controller', () => {
 
       const sent = jsonMock.mock.calls[0][0];
       expect(sent[0].id).toBe('1234');
+    });
+  });
+
+  describe('getSimOverview', () => {
+    it('서비스 결과를 BigInt 직렬화 후 반환한다', async () => {
+      (arbService.getSimOverview as jest.Mock).mockResolvedValueOnce({
+        bots: [
+          { id: 1, makerCoin: 'USDS', takerCoin: 'USDT', bidOffsetKrw: -2, quantity: '10' },
+        ],
+        stats: { pending: 3, filled: 12, expired: 5, cancelled: 0, totalNetProfitKrw: '0' },
+        recentTrades: [
+          { id: 100n, botId: 1, status: 'PENDING', makerOrderPrice: 1482, netProfitKrw: null },
+        ],
+      });
+
+      await getSimOverview(req as AuthRequest, res as Response, next);
+
+      const sent = jsonMock.mock.calls[0][0];
+      expect(sent.bots).toHaveLength(1);
+      expect(sent.stats.pending).toBe(3);
+      expect(sent.recentTrades[0].id).toBe('100');
     });
   });
 });
