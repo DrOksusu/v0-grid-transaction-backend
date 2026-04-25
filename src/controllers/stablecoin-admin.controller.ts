@@ -17,3 +17,19 @@ export const getBot = async (req: AuthRequest, res: Response, next: NextFunction
     next(error);
   }
 };
+
+/**
+ * GET /api/admin/stablecoin/orderbooks
+ * Upbit 5종 호가 캐시 스냅샷.
+ */
+export const getOrderbooks = async (_req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const books = getAllStablecoinOrderbooks();
+    res.json({
+      updatedAt: new Date().toISOString(),
+      books,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
