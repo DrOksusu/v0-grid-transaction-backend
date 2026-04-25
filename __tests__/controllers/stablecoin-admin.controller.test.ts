@@ -8,6 +8,7 @@ import {
   getOpportunityStats,
   getRecentOpportunities,
   getSimOverview,
+  postKillswitch,
 } from '../../src/controllers/stablecoin-admin.controller';
 
 jest.mock('../../src/services/stablecoin-arb.service');
@@ -168,6 +169,52 @@ describe('stablecoin-admin.controller', () => {
       expect(sent.bots).toHaveLength(1);
       expect(sent.stats.pending).toBe(3);
       expect(sent.recentTrades[0].id).toBe('100');
+    });
+  });
+
+  describe('postKillswitch', () => {
+    it('enable=true 시 setKillSwitch(userId, true)를 호출한다', async () => {
+      req = { userId: 2, body: { enable: true } } as any;
+      (arbService.setKillSwitch as jest.Mock).mockResolvedValueOnce({
+        id: 1, userId: 2, killSwitch: true,
+      });
+
+      await postKillswitch(req as AuthRequest, res as Response, next);
+
+      expect(arbService.setKillSwitch).toHaveBeenCalledWith(2, true);
+      expect(jsonMock).toHaveBeenCalledWith(expect.objectContaining({ killSwitch: true }));
+    });
+
+    it('enable=false 시 setKillSwitch(userId, false)를 호출한다', async () => {
+      req = { userId: 2, body: { enable: false } } as any;
+      (arbService.setKillSwitch as jest.Mock).mockResolvedValueOnce({
+        id: 1, userId: 2, killSwitch: false,
+      });
+
+      await postKillswitch(req as AuthRequest, res as Response, next);
+
+      expect(arbService.setKillSwitch).toHaveBeenCalledWith(2, false);
+    });
+
+    it('enable이 boolean이 아닌 경우 400 에러를 next로 전달한다', async () => {
+      req = { userId: 2, body: { enable: 'true' } } as any;
+
+      await postKillswitch(req as AuthRequest, res as Response, next);
+
+      const err = (next as jest.Mock).mock.calls[0][0];
+      expect(err.statusCode).toBe(400);
+    });
+
+    it('Prisma P2025 (Record not found) 시 404를 반환한다', async () => {
+      req = { userId: 2, body: { enable: true } } as any;
+      const prismaErr: any = new Error('not found');
+      prismaErr.code = 'P2025';
+      (arbService.setKillSwitch as jest.Mock).mockRejectedValueOnce(prismaErr);
+
+      await postKillswitch(req as AuthRequest, res as Response, next);
+
+      const err = (next as jest.Mock).mock.calls[0][0];
+      expect(err.statusCode).toBe(404);
     });
   });
 });

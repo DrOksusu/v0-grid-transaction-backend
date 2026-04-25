@@ -97,3 +97,26 @@ export const getSimOverview = async (_req: AuthRequest, res: Response, next: Nex
     next(error);
   }
 };
+
+/**
+ * POST /api/admin/stablecoin/bot/killswitch
+ * Body: { enable: boolean }
+ */
+export const postKillswitch = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const enable = req.body?.enable;
+
+    if (typeof enable !== 'boolean') {
+      throw new AppError('Invalid body: enable must be boolean', 400);
+    }
+
+    const updated = await arbService.setKillSwitch(userId, enable);
+    res.json(updated);
+  } catch (error: any) {
+    if (error.code === 'P2025') {
+      return next(new AppError('Bot not found', 404));
+    }
+    next(error);
+  }
+};
