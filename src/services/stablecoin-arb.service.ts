@@ -97,7 +97,14 @@ export async function pruneOldOpportunities(): Promise<number> {
 /**
  * 기회 카운트 집계 — 대시보드 위젯 ③
  */
-export async function getOpportunityStats() {
+export interface OpportunityStats {
+  total: number;
+  last24h: number;
+  last1h: number;
+  ge20bpLast24h: number;
+}
+
+export async function getOpportunityStats(): Promise<OpportunityStats> {
   const now = Date.now();
   const t24h = new Date(now - 24 * 3600 * 1000);
   const t1h = new Date(now - 3600 * 1000);
@@ -116,9 +123,16 @@ export async function getOpportunityStats() {
 
 /**
  * 최근 기회 N건 — 대시보드 위젯 ④
+ *
+ * limit이 NaN/음수/소수/100 초과인 경우:
+ *   - NaN/Infinity → default 20으로 폴백
+ *   - 음수 또는 0 → 1로 클램프
+ *   - 100 초과 → 100으로 클램프
+ *   - 소수 → Math.floor 적용
  */
 export async function listRecentOpportunities(limit = 20) {
-  const safeLimit = Math.min(Math.max(limit, 1), 100);
+  const n = Number.isFinite(limit) ? Math.floor(limit) : 20;
+  const safeLimit = Math.min(Math.max(n, 1), 100);
   return prisma.stablecoinArbOpportunity.findMany({
     orderBy: { detectedAt: 'desc' },
     take: safeLimit,
@@ -128,7 +142,19 @@ export async function listRecentOpportunities(limit = 20) {
 /**
  * Maker-Taker 시뮬레이터 종합 — 대시보드 위젯 ⑤
  */
-export async function getSimOverview() {
+export interface SimOverview {
+  bots: any[];           // Prisma model 타입 — 컨트롤러에서 직렬화 시 Decimal/Date 처리
+  stats: {
+    pending: number;
+    filled: number;
+    expired: number;
+    cancelled: number;
+    totalNetProfitKrw: string;
+  };
+  recentTrades: any[];   // Prisma model 타입
+}
+
+export async function getSimOverview(): Promise<SimOverview> {
   const [bots, statusGroups, profitAgg, recentTrades] = await Promise.all([
     prisma.makerTakerSimBot.findMany({ orderBy: { id: 'asc' } }),
     prisma.makerTakerSimTrade.groupBy({

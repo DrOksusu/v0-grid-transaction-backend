@@ -27,6 +27,18 @@ describe('stablecoin-arb.service 신규 헬퍼', () => {
         ge20bpLast24h: 19,
       });
       expect(countMock).toHaveBeenCalledTimes(4);
+
+      // 4번 count 호출의 인자가 정확한지 검증 (회귀 방어)
+      expect(countMock).toHaveBeenNthCalledWith(1);  // total: 인자 없음
+      expect(countMock).toHaveBeenNthCalledWith(2, {
+        where: { detectedAt: { gt: expect.any(Date) } },
+      });
+      expect(countMock).toHaveBeenNthCalledWith(3, {
+        where: { detectedAt: { gt: expect.any(Date) } },
+      });
+      expect(countMock).toHaveBeenNthCalledWith(4, {
+        where: { detectedAt: { gt: expect.any(Date) }, spreadBps: { gte: 20 } },
+      });
     });
   });
 
@@ -64,6 +76,39 @@ describe('stablecoin-arb.service 신규 헬퍼', () => {
         take: 100,
       });
     });
+
+    it('limit=NaN 인 경우 default 20으로 폴백한다', async () => {
+      const findManyMock = stablecoinPrisma.stablecoinArbOpportunity.findMany as jest.Mock;
+      findManyMock.mockResolvedValueOnce([]);
+
+      await listRecentOpportunities(NaN);
+      expect(findManyMock).toHaveBeenCalledWith({
+        orderBy: { detectedAt: 'desc' },
+        take: 20,
+      });
+    });
+
+    it('limit=0 인 경우 1로 클램프한다', async () => {
+      const findManyMock = stablecoinPrisma.stablecoinArbOpportunity.findMany as jest.Mock;
+      findManyMock.mockResolvedValueOnce([]);
+
+      await listRecentOpportunities(0);
+      expect(findManyMock).toHaveBeenCalledWith({
+        orderBy: { detectedAt: 'desc' },
+        take: 1,
+      });
+    });
+
+    it('limit=-5 인 경우 1로 클램프한다', async () => {
+      const findManyMock = stablecoinPrisma.stablecoinArbOpportunity.findMany as jest.Mock;
+      findManyMock.mockResolvedValueOnce([]);
+
+      await listRecentOpportunities(-5);
+      expect(findManyMock).toHaveBeenCalledWith({
+        orderBy: { detectedAt: 'desc' },
+        take: 1,
+      });
+    });
   });
 
   describe('getSimOverview', () => {
@@ -94,6 +139,20 @@ describe('stablecoin-arb.service 신규 헬퍼', () => {
         totalNetProfitKrw: '100',
       });
       expect(overview.recentTrades).toHaveLength(1);
+
+      // 4 prisma 호출 인자 검증 (회귀 방어)
+      expect(botsMock).toHaveBeenCalledWith({ orderBy: { id: 'asc' } });
+      expect(groupByMock).toHaveBeenCalledWith({
+        by: ['status'],
+        _count: { id: true },
+      });
+      expect(aggregateMock).toHaveBeenCalledWith({
+        _sum: { netProfitKrw: true },
+      });
+      expect(tradesFindManyMock).toHaveBeenCalledWith({
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      });
     });
   });
 });
