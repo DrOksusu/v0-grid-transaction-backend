@@ -46,3 +46,25 @@ export const getOpportunityStats = async (_req: AuthRequest, res: Response, next
     next(error);
   }
 };
+
+/**
+ * GET /api/admin/stablecoin/opportunities/recent?limit=20
+ */
+export const getRecentOpportunities = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const limit = parseInt((req.query.limit as string) || '20', 10);
+    const rows = await arbService.listRecentOpportunities(Number.isFinite(limit) ? limit : 20);
+
+    // BigInt id → string + Decimal 필드 → string (JSON 직렬화 호환)
+    const serialized = rows.map((r: any) => ({
+      ...r,
+      id: r.id.toString(),
+      bidSoldKrw: r.bidSoldKrw?.toString() ?? null,
+      askBoughtKrw: r.askBoughtKrw?.toString() ?? null,
+    }));
+
+    res.json(serialized);
+  } catch (error) {
+    next(error);
+  }
+};
