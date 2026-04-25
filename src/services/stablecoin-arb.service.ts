@@ -93,3 +93,67 @@ export async function pruneOldOpportunities(): Promise<number> {
   });
   return result.count;
 }
+
+/**
+ * 기회 카운트 집계 — 대시보드 위젯 ③
+ */
+export async function getOpportunityStats() {
+  const now = Date.now();
+  const t24h = new Date(now - 24 * 3600 * 1000);
+  const t1h = new Date(now - 3600 * 1000);
+
+  const [total, last24h, last1h, ge20bpLast24h] = await Promise.all([
+    prisma.stablecoinArbOpportunity.count(),
+    prisma.stablecoinArbOpportunity.count({ where: { detectedAt: { gt: t24h } } }),
+    prisma.stablecoinArbOpportunity.count({ where: { detectedAt: { gt: t1h } } }),
+    prisma.stablecoinArbOpportunity.count({
+      where: { detectedAt: { gt: t24h }, spreadBps: { gte: 20 } },
+    }),
+  ]);
+
+  return { total, last24h, last1h, ge20bpLast24h };
+}
+
+/**
+ * 최근 기회 N건 — 대시보드 위젯 ④
+ */
+export async function listRecentOpportunities(limit = 20) {
+  const safeLimit = Math.min(Math.max(limit, 1), 100);
+  return prisma.stablecoinArbOpportunity.findMany({
+    orderBy: { detectedAt: 'desc' },
+    take: safeLimit,
+  });
+}
+
+/**
+ * Maker-Taker 시뮬레이터 종합 — 대시보드 위젯 ⑤
+ */
+export async function getSimOverview() {
+  const [bots, statusGroups, profitAgg, recentTrades] = await Promise.all([
+    prisma.makerTakerSimBot.findMany({ orderBy: { id: 'asc' } }),
+    prisma.makerTakerSimTrade.groupBy({
+      by: ['status'],
+      _count: { id: true },
+    }),
+    prisma.makerTakerSimTrade.aggregate({
+      _sum: { netProfitKrw: true },
+    }),
+    prisma.makerTakerSimTrade.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    }),
+  ]);
+
+  const statusMap = Object.fromEntries(
+    statusGroups.map((g: any) => [g.status, g._count.id])
+  );
+  const stats = {
+    pending: statusMap.PENDING ?? 0,
+    filled: statusMap.FILLED ?? 0,
+    expired: statusMap.EXPIRED ?? 0,
+    cancelled: statusMap.CANCELLED ?? 0,
+    totalNetProfitKrw: profitAgg._sum.netProfitKrw?.toString() ?? '0',
+  };
+
+  return { bots, stats, recentTrades };
+}
