@@ -8,6 +8,8 @@ import {
   getRecentOpportunities,
   getSimOverview,
   postKillswitch,
+  postLive,
+  postStage,
 } from '../controllers/stablecoin-admin.controller';
 
 const router = Router();
@@ -22,5 +24,7 @@ router.get('/opportunities/stats', getOpportunityStats);
 router.get('/opportunities/recent', getRecentOpportunities);
 router.get('/sim/overview', getSimOverview);
 router.post('/bot/killswitch', postKillswitch);
+router.post('/bot/live', postLive);
+router.post('/bot/stage', postStage);
 
 export default router;

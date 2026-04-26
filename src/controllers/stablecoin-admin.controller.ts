@@ -126,6 +126,69 @@ export const getSimOverview = async (_req: AuthRequest, res: Response, next: Nex
 };
 
 /**
+ * POST /api/admin/stablecoin/bot/live
+ * Body: { live: boolean, confirm?: 'I_UNDERSTAND_LIVE_TRADING' }
+ *
+ * live=true 전환은 실거래 시작 → confirm 문자열 필수 (오발 방지).
+ * live=false 전환은 confirm 불필요.
+ */
+export const postLive = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const live = req.body?.live;
+    const confirm = req.body?.confirm;
+
+    if (typeof live !== 'boolean') {
+      throw new AppError('Invalid body: live must be boolean', 400);
+    }
+    if (live && confirm !== 'I_UNDERSTAND_LIVE_TRADING') {
+      throw new AppError('live=true requires confirm: "I_UNDERSTAND_LIVE_TRADING"', 400);
+    }
+
+    const updated = await arbService.setLive(userId, live);
+    res.json({
+      ...updated,
+      totalProfitUsd: updated.totalProfitUsd.toString(),
+      perCoinMinUsd: updated.perCoinMinUsd.toString(),
+      perCoinMaxUsd: updated.perCoinMaxUsd.toString(),
+    });
+  } catch (error: any) {
+    if (error.code === 'P2025') return next(new AppError('Bot not found', 404));
+    next(error);
+  }
+};
+
+/**
+ * POST /api/admin/stablecoin/bot/stage
+ * Body: { stage: 1 | 2 | 3 }
+ *
+ * Canary 단계 일괄 적용:
+ *  Stage 1: 1만원/일3건/손실 1만원
+ *  Stage 2: 2만원/일10건/손실 3만원
+ *  Stage 3: 5만원/일30건/손실 5만원
+ */
+export const postStage = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const stage = req.body?.stage;
+    if (![1, 2, 3].includes(stage)) {
+      throw new AppError('Invalid body: stage must be 1, 2, or 3', 400);
+    }
+
+    const updated = await arbService.setStage(userId, stage as 1 | 2 | 3);
+    res.json({
+      ...updated,
+      totalProfitUsd: updated.totalProfitUsd.toString(),
+      perCoinMinUsd: updated.perCoinMinUsd.toString(),
+      perCoinMaxUsd: updated.perCoinMaxUsd.toString(),
+    });
+  } catch (error: any) {
+    if (error.code === 'P2025') return next(new AppError('Bot not found', 404));
+    next(error);
+  }
+};
+
+/**
  * POST /api/admin/stablecoin/bot/killswitch
  * Body: { enable: boolean }
  */
