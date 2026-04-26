@@ -58,14 +58,23 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     // 이벤트 드리븐 - 사이클 루프 미사용
   }
 
+  // DEBUG: evaluate 호출 카운터 (스팸 방지)
+  private static _DBG_EVAL_COUNT = 0;
+
   private async evaluate(): Promise<void> {
+    MakerTakerSimulatorAgent._DBG_EVAL_COUNT++;
+    const dbgN = MakerTakerSimulatorAgent._DBG_EVAL_COUNT;
+    const dbgLog = dbgN <= 5 || dbgN % 200 === 0;
+    if (dbgLog) console.log(`[MakerTakerSimulatorAgent][DBG] eval#${dbgN} enter inFlight=${this.evaluateInFlight}`);
     if (this.evaluateInFlight) return;
     this.evaluateInFlight = true;
 
     try {
+      if (dbgLog) console.log(`[MakerTakerSimulatorAgent][DBG] eval#${dbgN} pre-findMany`);
       const bots = await prisma.makerTakerSimBot.findMany({
         where: { enabled: true, killSwitch: false },
       });
+      if (dbgLog) console.log(`[MakerTakerSimulatorAgent][DBG] eval#${dbgN} post-findMany bots=${bots.length}`);
       if (bots.length === 0) return;
 
       const books = getAllStablecoinOrderbooks();
