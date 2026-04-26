@@ -35,7 +35,10 @@ export const getBot = async (req: AuthRequest, res: Response, next: NextFunction
  */
 export const getOrderbooks = async (_req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const books = getAllStablecoinOrderbooks();
+    // upbit-price-manager는 ReadonlyMap을 반환하므로 plain object로 변환
+    // (Map은 JSON.stringify 시 빈 객체 {}가 되는 문제 회피)
+    const booksMap = getAllStablecoinOrderbooks();
+    const books = Object.fromEntries(booksMap);
     res.json({
       updatedAt: new Date().toISOString(),
       books,
