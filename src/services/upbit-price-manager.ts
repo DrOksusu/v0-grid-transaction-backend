@@ -565,25 +565,6 @@ let orderbookSubscriberCount = 0;
 
 const UPBIT_WS_URL = 'wss://api.upbit.com/websocket/v1';
 
-// ─── DEBUG: 호가 WS silent fail 진단용 (2026-04-26) ───
-// 모듈 로드 시점 instance ID — 두 번 로드되면 두 개의 다른 ID가 찍힘
-const _DBG_MODULE_ID = `m${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-let _DBG_WS_SEQ = 0;        // 생성된 WS 일련번호
-let _DBG_MSG_COUNT = 0;     // message handler 진입 횟수
-let _DBG_LAST_MSG_AT = 0;   // 마지막 message 수신 시각
-console.log(`[SCArb][DBG] module loaded id=${_DBG_MODULE_ID}`);
-
-// 60초 주기 heartbeat — 외부에서 cache 비어있어도 process 내부 상태를 볼 수 있게
-setInterval(() => {
-  const ws = orderbookWs;
-  console.log(
-    `[SCArb][DBG] hb mod=${_DBG_MODULE_ID} subs=${orderbookSubscriberCount} ` +
-    `ws=${ws ? `seq${(ws as any)._dbgSeq}/state${ws.readyState}` : 'null'} ` +
-    `cache=${stablecoinOrderbook.size} listeners=${orderbookListeners.size} ` +
-    `msgs=${_DBG_MSG_COUNT} lastMsgAgoMs=${_DBG_LAST_MSG_AT ? Date.now() - _DBG_LAST_MSG_AT : 'never'}`
-  );
-}, 60_000);
-
 /**
  * 지수 백오프 재연결 스케줄링 (1s, 2s, 4s, ... 최대 30s)
  * 최대 시도 횟수 초과 시 중단
@@ -614,10 +595,6 @@ function scheduleOrderbookReconnect(): void {
  */
 export function subscribeStablecoinOrderbooks(): void {
   orderbookSubscriberCount++;
-  console.log(
-    `[SCArb][DBG] subscribe called mod=${_DBG_MODULE_ID} subs=${orderbookSubscriberCount} ` +
-    `wsExists=${!!orderbookWs} state=${orderbookWs ? orderbookWs.readyState : 'n/a'}`
-  );
   if (orderbookWs && (orderbookWs.readyState === WebSocket.OPEN || orderbookWs.readyState === WebSocket.CONNECTING)) {
     return; // 이미 연결됐거나 연결 중 → no-op (중복 WS 생성 방지)
   }
@@ -636,22 +613,11 @@ function connectOrderbookWsInternal(): void {
   if (orderbookWs && (orderbookWs.readyState === WebSocket.OPEN || orderbookWs.readyState === WebSocket.CONNECTING)) return;
 
   const ws = new WebSocket(UPBIT_WS_URL);
-  const wsSeq = ++_DBG_WS_SEQ;
-  (ws as any)._dbgSeq = wsSeq;
-  const prevSeq = orderbookWs ? (orderbookWs as any)._dbgSeq : null;
   orderbookWs = ws;
-  console.log(
-    `[SCArb][DBG] connectInternal new ws seq=${wsSeq} prevSeq=${prevSeq} mod=${_DBG_MODULE_ID}`
-  );
 
   ws.on('open', () => {
-    const isOwner = orderbookWs === ws;
-    console.log(
-      `[SCArb][DBG] open seq=${wsSeq} owner=${isOwner} ` +
-      `globalSeq=${orderbookWs ? (orderbookWs as any)._dbgSeq : 'null'} state=${ws.readyState}`
-    );
     // 전역이 다른 WS로 교체됐다면 이 WS는 orphan → 송신 스킵
-    if (!isOwner) {
+    if (orderbookWs !== ws) {
       try { ws.close(); } catch { /* ignore */ }
       return;
     }
@@ -666,17 +632,8 @@ function connectOrderbookWsInternal(): void {
   });
 
   ws.on('message', (data: Buffer) => {
-    _DBG_MSG_COUNT++;
-    _DBG_LAST_MSG_AT = Date.now();
-    const isOwner = orderbookWs === ws;
-    if (_DBG_MSG_COUNT <= 5 || _DBG_MSG_COUNT % 200 === 0) {
-      // 처음 5개 + 200개마다 로그 (스팸 방지)
-      console.log(
-        `[SCArb][DBG] msg #${_DBG_MSG_COUNT} seq=${wsSeq} owner=${isOwner} len=${data.length}`
-      );
-    }
     // orphan WS가 메시지를 전파하지 않도록 방어
-    if (!isOwner) return;
+    if (orderbookWs !== ws) return;
     try {
       const parsed = JSON.parse(data.toString());
       if (parsed.type !== 'orderbook') return;
@@ -707,10 +664,7 @@ function connectOrderbookWsInternal(): void {
     }
   });
 
-  ws.on('close', (code: number, reason: Buffer) => {
-    console.log(
-      `[SCArb][DBG] close seq=${wsSeq} owner=${orderbookWs === ws} code=${code} reason=${reason?.toString() || ''}`
-    );
+  ws.on('close', () => {
     // 이 close가 orphan WS의 것이면 reconnect 예약하지 않음
     if (orderbookWs !== ws) {
       ws.removeAllListeners();
@@ -730,11 +684,7 @@ function connectOrderbookWsInternal(): void {
   });
 
   ws.on('error', (err: Error) => {
-    console.error(`[SCArb][DBG] error seq=${wsSeq} msg=${err.message}`);
-  });
-
-  ws.on('unexpected-response', (_req, res) => {
-    console.error(`[SCArb][DBG] unexpected-response seq=${wsSeq} status=${res.statusCode}`);
+    console.error('[StablecoinArb] orderbook WS 에러:', err.message);
   });
 }
 
