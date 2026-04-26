@@ -10,11 +10,12 @@ export interface IocClient {
   ): Promise<UpbitOrderResp>;
 }
 
-/** Upbit best+ioc 주문 응답 (M1 검증으로 확정된 필드만 추림) */
+/** Upbit best+ioc 주문 응답 (M1 검증으로 확정된 필드만 추림).
+ *  executed_volume은 일부 응답에서 누락될 수 있어 optional. parseFloat 시 '0' fallback. */
 export interface UpbitOrderResp {
   uuid: string;
-  state: string;
-  executed_volume: string;
+  state?: string;
+  executed_volume?: string;
   trades?: Array<{ funds: string }>;
   paid_fee?: string;
 }
