@@ -86,11 +86,12 @@ describe('stablecoin-admin.controller', () => {
   });
 
   describe('getOrderbooks', () => {
-    it('upbit-price-manager 캐시 결과를 updatedAt과 함께 반환한다', async () => {
-      (priceManager.getAllStablecoinOrderbooks as jest.Mock).mockReturnValueOnce({
-        USDT: { bid: 1486, ask: 1487, bidSize: 100, askSize: 200 },
-        USDC: { bid: 1486, ask: 1487, bidSize: 50, askSize: 75 },
-      });
+    it('upbit-price-manager Map을 plain object로 변환해 반환한다', async () => {
+      // 실제 upbit-price-manager는 ReadonlyMap을 반환 — 테스트 mock도 Map으로
+      (priceManager.getAllStablecoinOrderbooks as jest.Mock).mockReturnValueOnce(new Map([
+        ['USDT', { bid: 1486, ask: 1487, bidSize: 100, askSize: 200 }],
+        ['USDC', { bid: 1486, ask: 1487, bidSize: 50, askSize: 75 }],
+      ]));
 
       await getOrderbooks(req as AuthRequest, res as Response, next);
 
@@ -99,13 +100,18 @@ describe('stablecoin-admin.controller', () => {
           updatedAt: expect.any(String),
           books: expect.objectContaining({
             USDT: expect.objectContaining({ bid: 1486 }),
+            USDC: expect.objectContaining({ bid: 1486 }),
           }),
         })
       );
+      // Map이 plain object로 변환됐는지 명시 검증 (JSON 직렬화 호환)
+      const sent = jsonMock.mock.calls[0][0];
+      expect(sent.books).not.toBeInstanceOf(Map);
+      expect(Object.keys(sent.books)).toEqual(['USDT', 'USDC']);
     });
 
-    it('캐시가 빈 객체여도 정상 응답한다', async () => {
-      (priceManager.getAllStablecoinOrderbooks as jest.Mock).mockReturnValueOnce({});
+    it('빈 Map 캐시여도 정상 응답한다', async () => {
+      (priceManager.getAllStablecoinOrderbooks as jest.Mock).mockReturnValueOnce(new Map());
 
       await getOrderbooks(req as AuthRequest, res as Response, next);
 
