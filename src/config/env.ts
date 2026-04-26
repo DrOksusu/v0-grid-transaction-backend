@@ -50,4 +50,11 @@ export const config = {
     // 입금 확인 폴링 간격 (ms)
     pollInterval: parseInt(process.env.DONATION_POLL_INTERVAL || '180000'), // 3분
   },
+  // 관리자 이메일 (admin 페이지/API 접근 권한자)
+  adminEmail: process.env.ADMIN_EMAIL || '',
 };
+
+// startup 검증 — 미설정 시 즉시 throw
+if (!config.adminEmail) {
+  throw new Error('ADMIN_EMAIL not configured. Set it in .env (local) or container env (production).');
+}

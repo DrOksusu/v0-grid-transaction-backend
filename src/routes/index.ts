@@ -15,6 +15,7 @@ import upbitDonationRoutes from './upbit-donation';
 import adminDonationRoutes from './admin-donation';
 import maRoutes from './ma';
 import agentRoutes from './agents';
+import stablecoinAdminRoutes from './stablecoin-admin';
 
 const router = Router();
 
@@ -42,5 +43,6 @@ router.use('/upbit-donation', upbitDonationRoutes);
 router.use('/admin', adminDonationRoutes);
 router.use('/ma', maRoutes);
 router.use('/agents', agentRoutes);
+router.use('/admin/stablecoin', stablecoinAdminRoutes);
 
 export default router;

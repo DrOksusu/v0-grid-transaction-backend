@@ -93,3 +93,93 @@ export async function pruneOldOpportunities(): Promise<number> {
   });
   return result.count;
 }
+
+/**
+ * 기회 카운트 집계 — 대시보드 위젯 ③
+ */
+export interface OpportunityStats {
+  total: number;
+  last24h: number;
+  last1h: number;
+  ge20bpLast24h: number;
+}
+
+export async function getOpportunityStats(): Promise<OpportunityStats> {
+  const now = Date.now();
+  const t24h = new Date(now - 24 * 3600 * 1000);
+  const t1h = new Date(now - 3600 * 1000);
+
+  const [total, last24h, last1h, ge20bpLast24h] = await Promise.all([
+    prisma.stablecoinArbOpportunity.count(),
+    prisma.stablecoinArbOpportunity.count({ where: { detectedAt: { gt: t24h } } }),
+    prisma.stablecoinArbOpportunity.count({ where: { detectedAt: { gt: t1h } } }),
+    prisma.stablecoinArbOpportunity.count({
+      where: { detectedAt: { gt: t24h }, spreadBps: { gte: 20 } },
+    }),
+  ]);
+
+  return { total, last24h, last1h, ge20bpLast24h };
+}
+
+/**
+ * 최근 기회 N건 — 대시보드 위젯 ④
+ *
+ * limit이 NaN/음수/소수/100 초과인 경우:
+ *   - NaN/Infinity → default 20으로 폴백
+ *   - 음수 또는 0 → 1로 클램프
+ *   - 100 초과 → 100으로 클램프
+ *   - 소수 → Math.floor 적용
+ */
+export async function listRecentOpportunities(limit = 20) {
+  const n = Number.isFinite(limit) ? Math.floor(limit) : 20;
+  const safeLimit = Math.min(Math.max(n, 1), 100);
+  return prisma.stablecoinArbOpportunity.findMany({
+    orderBy: { detectedAt: 'desc' },
+    take: safeLimit,
+  });
+}
+
+/**
+ * Maker-Taker 시뮬레이터 종합 — 대시보드 위젯 ⑤
+ */
+export interface SimOverview {
+  bots: any[];           // Prisma model 타입 — 컨트롤러에서 직렬화 시 Decimal/Date 처리
+  stats: {
+    pending: number;
+    filled: number;
+    expired: number;
+    cancelled: number;
+    totalNetProfitKrw: string;
+  };
+  recentTrades: any[];   // Prisma model 타입
+}
+
+export async function getSimOverview(): Promise<SimOverview> {
+  const [bots, statusGroups, profitAgg, recentTrades] = await Promise.all([
+    prisma.makerTakerSimBot.findMany({ orderBy: { id: 'asc' } }),
+    prisma.makerTakerSimTrade.groupBy({
+      by: ['status'],
+      _count: { id: true },
+    }),
+    prisma.makerTakerSimTrade.aggregate({
+      _sum: { netProfitKrw: true },
+    }),
+    prisma.makerTakerSimTrade.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    }),
+  ]);
+
+  const statusMap = Object.fromEntries(
+    statusGroups.map((g: any) => [g.status, g._count.id])
+  );
+  const stats = {
+    pending: statusMap.PENDING ?? 0,
+    filled: statusMap.FILLED ?? 0,
+    expired: statusMap.EXPIRED ?? 0,
+    cancelled: statusMap.CANCELLED ?? 0,
+    totalNetProfitKrw: profitAgg._sum.netProfitKrw?.toString() ?? '0',
+  };
+
+  return { bots, stats, recentTrades };
+}
