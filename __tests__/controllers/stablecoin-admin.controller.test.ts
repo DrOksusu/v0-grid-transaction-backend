@@ -10,6 +10,8 @@ import {
   getRecentOpportunities,
   getSimOverview,
   postKillswitch,
+  postLive,
+  postStage,
 } from '../../src/controllers/stablecoin-admin.controller';
 
 jest.mock('../../src/services/stablecoin-arb.service');
@@ -285,6 +287,87 @@ describe('stablecoin-admin.controller', () => {
 
       const err = (next as jest.Mock).mock.calls[0][0];
       expect(err.statusCode).toBe(404);
+    });
+  });
+
+  describe('postLive', () => {
+    const mockDecimal = (v: string) => ({ toString: () => v });
+    const baseBotMock = {
+      id: 1, userId: 2, enabled: true, killSwitch: false, live: false,
+      totalProfitUsd: mockDecimal('0'),
+      perCoinMinUsd: mockDecimal('10'),
+      perCoinMaxUsd: mockDecimal('500'),
+    };
+
+    it('live=false → setLive 호출 (confirm 불필요)', async () => {
+      req = { userId: 2, body: { live: false } } as any;
+      (arbService.setLive as jest.Mock).mockResolvedValueOnce({ ...baseBotMock, live: false });
+
+      await postLive(req as AuthRequest, res as Response, next);
+
+      expect(arbService.setLive).toHaveBeenCalledWith(2, false);
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('live=true + confirm 누락 → 400', async () => {
+      req = { userId: 2, body: { live: true } } as any;
+      await postLive(req as AuthRequest, res as Response, next);
+
+      const err = (next as jest.Mock).mock.calls[0][0];
+      expect(err.statusCode).toBe(400);
+      expect(err.message).toMatch(/confirm/);
+    });
+
+    it('live=true + confirm 정확 → setLive 호출', async () => {
+      req = { userId: 2, body: { live: true, confirm: 'I_UNDERSTAND_LIVE_TRADING' } } as any;
+      (arbService.setLive as jest.Mock).mockResolvedValueOnce({ ...baseBotMock, live: true });
+
+      await postLive(req as AuthRequest, res as Response, next);
+
+      expect(arbService.setLive).toHaveBeenCalledWith(2, true);
+    });
+
+    it('live가 boolean 아님 → 400', async () => {
+      req = { userId: 2, body: { live: 'yes' } } as any;
+      await postLive(req as AuthRequest, res as Response, next);
+
+      const err = (next as jest.Mock).mock.calls[0][0];
+      expect(err.statusCode).toBe(400);
+    });
+  });
+
+  describe('postStage', () => {
+    const mockDecimal = (v: string) => ({ toString: () => v });
+    const baseBotMock = {
+      id: 1, userId: 2, enabled: true, killSwitch: false, live: false,
+      totalProfitUsd: mockDecimal('0'),
+      perCoinMinUsd: mockDecimal('10'),
+      perCoinMaxUsd: mockDecimal('500'),
+    };
+
+    it('stage=1 → setStage 호출', async () => {
+      req = { userId: 2, body: { stage: 1 } } as any;
+      (arbService.setStage as jest.Mock).mockResolvedValueOnce(baseBotMock);
+
+      await postStage(req as AuthRequest, res as Response, next);
+
+      expect(arbService.setStage).toHaveBeenCalledWith(2, 1);
+    });
+
+    it('stage=4 (invalid) → 400', async () => {
+      req = { userId: 2, body: { stage: 4 } } as any;
+      await postStage(req as AuthRequest, res as Response, next);
+
+      const err = (next as jest.Mock).mock.calls[0][0];
+      expect(err.statusCode).toBe(400);
+    });
+
+    it('stage 누락 → 400', async () => {
+      req = { userId: 2, body: {} } as any;
+      await postStage(req as AuthRequest, res as Response, next);
+
+      const err = (next as jest.Mock).mock.calls[0][0];
+      expect(err.statusCode).toBe(400);
     });
   });
 });
