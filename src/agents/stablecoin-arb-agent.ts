@@ -62,16 +62,25 @@ export class StablecoinArbAgent extends BaseAgent {
    * 호가 업데이트 시 모든 활성 봇에 대해 기회 감지.
    * 동시 evaluate 호출 방지를 위해 evaluateInFlight 플래그 체크.
    */
+  // DEBUG: evaluate 호출 카운터 (스팸 방지)
+  private static _DBG_EVAL_COUNT = 0;
+
   private async evaluate(): Promise<void> {
+    StablecoinArbAgent._DBG_EVAL_COUNT++;
+    const dbgN = StablecoinArbAgent._DBG_EVAL_COUNT;
+    const dbgLog = dbgN <= 5 || dbgN % 200 === 0;
+    if (dbgLog) console.log(`[StablecoinArbAgent][DBG] eval#${dbgN} enter inFlight=${this.evaluateInFlight}`);
     // 이전 evaluate 아직 진행 중 → 이번 틱은 스킵
     if (this.evaluateInFlight) return;
     this.evaluateInFlight = true;
 
     try {
+      if (dbgLog) console.log(`[StablecoinArbAgent][DBG] eval#${dbgN} pre-findMany`);
       // enabled=true이고 킬스위치가 꺼진 활성 봇만 조회
       const bots = await prisma.stablecoinArbBot.findMany({
         where: { enabled: true, killSwitch: false },
       });
+      if (dbgLog) console.log(`[StablecoinArbAgent][DBG] eval#${dbgN} post-findMany bots=${bots.length}`);
       if (bots.length === 0) return;
 
       const books = getAllStablecoinOrderbooks();
