@@ -2,6 +2,7 @@ import type { Response } from 'express';
 import type { AuthRequest } from '../../src/types';
 import * as arbService from '../../src/services/stablecoin-arb.service';
 import * as priceManager from '../../src/services/upbit-price-manager';
+import type { OrderbookTop } from '../../src/services/upbit-price-manager';
 import {
   getBot,
   getOrderbooks,
@@ -86,28 +87,49 @@ describe('stablecoin-admin.controller', () => {
   });
 
   describe('getOrderbooks', () => {
-    it('upbit-price-manager Map을 plain object로 변환해 반환한다', async () => {
-      // 실제 upbit-price-manager는 ReadonlyMap을 반환 — 테스트 mock도 Map으로
-      (priceManager.getAllStablecoinOrderbooks as jest.Mock).mockReturnValueOnce(new Map([
-        ['USDT', { bid: 1486, ask: 1487, bidSize: 100, askSize: 200 }],
-        ['USDC', { bid: 1486, ask: 1487, bidSize: 50, askSize: 75 }],
-      ]));
+    it('upbit-price-manager의 OrderbookTop Map을 KRW- 제거 + 평탄화한 형식으로 변환해 반환한다', async () => {
+      // 실제 upbit-price-manager.getAllStablecoinOrderbooks()의 시그니처:
+      //   Map<string("KRW-XXX"), OrderbookTop({ market, bid:{price,size}, ask:{price,size}, timestamp })>
+      // 프론트 위젯 기대 형식:
+      //   { [coin("XXX")]: { bid:number, ask:number, bidSize:number, askSize:number } }
+      const mockMap: Map<string, OrderbookTop> = new Map([
+        [
+          'KRW-USDT',
+          {
+            market: 'KRW-USDT',
+            bid: { price: 1486, size: 100 },
+            ask: { price: 1487, size: 200 },
+            timestamp: 1714123456789,
+          },
+        ],
+        [
+          'KRW-USDC',
+          {
+            market: 'KRW-USDC',
+            bid: { price: 1485, size: 50 },
+            ask: { price: 1488, size: 75 },
+            timestamp: 1714123456999,
+          },
+        ],
+      ]);
+      (priceManager.getAllStablecoinOrderbooks as jest.Mock).mockReturnValueOnce(mockMap);
 
       await getOrderbooks(req as AuthRequest, res as Response, next);
 
+      // KRW- prefix 제거 + bid/ask 평탄화 검증
       expect(jsonMock).toHaveBeenCalledWith(
         expect.objectContaining({
           updatedAt: expect.any(String),
-          books: expect.objectContaining({
-            USDT: expect.objectContaining({ bid: 1486 }),
-            USDC: expect.objectContaining({ bid: 1486 }),
-          }),
+          books: {
+            USDT: { bid: 1486, ask: 1487, bidSize: 100, askSize: 200 },
+            USDC: { bid: 1485, ask: 1488, bidSize: 50, askSize: 75 },
+          },
         })
       );
       // Map이 plain object로 변환됐는지 명시 검증 (JSON 직렬화 호환)
       const sent = jsonMock.mock.calls[0][0];
       expect(sent.books).not.toBeInstanceOf(Map);
-      expect(Object.keys(sent.books)).toEqual(['USDT', 'USDC']);
+      expect(Object.keys(sent.books).sort()).toEqual(['USDC', 'USDT']);
     });
 
     it('빈 Map 캐시여도 정상 응답한다', async () => {
