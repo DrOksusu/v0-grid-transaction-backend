@@ -2,7 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthRequest } from '../types';
 import * as arbService from '../services/stablecoin-arb.service';
 import type { OpportunityStats } from '../services/stablecoin-arb.service';
-import { getAllStablecoinOrderbooks } from '../services/upbit-price-manager';
+import { getAllStablecoinOrderbooks, type OrderbookTop } from '../services/upbit-price-manager';
 import { AppError } from '../middlewares/errorHandler';
 
 /**
@@ -32,13 +32,27 @@ export const getBot = async (req: AuthRequest, res: Response, next: NextFunction
 /**
  * GET /api/admin/stablecoin/orderbooks
  * Upbit 5종 호가 캐시 스냅샷.
+ *
+ * 프론트 위젯이 기대하는 응답 형식:
+ *   { updatedAt: ISO, books: { USDT: { bid, ask, bidSize, askSize }, ... } }
+ *
+ * upbit-price-manager 내부 형식과 두 가지 차이가 있어 변환 필요:
+ *   1. Map key: "KRW-USDT" → "USDT" (KRW- prefix 제거)
+ *   2. Value: OrderbookTop({ bid: {price,size}, ask: {price,size} }) → 평탄화
  */
 export const getOrderbooks = async (_req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    // upbit-price-manager는 ReadonlyMap을 반환하므로 plain object로 변환
-    // (Map은 JSON.stringify 시 빈 객체 {}가 되는 문제 회피)
-    const booksMap = getAllStablecoinOrderbooks();
-    const books = Object.fromEntries(booksMap);
+    const booksMap: ReadonlyMap<string, OrderbookTop> = getAllStablecoinOrderbooks();
+    const books: Record<string, { bid: number; ask: number; bidSize: number; askSize: number }> = {};
+    for (const [market, top] of booksMap) {
+      const coin = market.replace(/^KRW-/, '');
+      books[coin] = {
+        bid: top.bid.price,
+        ask: top.ask.price,
+        bidSize: top.bid.size,
+        askSize: top.ask.size,
+      };
+    }
     res.json({
       updatedAt: new Date().toISOString(),
       books,
