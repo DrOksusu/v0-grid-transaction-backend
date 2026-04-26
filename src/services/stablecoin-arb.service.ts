@@ -183,3 +183,65 @@ export async function getSimOverview(): Promise<SimOverview> {
 
   return { bots, stats, recentTrades };
 }
+
+/**
+ * 오늘 KST 0시 이후 봇 거래 통계 — preCheck.runAll에 전달
+ *
+ * @returns todayTradeCount: 모든 status 거래 (COMPLETED/FAILED/FALLBACK_DONE 등)
+ * @returns todayNetProfitKrw: krwFlowNetKrw 합 (자산 변환 무시한 보수적 net)
+ */
+export async function getTodayStats(botId: number): Promise<{
+  todayTradeCount: number;
+  todayNetProfitKrw: number;
+}> {
+  // KST 자정 = UTC 15:00 전날
+  const now = new Date();
+  const kstMidnight = new Date(now);
+  kstMidnight.setUTCHours(15, 0, 0, 0);
+  if (kstMidnight > now) {
+    kstMidnight.setUTCDate(kstMidnight.getUTCDate() - 1);
+  }
+
+  const trades = await prisma.stablecoinArbTrade.findMany({
+    where: { botId, detectedAt: { gte: kstMidnight } },
+    select: { krwFlowNetKrw: true },
+  });
+
+  const todayTradeCount = trades.length;
+  const todayNetProfitKrw = trades.reduce(
+    (s, t) => s + (t.krwFlowNetKrw ? Number(t.krwFlowNetKrw) : 0),
+    0,
+  );
+
+  return { todayTradeCount, todayNetProfitKrw };
+}
+
+/**
+ * StablecoinArbBot.live 토글 (Admin 전용).
+ * live=true 전환은 controller에서 confirm body 검증 필수.
+ */
+export async function setLive(userId: number, live: boolean) {
+  return updateBotConfig(userId, { live });
+}
+
+/**
+ * Canary Stage 1/2/3 일괄 적용 (Admin 전용).
+ * Stage 1: 1만원/일3건/손실 1만원
+ * Stage 2: 2만원/일10건/손실 3만원
+ * Stage 3: 5만원/일30건/손실 5만원
+ */
+export type CanaryStage = 1 | 2 | 3;
+
+const STAGE_VALUES: Record<CanaryStage, {
+  tradeSizeKrw: number;
+  maxDailyTrades: number;
+  dailyLossLimitKrw: number;
+}> = {
+  1: { tradeSizeKrw: 10000, maxDailyTrades: 3, dailyLossLimitKrw: 10000 },
+  2: { tradeSizeKrw: 20000, maxDailyTrades: 10, dailyLossLimitKrw: 30000 },
+  3: { tradeSizeKrw: 50000, maxDailyTrades: 30, dailyLossLimitKrw: 50000 },
+};
+
+export async function setStage(userId: number, stage: CanaryStage) {
+  return updateBotConfig(userId, STAGE_VALUES[stage]);
+}
