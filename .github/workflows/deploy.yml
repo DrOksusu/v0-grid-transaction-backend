@@ -111,6 +111,7 @@ jobs:
               -e "GMAIL_USER=${{ secrets.GMAIL_USER }}" \
               -e "GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}" \
               -e "FRONTEND_URL=${{ secrets.FRONTEND_URL }}" \
+              -e "ADMIN_EMAIL=${{ secrets.ADMIN_EMAIL }}" \
               $ECR_REGISTRY/$IMAGE_NAME:latest
 
             echo "=== Step 5: 상태 확인 ==="
