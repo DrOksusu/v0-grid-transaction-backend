@@ -23,6 +23,7 @@ model StablecoinArbBot {
 
   enabled    Boolean @default(false)
   killSwitch Boolean @default(false)
+  live       Boolean @default(false) // M3 실거래 활성화 (false=detection only)
 
   coinsEnabled Json
 
@@ -83,6 +84,7 @@ model StablecoinArbTrade {
 
   realizedSpreadBps Int?
   profitUsd         Decimal? @db.Decimal(12, 6)
+  krwFlowNetKrw     Decimal? @db.Decimal(18, 4) // 보조 통계: KRW flow 기준 net (자산 변환 무시)
   totalFeeKrw       Decimal? @db.Decimal(14, 4)
 
   error       String?   @db.Text
@@ -137,6 +139,7 @@ model MakerTakerSimBot {
 
   enabled    Boolean @default(true)
   killSwitch Boolean @default(false)
+  live       Boolean @default(false) // 실거래 활성화 (false=시뮬레이터 유지)
 
   makerCoin    String
   takerCoin    String
@@ -177,6 +180,9 @@ model MakerTakerSimTrade {
   takerSlippageBps Int?
 
   quantity Decimal @db.Decimal(20, 8)
+
+  live           Boolean @default(false) // 실거래 trade 표시
+  makerOrderUuid String? @db.VarChar(64) // live 주문의 Upbit uuid (status polling/cancel용)
 
   grossProfitKrw    Decimal? @db.Decimal(18, 4)
   feeKrw            Decimal? @db.Decimal(14, 4)
