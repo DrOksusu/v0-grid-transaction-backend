@@ -179,10 +179,12 @@ export class StablecoinArbAgent extends BaseAgent {
     // PR C: auto kill switch 검사
     // dailyLossLimitKrw 유효성 검증 (boundary safety — Task 4 reviewer 권장)
     if (bot.dailyLossLimitKrw > 0) {
-      const todayStats = await arbService.getTodayStats(bot.id);
+      // recordTrade(line ~168)가 방금 새 trade row를 INSERT했으므로 fresh re-query 필수
+      // (line 136의 preCheck용 todayStats는 이번 trade 손익 미반영 → daily loss 판정 정확성 위해 재조회)
+      const freshTodayStats = await arbService.getTodayStats(bot.id);
       const trigger = shouldTriggerKillSwitch({
         botId: bot.id,
-        todayNetProfitKrw: todayStats.todayNetProfitKrw,
+        todayNetProfitKrw: freshTodayStats.todayNetProfitKrw,
         dailyLossLimitKrw: bot.dailyLossLimitKrw,
       });
 
@@ -191,13 +193,12 @@ export class StablecoinArbAgent extends BaseAgent {
           `[StablecoinArbAgent] AUTO KILL SWITCH triggered for bot ${bot.id}: ${trigger.reason} — ${trigger.detail}`,
         );
         await arbService.setKillSwitch(bot.userId, true);
-        // Socket.IO emit (best-effort)
+        // Socket.IO emit (best-effort) — user room으로 한정해 다른 사용자에게 노출 방지
         try {
           const io = socketService.getIO();
           if (io) {
-            io.emit('stablecoin:killswitch_triggered', {
+            io.to(`user:${bot.userId}:bots`).emit('stablecoin:killswitch_triggered', {
               botId: bot.id,
-              userId: bot.userId,
               reason: trigger.reason,
               detail: trigger.detail,
               triggeredAt: new Date().toISOString(),
