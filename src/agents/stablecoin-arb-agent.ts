@@ -16,6 +16,12 @@ import { tradingLock } from '../services/stablecoin-trading-lock';
 import { runAll as preCheckAll } from '../services/stablecoin-pre-check';
 import { executeArbitrage, type ExecutorResult } from '../services/stablecoin-arb-executor';
 import { BalanceCache } from '../services/upbit-balance-cache';
+import {
+  shouldTriggerKillSwitch,
+  recordLeg2Failure,
+  recordLeg2Success,
+} from '../services/stablecoin-auto-killswitch';
+import { socketService } from '../services/socket.service';
 import { ArbTradeStatus } from '.prisma/client-stablecoin';
 
 /**
@@ -160,6 +166,48 @@ export class StablecoinArbAgent extends BaseAgent {
     client.cache.invalidate();
 
     await this.recordTrade(bot.id, opp, result);
+
+    // PR C: leg-2 결과 기록 (auto kill switch 카운터)
+    if (result.ok) {
+      recordLeg2Success(bot.id);
+    } else if (result.rolledBack) {
+      // ROLLED_BACK = leg-1 성공 + leg-2 zero → leg-2 실패
+      recordLeg2Failure(bot.id);
+    }
+    // result.ok === false && !rolledBack은 leg-1 실패 → leg-2 카운터 영향 없음
+
+    // PR C: auto kill switch 검사
+    // dailyLossLimitKrw 유효성 검증 (boundary safety — Task 4 reviewer 권장)
+    if (bot.dailyLossLimitKrw > 0) {
+      const todayStats = await arbService.getTodayStats(bot.id);
+      const trigger = shouldTriggerKillSwitch({
+        botId: bot.id,
+        todayNetProfitKrw: todayStats.todayNetProfitKrw,
+        dailyLossLimitKrw: bot.dailyLossLimitKrw,
+      });
+
+      if (trigger.trigger) {
+        console.error(
+          `[StablecoinArbAgent] AUTO KILL SWITCH triggered for bot ${bot.id}: ${trigger.reason} — ${trigger.detail}`,
+        );
+        await arbService.setKillSwitch(bot.userId, true);
+        // Socket.IO emit (best-effort)
+        try {
+          const io = socketService.getIO();
+          if (io) {
+            io.emit('stablecoin:killswitch_triggered', {
+              botId: bot.id,
+              userId: bot.userId,
+              reason: trigger.reason,
+              detail: trigger.detail,
+              triggeredAt: new Date().toISOString(),
+            });
+          }
+        } catch (e) {
+          console.warn('[StablecoinArbAgent] socket emit failed:', (e as Error).message);
+        }
+      }
+    }
 
     if (result.ok) {
       await prisma.stablecoinArbBot.update({
