@@ -461,6 +461,46 @@ describe('stablecoin-admin.controller', () => {
       expect(sent.quantity).toBe('5');
     });
 
+    it('PATCH /maker-bots/:id → 다른 사용자 봇이거나 없으면 404', async () => {
+      // service가 ownership 미일치 시 "Bot not found or not owned by user" throw → controller가 404로 매핑
+      req = {
+        userId: 2,
+        params: { id: '99' },
+        body: { live: true },
+      } as any;
+      (arbService.patchMakerBot as jest.Mock).mockRejectedValueOnce(
+        new Error('Bot not found or not owned by user'),
+      );
+
+      await patchMakerBot(req as AuthRequest, res as Response, next);
+
+      expect(next).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 404 }),
+      );
+    });
+
+    it('DELETE /maker-bots/:id → PENDING live trade 있을 때 422', async () => {
+      // service에서 PENDING+live trade 발견 시 throw → controller가 422로 매핑
+      const endMock = jest.fn();
+      statusMock = jest.fn().mockReturnValue({ json: jsonMock, end: endMock });
+      res = { json: jsonMock, status: statusMock };
+
+      req = {
+        userId: 2,
+        params: { id: '1' },
+      } as any;
+      (arbService.deleteMakerBot as jest.Mock).mockRejectedValueOnce(
+        new Error('PENDING live trade exists — 먼저 만료/취소 처리 필요'),
+      );
+
+      await deleteMakerBot(req as AuthRequest, res as Response, next);
+
+      expect(next).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 422 }),
+      );
+      expect(endMock).not.toHaveBeenCalled();
+    });
+
     it('DELETE /maker-bots/:id → 204 no content', async () => {
       // res.status(204).end() 패턴: status mock은 { json, end } 둘 다 가져야 함
       const endMock = jest.fn();

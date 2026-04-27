@@ -328,22 +328,26 @@ export async function patchMakerBot(id: number, userId: number, patch: PatchMake
 
 /**
  * Maker-Taker 봇 삭제.
- * - PENDING 상태의 live trade가 존재하면 거부 (먼저 만료/취소 처리 필요)
- * - ownership 검증 필수
+ *
+ * 순서가 중요:
+ *   1. ownership 먼저 — 다른 사용자의 봇 id로 호출되면 즉시 404. PENDING 체크가
+ *      먼저 돌면 그 봇이 (a) 존재하고 (b) PENDING+live 상태임을 422 응답으로 노출.
+ *   2. PENDING+live trade 체크 — 활성 주문 있는 봇은 삭제 거부 (만료/취소 먼저).
  */
 export async function deleteMakerBot(id: number, userId: number) {
-  // PENDING live trade 있는 봇은 삭제 거부
+  // 1. ownership 먼저 — 다른 사용자 봇 정보 노출 차단
+  const bot = await prisma.makerTakerSimBot.findFirst({
+    where: { id, userId },
+  });
+  if (!bot) throw new Error('Bot not found');
+
+  // 2. PENDING live trade 있는 봇은 삭제 거부
   const pendingLive = await prisma.makerTakerSimTrade.findFirst({
     where: { botId: id, status: 'PENDING', live: true },
   });
   if (pendingLive) {
     throw new Error('PENDING live trade exists — 먼저 만료/취소 처리 필요');
   }
-  // ownership 확인
-  const bot = await prisma.makerTakerSimBot.findFirst({
-    where: { id, userId },
-  });
-  if (!bot) throw new Error('Bot not found');
 
   await prisma.makerTakerSimBot.delete({ where: { id } });
 }
