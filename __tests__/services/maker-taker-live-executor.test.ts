@@ -339,4 +339,33 @@ describe('processLiveBot — CASE B (PENDING 폴링)', () => {
     expect(fbCall[0]).toBe('KRW-USDT');
     expect(fbCall[1]).toBe('bid');
   });
+
+  it('9. 체결됐지만 trades funds=0 → partial_hold (defensive, divide-by-zero 방지)', async () => {
+    const client = mkClient();
+    // executed_volume>0 인데 trades funds 합이 0인 비정상 응답
+    client.getOrder.mockResolvedValueOnce({
+      uuid: 'limit-existing',
+      state: 'done',
+      executed_volume: '5',
+      paid_fee: '0',
+      trades: [{ funds: '0', price: '0', volume: '5' }],
+    });
+
+    const result = await processLiveBot({
+      bot: baseBot,
+      pending: pendingBase,
+      books,
+      client,
+      isLocked: () => false,
+      preCheckOk: true,
+    });
+
+    expect(result.kind).toBe('partial_hold');
+    if (result.kind === 'partial_hold') {
+      expect(result.pendingId).toBe(100n);
+      expect(result.reason).toMatch(/funds.*0|defensive/i);
+    }
+    // Stage 1 sell도 호출 안 됨 (가드가 그 전에 차단)
+    expect(client.placeBestIoc).not.toHaveBeenCalled();
+  });
 });

@@ -159,6 +159,17 @@ export async function processLiveBot(
     const filledMakerKrw = sumFunds(status.trades);
     const paidFeeMaker = parseFloat(status.paid_fee || '0');
 
+    // 방어: executed_volume>0인데 trades funds 합이 0인 비정상 응답.
+    // 이대로 P&L 진입하면 realizedSpreadBps에서 0 분모 → Infinity 발생.
+    // Task 4 DB persist 시 DECIMAL/INT 컬럼이 거부하므로 사전에 차단.
+    if (filledMakerKrw === 0) {
+      return {
+        kind: 'partial_hold',
+        pendingId: pending.id,
+        reason: 'maker filled but trades funds = 0 (defensive)',
+      };
+    }
+
     // Stage 1: maker 코인을 즉시 시장가로 매도 (X 매도)
     const sellResp = await client.placeBestIoc(
       `KRW-${bot.makerCoin}`,
