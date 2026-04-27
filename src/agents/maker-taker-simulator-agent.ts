@@ -109,7 +109,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     books: ReadonlyMap<string, OrderbookTop>,
   ): Promise<void> {
     if (bot.live === true) {
-      await this.processLiveBot(bot, books);
+      await this.handleLiveBot(bot, books);
       return;
     }
 
@@ -212,8 +212,10 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   /**
    * live=true 봇 처리. maker-taker-live-executor에 위임 + DB write 적용.
    * preCheck는 PR C 범위에서 단순 maker post_only라 잔고/lock 체크만 충분 (spec note).
+   *
+   * 메서드명은 `handleLiveBot` — import한 executor 함수 `processLiveBot`(alias `runLiveExecutor`)와 구분.
    */
-  private async processLiveBot(
+  private async handleLiveBot(
     bot: Awaited<ReturnType<typeof prisma.makerTakerSimBot.findMany>>[number],
     books: ReadonlyMap<string, OrderbookTop>,
   ): Promise<void> {
@@ -298,7 +300,14 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   ): Promise<void> {
     switch (result.kind) {
       case 'noop':
+        // lock held / preCheck abort / no book / placeLimit rejected 케이스 — 운영 가시성 위해 로깅
+        console.log(
+          `[MakerTakerSimulatorAgent] bot ${bot.id} live noop (lock held / preCheck abort / no book / placeLimit rejected)`,
+        );
+        return;
+
       case 'waiting':
+        // 일반 polling — 로그 불필요 (스팸 방지)
         return;
 
       case 'placed':
@@ -377,6 +386,12 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           },
         });
         return;
+
+      default: {
+        // exhaustive check — 향후 새 kind 추가 시 컴파일 에러로 알림
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
     }
   }
 
