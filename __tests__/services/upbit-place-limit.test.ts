@@ -100,15 +100,27 @@ describe('UpbitService.placeLimitOrder', () => {
     expect(body.post_only).toBeUndefined();
   });
 
-  it('side=bid + price 없음 → /price/ 메시지로 throw', async () => {
+  it('side=bid + price 없음(volume만 있음) → /price/ 메시지로 throw', async () => {
     await expect(
       svc.placeLimitOrder('KRW-USDT', 'bid', { volume: '10', postOnly: true })
     ).rejects.toThrow(/price/);
   });
 
-  it('side=ask + volume 없음 → /volume/ 메시지로 throw', async () => {
+  it('side=ask + volume 없음(price만 있음) → /volume/ 메시지로 throw', async () => {
     await expect(
       svc.placeLimitOrder('KRW-USDT', 'ask', { price: '1450', postOnly: true })
     ).rejects.toThrow(/volume/);
+  });
+
+  it('side=bid + volume 없음(price만 있음) → /volume/ 메시지로 throw (limit는 둘 다 필수)', async () => {
+    await expect(
+      svc.placeLimitOrder('KRW-USDT', 'bid', { price: '1450', postOnly: true })
+    ).rejects.toThrow(/volume/);
+  });
+
+  it('side=ask + price 없음(volume만 있음) → /price/ 메시지로 throw (limit는 둘 다 필수)', async () => {
+    await expect(
+      svc.placeLimitOrder('KRW-USDT', 'ask', { volume: '10', postOnly: true })
+    ).rejects.toThrow(/price/);
   });
 });

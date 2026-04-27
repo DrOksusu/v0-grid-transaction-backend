@@ -362,8 +362,8 @@ export class UpbitService {
    * @param market "KRW-USDT" 형식
    * @param side "bid" (매수) | "ask" (매도)
    * @param params price/volume/postOnly
-   *               - bid: price 필수 (지정가 KRW)
-   *               - ask: volume 필수 (코인 수량)
+   *               - bid/ask 모두 price(KRW 지정가)와 volume(코인 수량)이 **둘 다 필수**
+   *                 (Upbit limit 주문 스펙: 둘 중 하나라도 빠지면 400 반환)
    *               - postOnly=true 이면 메이커 전용 (테이커 체결 시 주문 자동 취소)
    * @returns Upbit 주문 응답 (uuid, state, executed_volume 등)
    *
@@ -377,11 +377,23 @@ export class UpbitService {
   ): Promise<UpbitOrderResponse> {
     await throttleOrderApi();
 
-    if (side === 'bid' && !params.price) {
-      throw new Error('limit bid 주문은 price 필요');
+    // limit 주문은 bid/ask 모두 price와 volume 둘 다 필수 (Upbit 스펙)
+    // 누락된 항목을 메시지에 포함시켜 호출자가 어느 필드인지 즉시 식별 가능하도록 함
+    if (side === 'bid' && (!params.price || !params.volume)) {
+      const missing: string[] = [];
+      if (!params.price) missing.push('price');
+      if (!params.volume) missing.push('volume');
+      throw new Error(
+        `limit bid 주문은 price(KRW)와 volume(코인 수량) 둘 다 필요 (누락: ${missing.join(', ')})`
+      );
     }
-    if (side === 'ask' && !params.volume) {
-      throw new Error('limit ask 주문은 volume 필요');
+    if (side === 'ask' && (!params.price || !params.volume)) {
+      const missing: string[] = [];
+      if (!params.price) missing.push('price');
+      if (!params.volume) missing.push('volume');
+      throw new Error(
+        `limit ask 주문은 price(KRW)와 volume(코인 수량) 둘 다 필요 (누락: ${missing.join(', ')})`
+      );
     }
 
     const body: OrderParams = {
