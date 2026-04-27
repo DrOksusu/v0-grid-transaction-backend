@@ -245,3 +245,105 @@ const STAGE_VALUES: Record<CanaryStage, {
 export async function setStage(userId: number, stage: CanaryStage) {
   return updateBotConfig(userId, STAGE_VALUES[stage]);
 }
+
+// ===== Maker bot CRUD (Admin 전용) =====
+
+/**
+ * 사용자의 Maker-Taker 봇 목록 조회.
+ */
+export async function listMakerBots(userId: number) {
+  return prisma.makerTakerSimBot.findMany({
+    where: { userId },
+    orderBy: { id: 'asc' },
+  });
+}
+
+export type CreateMakerBotInput = {
+  userId: number;
+  makerCoin: string;
+  takerCoin: string;
+  bidOffsetKrw: number;
+  quantity: number;
+  maxPendingMs?: number;
+  minTakerBidKrw?: number | null;
+  makerFeeBps?: number;
+  takerFeeBps?: number;
+};
+
+/**
+ * 새 Maker-Taker 봇 생성.
+ * maxPendingMs 기본 600,000ms (10분), minTakerBidKrw null 허용.
+ * makerFeeBps/takerFeeBps 기본 5bp.
+ */
+export async function createMakerBot(input: CreateMakerBotInput) {
+  return prisma.makerTakerSimBot.create({
+    data: {
+      userId: input.userId,
+      makerCoin: input.makerCoin,
+      takerCoin: input.takerCoin,
+      bidOffsetKrw: input.bidOffsetKrw,
+      quantity: input.quantity,
+      maxPendingMs: input.maxPendingMs ?? 600_000,
+      minTakerBidKrw: input.minTakerBidKrw ?? null,
+      makerFeeBps: input.makerFeeBps ?? 5,
+      takerFeeBps: input.takerFeeBps ?? 5,
+    },
+  });
+}
+
+export type PatchMakerBotInput = Partial<{
+  enabled: boolean;
+  killSwitch: boolean;
+  live: boolean;
+  bidOffsetKrw: number;
+  quantity: number;
+  maxPendingMs: number;
+  minTakerBidKrw: number | null;
+  makerFeeBps: number;
+  takerFeeBps: number;
+}>;
+
+/**
+ * Maker-Taker 봇 부분 업데이트.
+ * ownership 보호: userId 매칭 안 되면 update 실패 → "Bot not found" throw.
+ *
+ * Prisma의 update는 unique where만 허용하므로, ownership 검증을 위해
+ * updateMany({ where: { id, userId } }) 패턴 사용.
+ */
+export async function patchMakerBot(id: number, userId: number, patch: PatchMakerBotInput) {
+  const result = await prisma.makerTakerSimBot.updateMany({
+    where: { id, userId },
+    data: patch,
+  });
+  if (result.count === 0) {
+    throw new Error('Bot not found or not owned by user');
+  }
+  // 업데이트 후 최신 상태 반환
+  const updated = await prisma.makerTakerSimBot.findUnique({
+    where: { id },
+  });
+  if (!updated) throw new Error('Bot not found after update');
+  return updated;
+}
+
+/**
+ * Maker-Taker 봇 삭제.
+ * - PENDING 상태의 live trade가 존재하면 거부 (먼저 만료/취소 처리 필요)
+ * - ownership 검증 필수
+ */
+export async function deleteMakerBot(id: number, userId: number) {
+  // PENDING live trade 있는 봇은 삭제 거부
+  const pendingLive = await prisma.makerTakerSimTrade.findFirst({
+    where: { botId: id, status: 'PENDING', live: true },
+  });
+  if (pendingLive) {
+    throw new Error('PENDING live trade exists — 먼저 만료/취소 처리 필요');
+  }
+  // ownership 확인
+  const bot = await prisma.makerTakerSimBot.findFirst({
+    where: { id, userId },
+  });
+  if (!bot) throw new Error('Bot not found');
+
+  await prisma.makerTakerSimBot.delete({ where: { id } });
+}

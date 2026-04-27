@@ -12,6 +12,10 @@ import {
   postKillswitch,
   postLive,
   postStage,
+  listMakerBots,
+  createMakerBot,
+  patchMakerBot,
+  deleteMakerBot,
 } from '../../src/controllers/stablecoin-admin.controller';
 
 jest.mock('../../src/services/stablecoin-arb.service');
@@ -368,6 +372,113 @@ describe('stablecoin-admin.controller', () => {
 
       const err = (next as jest.Mock).mock.calls[0][0];
       expect(err.statusCode).toBe(400);
+    });
+  });
+
+  describe('Maker bot CRUD', () => {
+    const mockDecimal = (v: string) => ({ toString: () => v });
+
+    it('GET /maker-bots → service 호출 + Decimal quantity 직렬화', async () => {
+      req = { userId: 2 } as any;
+      (arbService.listMakerBots as jest.Mock).mockResolvedValueOnce([
+        {
+          id: 1, userId: 2, makerCoin: 'USDT', takerCoin: 'USDC',
+          bidOffsetKrw: -1, quantity: mockDecimal('5.0'),
+          enabled: true, killSwitch: false, live: false,
+        },
+      ]);
+
+      await listMakerBots(req as AuthRequest, res as Response, next);
+
+      expect(arbService.listMakerBots).toHaveBeenCalledWith(2);
+      const sent = jsonMock.mock.calls[0][0];
+      expect(Array.isArray(sent)).toBe(true);
+      expect(sent[0].quantity).toBe('5.0');
+    });
+
+    it('POST /maker-bots → 정상 케이스 + create 호출', async () => {
+      req = {
+        userId: 2,
+        body: { makerCoin: 'USDT', takerCoin: 'USDC', bidOffsetKrw: -1, quantity: 5 },
+      } as any;
+      (arbService.createMakerBot as jest.Mock).mockResolvedValueOnce({
+        id: 99, userId: 2, makerCoin: 'USDT', takerCoin: 'USDC',
+        bidOffsetKrw: -1, quantity: mockDecimal('5'),
+        enabled: true, killSwitch: false, live: false,
+      });
+
+      await createMakerBot(req as AuthRequest, res as Response, next);
+
+      expect(arbService.createMakerBot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 2,
+          makerCoin: 'USDT',
+          takerCoin: 'USDC',
+          bidOffsetKrw: -1,
+          quantity: 5,
+        }),
+      );
+      const sent = jsonMock.mock.calls[0][0];
+      expect(sent.id).toBe(99);
+      expect(sent.quantity).toBe('5');
+    });
+
+    it('POST /maker-bots → makerCoin 누락 시 400', async () => {
+      req = {
+        userId: 2,
+        body: { takerCoin: 'USDC', bidOffsetKrw: -1, quantity: 5 },
+      } as any;
+
+      await createMakerBot(req as AuthRequest, res as Response, next);
+
+      expect(next).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 400 }),
+      );
+      expect(arbService.createMakerBot).not.toHaveBeenCalled();
+    });
+
+    it('PATCH /maker-bots/:id → live=true patch', async () => {
+      req = {
+        userId: 2,
+        params: { id: '1' },
+        body: { live: true },
+      } as any;
+      (arbService.patchMakerBot as jest.Mock).mockResolvedValueOnce({
+        id: 1, userId: 2, makerCoin: 'USDT', takerCoin: 'USDC',
+        bidOffsetKrw: -1, quantity: mockDecimal('5'),
+        enabled: true, killSwitch: false, live: true,
+      });
+
+      await patchMakerBot(req as AuthRequest, res as Response, next);
+
+      expect(arbService.patchMakerBot).toHaveBeenCalledWith(
+        1,
+        2,
+        expect.objectContaining({ live: true }),
+      );
+      const sent = jsonMock.mock.calls[0][0];
+      expect(sent.live).toBe(true);
+      expect(sent.quantity).toBe('5');
+    });
+
+    it('DELETE /maker-bots/:id → 204 no content', async () => {
+      // res.status(204).end() 패턴: status mock은 { json, end } 둘 다 가져야 함
+      const endMock = jest.fn();
+      statusMock = jest.fn().mockReturnValue({ json: jsonMock, end: endMock });
+      res = { json: jsonMock, status: statusMock };
+
+      req = {
+        userId: 2,
+        params: { id: '1' },
+      } as any;
+      (arbService.deleteMakerBot as jest.Mock).mockResolvedValueOnce(undefined);
+
+      await deleteMakerBot(req as AuthRequest, res as Response, next);
+
+      expect(arbService.deleteMakerBot).toHaveBeenCalledWith(1, 2);
+      expect(statusMock).toHaveBeenCalledWith(204);
+      expect(endMock).toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
     });
   });
 });

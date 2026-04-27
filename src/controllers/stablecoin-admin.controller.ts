@@ -216,3 +216,169 @@ export const postKillswitch = async (req: AuthRequest, res: Response, next: Next
     next(error);
   }
 };
+
+// ===== Maker bot CRUD (Admin 전용) =====
+
+/**
+ * MakerTakerSimBot의 quantity 필드(Decimal)를 string으로 직렬화.
+ * Prisma Decimal은 JSON.stringify 시 빈 객체가 되므로 변환 필수.
+ */
+function serializeMakerBot(bot: any) {
+  return {
+    ...bot,
+    quantity: bot.quantity?.toString() ?? null,
+  };
+}
+
+/**
+ * GET /api/admin/stablecoin/maker-bots
+ * 사용자의 Maker-Taker 봇 목록.
+ */
+export const listMakerBots = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const bots = await arbService.listMakerBots(userId);
+    res.json(bots.map(serializeMakerBot));
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/admin/stablecoin/maker-bots
+ * Body: { makerCoin, takerCoin, bidOffsetKrw, quantity, maxPendingMs?, minTakerBidKrw?, makerFeeBps?, takerFeeBps? }
+ *
+ * 필수 4개(makerCoin/takerCoin/bidOffsetKrw/quantity) + optional 4개.
+ * zod 미사용 — 수동 검증으로 PR B 패턴 따름.
+ */
+export const createMakerBot = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const body = req.body ?? {};
+
+    if (typeof body.makerCoin !== 'string' || body.makerCoin.length === 0) {
+      throw new AppError('Invalid body: makerCoin must be non-empty string', 400);
+    }
+    if (typeof body.takerCoin !== 'string' || body.takerCoin.length === 0) {
+      throw new AppError('Invalid body: takerCoin must be non-empty string', 400);
+    }
+    if (!Number.isInteger(body.bidOffsetKrw)) {
+      throw new AppError('Invalid body: bidOffsetKrw must be integer', 400);
+    }
+    if (typeof body.quantity !== 'number' || body.quantity <= 0) {
+      throw new AppError('Invalid body: quantity must be positive number', 400);
+    }
+    // optional 필드 — 존재할 때만 검증
+    if (body.maxPendingMs !== undefined && (!Number.isInteger(body.maxPendingMs) || body.maxPendingMs <= 0)) {
+      throw new AppError('Invalid body: maxPendingMs must be positive integer', 400);
+    }
+    if (body.minTakerBidKrw !== undefined && body.minTakerBidKrw !== null && !Number.isInteger(body.minTakerBidKrw)) {
+      throw new AppError('Invalid body: minTakerBidKrw must be integer or null', 400);
+    }
+    if (body.makerFeeBps !== undefined && (!Number.isInteger(body.makerFeeBps) || body.makerFeeBps < 0)) {
+      throw new AppError('Invalid body: makerFeeBps must be non-negative integer', 400);
+    }
+    if (body.takerFeeBps !== undefined && (!Number.isInteger(body.takerFeeBps) || body.takerFeeBps < 0)) {
+      throw new AppError('Invalid body: takerFeeBps must be non-negative integer', 400);
+    }
+
+    const bot = await arbService.createMakerBot({
+      userId,
+      makerCoin: body.makerCoin,
+      takerCoin: body.takerCoin,
+      bidOffsetKrw: body.bidOffsetKrw,
+      quantity: body.quantity,
+      maxPendingMs: body.maxPendingMs,
+      minTakerBidKrw: body.minTakerBidKrw,
+      makerFeeBps: body.makerFeeBps,
+      takerFeeBps: body.takerFeeBps,
+    });
+    res.json(serializeMakerBot(bot));
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * PATCH /api/admin/stablecoin/maker-bots/:id
+ * Body: Partial<{ enabled, killSwitch, live, bidOffsetKrw, quantity, maxPendingMs, minTakerBidKrw, makerFeeBps, takerFeeBps }>
+ *
+ * 부분 업데이트 — 제공된 필드만 patch 객체에 추가. ownership 보호는 service에서.
+ */
+export const patchMakerBot = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) throw new AppError('Invalid id', 400);
+
+    const body = req.body ?? {};
+    const patch: Record<string, any> = {};
+
+    if (body.enabled !== undefined) {
+      if (typeof body.enabled !== 'boolean') throw new AppError('Invalid body: enabled must be boolean', 400);
+      patch.enabled = body.enabled;
+    }
+    if (body.killSwitch !== undefined) {
+      if (typeof body.killSwitch !== 'boolean') throw new AppError('Invalid body: killSwitch must be boolean', 400);
+      patch.killSwitch = body.killSwitch;
+    }
+    if (body.live !== undefined) {
+      if (typeof body.live !== 'boolean') throw new AppError('Invalid body: live must be boolean', 400);
+      patch.live = body.live;
+    }
+    if (body.bidOffsetKrw !== undefined) {
+      if (!Number.isInteger(body.bidOffsetKrw)) throw new AppError('Invalid body: bidOffsetKrw must be integer', 400);
+      patch.bidOffsetKrw = body.bidOffsetKrw;
+    }
+    if (body.quantity !== undefined) {
+      if (typeof body.quantity !== 'number' || body.quantity <= 0) throw new AppError('Invalid body: quantity must be positive number', 400);
+      patch.quantity = body.quantity;
+    }
+    if (body.maxPendingMs !== undefined) {
+      if (!Number.isInteger(body.maxPendingMs) || body.maxPendingMs <= 0) throw new AppError('Invalid body: maxPendingMs must be positive integer', 400);
+      patch.maxPendingMs = body.maxPendingMs;
+    }
+    if (body.minTakerBidKrw !== undefined) {
+      if (body.minTakerBidKrw !== null && !Number.isInteger(body.minTakerBidKrw)) throw new AppError('Invalid body: minTakerBidKrw must be integer or null', 400);
+      patch.minTakerBidKrw = body.minTakerBidKrw;
+    }
+    if (body.makerFeeBps !== undefined) {
+      if (!Number.isInteger(body.makerFeeBps) || body.makerFeeBps < 0) throw new AppError('Invalid body: makerFeeBps must be non-negative integer', 400);
+      patch.makerFeeBps = body.makerFeeBps;
+    }
+    if (body.takerFeeBps !== undefined) {
+      if (!Number.isInteger(body.takerFeeBps) || body.takerFeeBps < 0) throw new AppError('Invalid body: takerFeeBps must be non-negative integer', 400);
+      patch.takerFeeBps = body.takerFeeBps;
+    }
+
+    const bot = await arbService.patchMakerBot(id, userId, patch);
+    res.json(serializeMakerBot(bot));
+  } catch (error: any) {
+    if (error instanceof AppError) return next(error);
+    if (error?.message?.includes('not found')) return next(new AppError('Bot not found', 404));
+    next(error);
+  }
+};
+
+/**
+ * DELETE /api/admin/stablecoin/maker-bots/:id
+ * - PENDING live trade 있으면 422
+ * - 봇 없거나 ownership 미일치면 404
+ * - 성공 시 204 (No Content)
+ */
+export const deleteMakerBot = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) throw new AppError('Invalid id', 400);
+
+    await arbService.deleteMakerBot(id, userId);
+    res.status(204).end();
+  } catch (error: any) {
+    if (error instanceof AppError) return next(error);
+    const msg = error?.message || '';
+    if (msg.includes('PENDING')) return next(new AppError(msg, 422));
+    if (msg.includes('not found')) return next(new AppError(msg, 404));
+    next(error);
+  }
+};
