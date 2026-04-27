@@ -10,6 +10,10 @@ import {
   postKillswitch,
   postLive,
   postStage,
+  listMakerBots,
+  createMakerBot,
+  patchMakerBot,
+  deleteMakerBot,
 } from '../controllers/stablecoin-admin.controller';
 
 const router = Router();
@@ -26,5 +30,11 @@ router.get('/sim/overview', getSimOverview);
 router.post('/bot/killswitch', postKillswitch);
 router.post('/bot/live', postLive);
 router.post('/bot/stage', postStage);
+
+// Maker-Taker 봇 CRUD (Admin 전용)
+router.get('/maker-bots', listMakerBots);
+router.post('/maker-bots', createMakerBot);
+router.patch('/maker-bots/:id', patchMakerBot);
+router.delete('/maker-bots/:id', deleteMakerBot);
 
 export default router;

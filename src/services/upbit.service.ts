@@ -134,7 +134,7 @@ interface OrderParams {
   ord_type: 'limit' | 'price' | 'market' | 'best';
   price?: string;
   volume?: string;
-  time_in_force?: 'ioc' | 'fok'; // IOC: 즉시 체결 후 미체결 취소, FOK: 전량 즉시 체결 또는 전체 취소
+  time_in_force?: 'ioc' | 'fok' | 'post_only'; // IOC: 즉시 체결 후 미체결 취소, FOK: 전량 즉시 체결 또는 전체 취소, post_only: 메이커 전용 (테이커 체결 시 주문 취소)
 }
 
 /**
@@ -354,6 +354,69 @@ export class UpbitService {
       );
       return response.data as UpbitOrderResponse;
     }, `placeBestIoc(${market}, ${side})`);
+  }
+
+  /**
+   * limit 주문 (post_only 옵션 지원, 메이커 전용 호가 주문)
+   *
+   * @param market "KRW-USDT" 형식
+   * @param side "bid" (매수) | "ask" (매도)
+   * @param params price/volume/postOnly
+   *               - bid/ask 모두 price(KRW 지정가)와 volume(코인 수량)이 **둘 다 필수**
+   *                 (Upbit limit 주문 스펙: 둘 중 하나라도 빠지면 400 반환)
+   *               - postOnly=true 이면 메이커 전용 (테이커 체결 시 주문 자동 취소)
+   * @returns Upbit 주문 응답 (uuid, state, executed_volume 등)
+   *
+   * note: Upbit POST /v1/orders — post_only는 time_in_force 필드의 값(ioc/fok/post_only)임.
+   *       별도 boolean 필드 아님. https://docs.upbit.com/kr/reference/new-order (2026-04-27 검증)
+   */
+  async placeLimitOrder(
+    market: string,
+    side: 'bid' | 'ask',
+    params: { price?: string; volume?: string; postOnly?: boolean }
+  ): Promise<UpbitOrderResponse> {
+    await throttleOrderApi();
+
+    // limit 주문은 bid/ask 모두 price와 volume 둘 다 필수 (Upbit 스펙)
+    // 누락된 항목을 메시지에 포함시켜 호출자가 어느 필드인지 즉시 식별 가능하도록 함
+    if (side === 'bid' && (!params.price || !params.volume)) {
+      const missing: string[] = [];
+      if (!params.price) missing.push('price');
+      if (!params.volume) missing.push('volume');
+      throw new Error(
+        `limit bid 주문은 price(KRW)와 volume(코인 수량) 둘 다 필요 (누락: ${missing.join(', ')})`
+      );
+    }
+    if (side === 'ask' && (!params.price || !params.volume)) {
+      const missing: string[] = [];
+      if (!params.price) missing.push('price');
+      if (!params.volume) missing.push('volume');
+      throw new Error(
+        `limit ask 주문은 price(KRW)와 volume(코인 수량) 둘 다 필요 (누락: ${missing.join(', ')})`
+      );
+    }
+
+    const body: OrderParams = {
+      market,
+      side,
+      ord_type: 'limit',
+    };
+    if (params.price) body.price = params.price;
+    if (params.volume) body.volume = params.volume;
+    if (params.postOnly) body.time_in_force = 'post_only';
+
+    const queryString = new URLSearchParams(body as any).toString();
+
+    return executeWithRetry(async () => {
+      const response = await axiosInstance.post(
+        `${UPBIT_API_URL}/orders`,
+        body,
+        {
+          headers: this.getHeaders(queryString),
+        }
+      );
+      return response.data as UpbitOrderResponse;
+    }, `placeLimitOrder(${market}, ${side}, postOnly=${params.postOnly ?? false})`);
   }
 
   // 주문 취소
