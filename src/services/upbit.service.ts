@@ -134,7 +134,7 @@ interface OrderParams {
   ord_type: 'limit' | 'price' | 'market' | 'best';
   price?: string;
   volume?: string;
-  time_in_force?: 'ioc' | 'fok'; // IOC: 즉시 체결 후 미체결 취소, FOK: 전량 즉시 체결 또는 전체 취소
+  time_in_force?: 'ioc' | 'fok' | 'post_only'; // IOC: 즉시 체결 후 미체결 취소, FOK: 전량 즉시 체결 또는 전체 취소, post_only: 메이커 전용 (테이커 체결 시 주문 취소)
 }
 
 /**
@@ -354,6 +354,57 @@ export class UpbitService {
       );
       return response.data as UpbitOrderResponse;
     }, `placeBestIoc(${market}, ${side})`);
+  }
+
+  /**
+   * limit 주문 (post_only 옵션 지원, 메이커 전용 호가 주문)
+   *
+   * @param market "KRW-USDT" 형식
+   * @param side "bid" (매수) | "ask" (매도)
+   * @param params price/volume/postOnly
+   *               - bid: price 필수 (지정가 KRW)
+   *               - ask: volume 필수 (코인 수량)
+   *               - postOnly=true 이면 메이커 전용 (테이커 체결 시 주문 자동 취소)
+   * @returns Upbit 주문 응답 (uuid, state, executed_volume 등)
+   *
+   * note: Upbit POST /v1/orders — post_only는 time_in_force 필드의 값(ioc/fok/post_only)임.
+   *       별도 boolean 필드 아님. https://docs.upbit.com/kr/reference/new-order (2026-04-27 검증)
+   */
+  async placeLimitOrder(
+    market: string,
+    side: 'bid' | 'ask',
+    params: { price?: string; volume?: string; postOnly?: boolean }
+  ): Promise<UpbitOrderResponse> {
+    await throttleOrderApi();
+
+    if (side === 'bid' && !params.price) {
+      throw new Error('limit bid 주문은 price 필요');
+    }
+    if (side === 'ask' && !params.volume) {
+      throw new Error('limit ask 주문은 volume 필요');
+    }
+
+    const body: OrderParams = {
+      market,
+      side,
+      ord_type: 'limit',
+    };
+    if (params.price) body.price = params.price;
+    if (params.volume) body.volume = params.volume;
+    if (params.postOnly) body.time_in_force = 'post_only';
+
+    const queryString = new URLSearchParams(body as any).toString();
+
+    return executeWithRetry(async () => {
+      const response = await axiosInstance.post(
+        `${UPBIT_API_URL}/orders`,
+        body,
+        {
+          headers: this.getHeaders(queryString),
+        }
+      );
+      return response.data as UpbitOrderResponse;
+    }, `placeLimitOrder(${market}, ${side}, postOnly=${params.postOnly ?? false})`);
   }
 
   // 주문 취소
