@@ -275,6 +275,9 @@ export const createMakerBot = async (req: AuthRequest, res: Response, next: Next
     if (body.minTakerBidKrw !== undefined && body.minTakerBidKrw !== null && !Number.isInteger(body.minTakerBidKrw)) {
       throw new AppError('Invalid body: minTakerBidKrw must be integer or null', 400);
     }
+    if (body.minTakerBalance !== undefined && body.minTakerBalance !== null && (!Number.isInteger(body.minTakerBalance) || body.minTakerBalance < 0)) {
+      throw new AppError('Invalid body: minTakerBalance must be non-negative integer or null', 400);
+    }
     if (body.makerFeeBps !== undefined && (!Number.isInteger(body.makerFeeBps) || body.makerFeeBps < 0)) {
       throw new AppError('Invalid body: makerFeeBps must be non-negative integer', 400);
     }
@@ -290,6 +293,7 @@ export const createMakerBot = async (req: AuthRequest, res: Response, next: Next
       quantity: body.quantity,
       maxPendingMs: body.maxPendingMs,
       minTakerBidKrw: body.minTakerBidKrw,
+      minTakerBalance: body.minTakerBalance,
       makerFeeBps: body.makerFeeBps,
       takerFeeBps: body.takerFeeBps,
     });
@@ -341,6 +345,10 @@ export const patchMakerBot = async (req: AuthRequest, res: Response, next: NextF
     if (body.minTakerBidKrw !== undefined) {
       if (body.minTakerBidKrw !== null && !Number.isInteger(body.minTakerBidKrw)) throw new AppError('Invalid body: minTakerBidKrw must be integer or null', 400);
       patch.minTakerBidKrw = body.minTakerBidKrw;
+    }
+    if (body.minTakerBalance !== undefined) {
+      if (body.minTakerBalance !== null && (!Number.isInteger(body.minTakerBalance) || body.minTakerBalance < 0)) throw new AppError('Invalid body: minTakerBalance must be non-negative integer or null', 400);
+      patch.minTakerBalance = body.minTakerBalance;
     }
     if (body.makerFeeBps !== undefined) {
       if (!Number.isInteger(body.makerFeeBps) || body.makerFeeBps < 0) throw new AppError('Invalid body: makerFeeBps must be non-negative integer', 400);
