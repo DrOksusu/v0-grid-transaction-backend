@@ -1,23 +1,28 @@
 /**
- * Maker-Taker Live Executor (PR C 메인 모듈)
+ * Maker-Taker Live Executor (PR C 메인 모듈, PR E2에서 spec § 2 정합 재구현)
  *
  * 한 봇에 대한 한 사이클을 처리하는 순수 함수 (DB I/O 없음 — 호출자가 담당).
  *
- * 동작 개요:
- *  - CASE A (PENDING 트레이드 없음): 신규 maker bid limit 주문 (post_only)
+ * 동작 개요 (spec § 2 "전략 핵심"):
+ *  - CASE A (PENDING 트레이드 없음): 신규 maker bid limit 주문 (post_only) — X(저유동성) 매수
  *  - CASE B (PENDING 존재): 주문 상태 폴링 후 분기
  *      - 미체결 + 만료 전 → waiting
  *      - 미체결 + 만료 → cancelOrder + expired
- *      - 체결 → 2단계 taker 실행 (X 매도 → Y 매수)
- *          - 양쪽 성공 → filled (P&L 계산)
- *          - X 매도 실패 → partial_hold (X 그대로 보유)
- *          - Y 매수 실패 → fallback X 재매수 → rolled_back
+ *      - 체결 → taker leg 단일 단계: Y(고유동성) 시장가 매도
+ *          - 즉시 체결 → filled (P&L 계산: (T_received − M_paid) × q − fees)
+ *          - 즉시 0 응답 → 1.5초 후 재폴링 1회 (PR D leg-2 false positive 방어)
+ *          - 재폴링도 0 → partial_hold (X 그대로 보유, 수동 unwind 필요)
+ *
+ * Fallback 정책: Option A (no fallback). 근거:
+ *  - simulator는 fallback 없음 → live가 가지면 sim/live P&L 메커니즘 어긋남(PR D 재발)
+ *  - spec § 2가 cross-coin direct swap이고 그 외 동작 미정의
+ *  - PR E1 minTakerBalance 자동 일시정지가 인벤토리 누적 위험 보완
  *
  * 설계 원칙:
  *  - DB 접근 일절 없음 (순수 입력→출력)
  *  - OrderClient DI로 mock 가능 (PR B IocClient 패턴 차용)
  *  - bot.killSwitch 검사는 호출자(에이전트) 책임
- *  - 모든 결과는 7개 kind discriminated union으로 표현
+ *  - 모든 결과는 6개 kind discriminated union으로 표현
  */
 
 import type { OrderbookTop } from './upbit-price-manager';
@@ -72,7 +77,7 @@ export type PendingTradeInput = {
   notes: string | null;
 };
 
-/** 결과 — discriminated union (7 kinds) */
+/** 결과 — discriminated union (6 kinds, PR E2에서 rolled_back 제거) */
 export type LiveExecutorResult =
   | { kind: 'noop' }
   | { kind: 'placed'; makerOrderUuid: string; makerOrderPrice: number }
@@ -84,13 +89,11 @@ export type LiveExecutorResult =
       filledQty: number;
       filledMakerKrw: number;
       filledSellKrw: number;
-      filledBuyKrw: number;
       paidFeeKrw: number;
       netProfitKrw: number;
       realizedSpreadBps: number;
     }
-  | { kind: 'partial_hold'; pendingId: bigint; reason: string }
-  | { kind: 'rolled_back'; pendingId: bigint; reason: string };
+  | { kind: 'partial_hold'; pendingId: bigint; reason: string };
 
 export type ProcessLiveInput = {
   bot: LiveBotInput;
@@ -154,7 +157,7 @@ export async function processLiveBot(
   const filledQty = parseFloat(status.executed_volume || '0');
   const elapsed = Date.now() - pending.createdAt.getTime();
 
-  // ----- 체결됨 (full or partial) → 2단계 taker -----
+  // ----- 체결됨 (full or partial) → taker leg (Y 시장가 매도, spec § 2) -----
   if (filledQty > 0) {
     const filledMakerKrw = sumFunds(status.trades);
     const paidFeeMaker = parseFloat(status.paid_fee || '0');
@@ -170,49 +173,48 @@ export async function processLiveBot(
       };
     }
 
-    // Stage 1: maker 코인을 즉시 시장가로 매도 (X 매도)
+    // Taker leg (spec § 2): 고유동성 코인 Y(takerCoin)을 즉시 시장가로 매도
+    // PR D 사고에서 발견된 KRW 우회 패턴(USDS 매도 → KRW로 USDT 매수) 제거.
+    // sim/live P&L 정합성 — simulator의 (takerPrice − makerFilledPrice) × q와 일치하도록.
     const sellResp = await client.placeBestIoc(
-      `KRW-${bot.makerCoin}`,
+      `KRW-${bot.takerCoin}`,
       'ask',
       { volume: String(filledQty) },
     );
-    const filledSellQty = parseFloat(sellResp.executed_volume || '0');
+    let filledSellQty = parseFloat(sellResp.executed_volume || '0');
+    let effectiveSellResp: UpbitOrderResp = sellResp;
+
+    // Leg-2 IOC false positive 방어 (PR D 사례 uuid b04515ce):
+    // IOC 즉시 응답이 executed_volume=0이지만 ~2분 후 실제 체결되는 경우가 관측됨.
+    // takerCoin은 고유동성(USDT)이라 false positive 위험은 낮지만 안전망으로 1.5초 후 1회 재조회.
+    // 두 번째 재조회 도입은 PR E2 운영 중 실제 false positive 재발 시 PR E3에서 검토.
+    if (filledSellQty === 0 && sellResp.uuid) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const recheck = await client.getOrder(sellResp.uuid);
+      const recheckQty = parseFloat(recheck.executed_volume || '0');
+      if (recheckQty > 0) {
+        filledSellQty = recheckQty;
+        effectiveSellResp = recheck;
+      }
+    }
+
     if (filledSellQty === 0) {
+      // taker leg 미체결 → maker leg(X=USDS) 그대로 보유. 수동 unwind 필요.
+      // Option A "no fallback" 결정 — 자동 회수는 sim/live 정합성을 깬다.
       return {
         kind: 'partial_hold',
         pendingId: pending.id,
-        reason: 'maker filled, taker sell failed, holding X',
+        reason: 'taker(Y) sell failed after IOC + recheck, holding X',
       };
     }
-    const filledSellKrw = sumFunds(sellResp.trades);
-    const paidFeeSell = parseFloat(sellResp.paid_fee || '0');
 
-    // Stage 2: 받은 KRW로 taker 코인 매수 (Y 매수)
-    const buyKrw = filledSellKrw - paidFeeSell;
-    const buyResp = await client.placeBestIoc(
-      `KRW-${bot.takerCoin}`,
-      'bid',
-      { price: String(Math.floor(buyKrw)) },
-    );
-    const filledBuyQty = parseFloat(buyResp.executed_volume || '0');
-    if (filledBuyQty === 0) {
-      // Stage 3 (fallback): 받은 KRW로 X 재매수 (best-effort 복구)
-      await client.placeBestIoc(
-        `KRW-${bot.makerCoin}`,
-        'bid',
-        { price: String(Math.floor(buyKrw)) },
-      );
-      return {
-        kind: 'rolled_back',
-        pendingId: pending.id,
-        reason: 'taker buy failed, recovered to X',
-      };
-    }
-    const filledBuyKrw = sumFunds(buyResp.trades);
-    const paidFeeBuy = parseFloat(buyResp.paid_fee || '0');
+    const filledSellKrw = sumFunds(effectiveSellResp.trades);
+    const paidFeeSell = parseFloat(effectiveSellResp.paid_fee || '0');
 
-    // P&L 계산
-    const paidFeeKrw = paidFeeMaker + paidFeeSell + paidFeeBuy;
+    // P&L 계산 — simulator와 동일 공식: (T_received − M_paid) × q − fees
+    //   filledSellKrw  = takerCoin 매도로 받은 KRW (taker 체결가 × q)
+    //   filledMakerKrw = makerCoin 매수에 지불한 KRW (maker 체결가 × q)
+    const paidFeeKrw = paidFeeMaker + paidFeeSell;
     const netProfitKrw = filledSellKrw - filledMakerKrw - paidFeeKrw;
     const realizedSpreadBps = Math.floor(
       (filledSellKrw / filledMakerKrw - 1) * 10000,
@@ -224,7 +226,6 @@ export async function processLiveBot(
       filledQty,
       filledMakerKrw,
       filledSellKrw,
-      filledBuyKrw,
       paidFeeKrw,
       netProfitKrw,
       realizedSpreadBps,

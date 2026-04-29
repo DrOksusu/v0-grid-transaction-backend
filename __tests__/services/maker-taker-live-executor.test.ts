@@ -1,7 +1,7 @@
 /**
- * maker-taker-live-executor 테스트
+ * maker-taker-live-executor 테스트 (PR E2: spec § 2 정합 재구현 기준)
  *
- * 7개 시나리오 (CASE A 3개 + CASE B 5개 = 총 8개 테스트):
+ * 시나리오 (CASE A 3개 + CASE B 7개 = 총 10개 테스트):
  *  CASE A (PENDING null): 신규 maker bid 주문
  *    1. 정상: 락 free + preCheck ok + 호가 존재 → placeLimit 호출 + placed
  *    2. 락 점유 → noop, placeLimit 미호출
@@ -10,9 +10,11 @@
  *  CASE B (PENDING object): 기존 주문 폴링
  *    4. 미체결 + 만료 전 → waiting
  *    5. 만료 + 미체결 → cancelOrder + expired
- *    6. 체결 + taker 양쪽 성공 → filled (P&L 검증)
- *    7. 체결 + taker step 1 (X 매도) 실패 → partial_hold
- *    8. 체결 + step 2 실패 → step 3 fallback → rolled_back
+ *    6. 체결 + taker(Y) 매도 즉시 성공 → filled (P&L 검증, sim 공식)
+ *    7. 체결 + taker(Y) 매도 IOC 즉시 0 + 1.5초 재폴링도 0 → partial_hold
+ *    8. 체결 + taker(Y) 매도 IOC 즉시 0 + 1.5초 재폴링에서 체결 발견 → filled
+ *    9. 체결됐지만 trades funds=0 → partial_hold (defensive, divide-by-zero 방지)
+ *   10. sim/live P&L 정합성 sanity — 동일 조건에서 simulator와 live의 netProfitKrw 일치
  */
 
 import {
@@ -206,8 +208,9 @@ describe('processLiveBot — CASE B (PENDING 폴링)', () => {
     }
   });
 
-  it('6. 체결 + taker 양쪽 성공 → filled', async () => {
+  it('6. 체결 + taker(Y) 매도 즉시 성공 → filled (sim 공식 P&L)', async () => {
     const client = mkClient();
+    // maker(USDT) leg 체결: maker 매수 5개 × 1449 KRW = funds 7245
     client.getOrder.mockResolvedValueOnce({
       uuid: 'limit-existing',
       state: 'done',
@@ -215,19 +218,12 @@ describe('processLiveBot — CASE B (PENDING 폴링)', () => {
       paid_fee: '36.225',
       trades: [{ funds: '7245', price: '1449', volume: '5' }],
     });
-    // Stage 1: sell USDT
+    // taker(USDC) 시장가 매도 즉시 성공: 5개 × 1448 KRW = 7240 (best bid)
     client.placeBestIoc.mockResolvedValueOnce({
-      uuid: 'sell-uuid',
+      uuid: 'taker-sell-uuid',
       executed_volume: '5',
-      paid_fee: '18.125',
-      trades: [{ funds: '7250', price: '1450', volume: '5' }],
-    });
-    // Stage 2: buy USDC
-    client.placeBestIoc.mockResolvedValueOnce({
-      uuid: 'buy-uuid',
-      executed_volume: '5.0',
-      paid_fee: '18.080',
-      trades: [{ funds: '7232', price: '1449', volume: '5' }],
+      paid_fee: '18.10',
+      trades: [{ funds: '7240', price: '1448', volume: '5' }],
     });
 
     const result = await processLiveBot({
@@ -243,37 +239,44 @@ describe('processLiveBot — CASE B (PENDING 폴링)', () => {
     if (result.kind === 'filled') {
       expect(result.pendingId).toBe(100n);
       expect(result.filledQty).toBe(5);
-      expect(result.filledMakerKrw).toBe(7245);
-      expect(result.filledSellKrw).toBe(7250);
-      expect(result.filledBuyKrw).toBe(7232);
-      expect(result.paidFeeKrw).toBeCloseTo(72.43, 1);
-      expect(result.netProfitKrw).toBeCloseTo(-67.43, 1);
-      expect(result.realizedSpreadBps).toBe(6);
+      expect(result.filledMakerKrw).toBe(7245); // makerCoin 매수 지불 KRW
+      expect(result.filledSellKrw).toBe(7240); // takerCoin 매도 받은 KRW
+      // P&L: (7240 - 7245) - (36.225 + 18.10) = -5 - 54.325 = -59.325
+      expect(result.paidFeeKrw).toBeCloseTo(54.325, 2);
+      expect(result.netProfitKrw).toBeCloseTo(-59.325, 2);
+      // realizedSpreadBps: floor((7240/7245 - 1) * 10000) = floor(-6.9...) = -7
+      expect(result.realizedSpreadBps).toBe(-7);
     }
-    expect(client.placeBestIoc).toHaveBeenCalledTimes(2);
-    // Stage 1: sell USDT
-    expect(client.placeBestIoc.mock.calls[0][0]).toBe('KRW-USDT');
+    expect(client.placeBestIoc).toHaveBeenCalledTimes(1);
+    // Taker leg = takerCoin(USDC) 시장가 매도 (spec § 2)
+    expect(client.placeBestIoc.mock.calls[0][0]).toBe('KRW-USDC');
     expect(client.placeBestIoc.mock.calls[0][1]).toBe('ask');
-    // Stage 2: buy USDC
-    expect(client.placeBestIoc.mock.calls[1][0]).toBe('KRW-USDC');
-    expect(client.placeBestIoc.mock.calls[1][1]).toBe('bid');
+    expect(client.placeBestIoc.mock.calls[0][2]).toEqual({ volume: '5' });
   });
 
-  it('7. 체결 + taker step 1 (X 매도) 실패 → partial_hold', async () => {
+  it('7. 체결 + taker(Y) 매도 IOC 즉시 0 + 1.5초 재폴링도 0 → partial_hold', async () => {
+    jest.useFakeTimers();
     const client = mkClient();
-    client.getOrder.mockResolvedValueOnce({
-      uuid: 'limit-existing',
-      state: 'done',
-      executed_volume: '5',
-      paid_fee: '36.225',
-      trades: [{ funds: '7245', price: '1449', volume: '5' }],
-    });
+    client.getOrder
+      .mockResolvedValueOnce({
+        // 1차 호출: maker 주문 상태 (체결)
+        uuid: 'limit-existing',
+        state: 'done',
+        executed_volume: '5',
+        paid_fee: '36.225',
+        trades: [{ funds: '7245', price: '1449', volume: '5' }],
+      })
+      .mockResolvedValueOnce({
+        // 2차 호출: taker IOC 재폴링 — 여전히 0
+        uuid: 'taker-sell-fail',
+        executed_volume: '0',
+      });
     client.placeBestIoc.mockResolvedValueOnce({
-      uuid: 'sell-fail',
+      uuid: 'taker-sell-fail',
       executed_volume: '0',
     });
 
-    const result = await processLiveBot({
+    const promise = processLiveBot({
       bot: baseBot,
       pending: pendingBase,
       books,
@@ -281,46 +284,48 @@ describe('processLiveBot — CASE B (PENDING 폴링)', () => {
       isLocked: () => false,
       preCheckOk: true,
     });
+    // 1.5초 sleep을 fake timer로 진행
+    await jest.advanceTimersByTimeAsync(1500);
+    const result = await promise;
 
     expect(result.kind).toBe('partial_hold');
     if (result.kind === 'partial_hold') {
       expect(result.pendingId).toBe(100n);
-      expect(result.reason).toMatch(/sell|holding X/i);
+      expect(result.reason).toMatch(/taker|holding X/i);
     }
-    // Stage 2 buy 호출 안 됨
+    // taker IOC 1회 + getOrder 재폴링 1회 + maker getOrder 1회 = total 2 getOrder, 1 placeBestIoc
     expect(client.placeBestIoc).toHaveBeenCalledTimes(1);
+    expect(client.getOrder).toHaveBeenCalledTimes(2);
+    jest.useRealTimers();
   });
 
-  it('8. 체결 + step 2 실패 → step 3 fallback → rolled_back', async () => {
+  it('8. 체결 + taker(Y) IOC 즉시 0 + 1.5초 재폴링에서 체결 발견 → filled', async () => {
+    jest.useFakeTimers();
     const client = mkClient();
-    client.getOrder.mockResolvedValueOnce({
-      uuid: 'limit-existing',
-      state: 'done',
-      executed_volume: '5',
-      paid_fee: '36.225',
-      trades: [{ funds: '7245', price: '1449', volume: '5' }],
-    });
-    // Stage 1 sell USDT 성공
+    client.getOrder
+      .mockResolvedValueOnce({
+        // 1차: maker 주문 상태
+        uuid: 'limit-existing',
+        state: 'done',
+        executed_volume: '5',
+        paid_fee: '36.225',
+        trades: [{ funds: '7245', price: '1449', volume: '5' }],
+      })
+      .mockResolvedValueOnce({
+        // 2차: taker IOC 재폴링 — 늦게 체결 확인됨 (PR D 사례 b04515ce 패턴)
+        uuid: 'taker-sell-late',
+        state: 'done',
+        executed_volume: '5',
+        paid_fee: '18.10',
+        trades: [{ funds: '7240', price: '1448', volume: '5' }],
+      });
     client.placeBestIoc.mockResolvedValueOnce({
-      uuid: 'sell-uuid',
-      executed_volume: '5',
-      paid_fee: '18.125',
-      trades: [{ funds: '7250', price: '1450', volume: '5' }],
-    });
-    // Stage 2 buy USDC 실패
-    client.placeBestIoc.mockResolvedValueOnce({
-      uuid: 'buy-fail',
+      // 즉시 응답은 0 (false positive 가능성)
+      uuid: 'taker-sell-late',
       executed_volume: '0',
     });
-    // Stage 3 fallback buy USDT 성공
-    client.placeBestIoc.mockResolvedValueOnce({
-      uuid: 'fallback-uuid',
-      executed_volume: '5',
-      paid_fee: '18.0',
-      trades: [{ funds: '7232', price: '1450', volume: '5' }],
-    });
 
-    const result = await processLiveBot({
+    const promise = processLiveBot({
       bot: baseBot,
       pending: pendingBase,
       books,
@@ -328,16 +333,18 @@ describe('processLiveBot — CASE B (PENDING 폴링)', () => {
       isLocked: () => false,
       preCheckOk: true,
     });
+    await jest.advanceTimersByTimeAsync(1500);
+    const result = await promise;
 
-    expect(result.kind).toBe('rolled_back');
-    if (result.kind === 'rolled_back') {
-      expect(result.pendingId).toBe(100n);
+    expect(result.kind).toBe('filled');
+    if (result.kind === 'filled') {
+      expect(result.filledQty).toBe(5);
+      expect(result.filledSellKrw).toBe(7240); // 재폴링에서 가져온 trades funds
+      expect(result.netProfitKrw).toBeCloseTo(-59.325, 2);
     }
-    expect(client.placeBestIoc).toHaveBeenCalledTimes(3);
-    // 마지막(fallback) 호출이 KRW-USDT(makerCoin) bid인지 확인
-    const fbCall = client.placeBestIoc.mock.calls[2];
-    expect(fbCall[0]).toBe('KRW-USDT');
-    expect(fbCall[1]).toBe('bid');
+    expect(client.placeBestIoc).toHaveBeenCalledTimes(1);
+    expect(client.getOrder).toHaveBeenCalledTimes(2);
+    jest.useRealTimers();
   });
 
   it('9. 체결됐지만 trades funds=0 → partial_hold (defensive, divide-by-zero 방지)', async () => {
@@ -367,5 +374,91 @@ describe('processLiveBot — CASE B (PENDING 폴링)', () => {
     }
     // Stage 1 sell도 호출 안 됨 (가드가 그 전에 차단)
     expect(client.placeBestIoc).not.toHaveBeenCalled();
+  });
+});
+
+describe('processLiveBot — sim/live P&L 정합성 sanity (시나리오 10)', () => {
+  /**
+   * PR D 사고 핵심 원인은 simulator와 live executor의 P&L 메커니즘이 달랐다는 것.
+   *   - simulator: (takerPrice − makerFilledPrice) × q − fees  (cross-coin direct swap)
+   *   - PR D 시점 live: USDS 매도 → KRW로 USDT 매수 (KRW 우회 패턴)
+   *
+   * PR E2 이후에는 둘이 동일한 공식을 써야 한다. 이 테스트는 향후 변경이 다시 어긋나면 즉시 잡는다.
+   */
+  it('10. 동일 호가/체결 조건에서 simulator와 live의 netProfitKrw 일치', async () => {
+    // Given: maker 체결가 M=1500, taker 체결가 T=1502, q=10, makerFee=5bps, takerFee=5bps
+    const M = 1500;
+    const T = 1502;
+    const q = 10;
+    const makerFeeBps = 5;
+    const takerFeeBps = 5;
+
+    // Simulator 직접 호출
+    const { simulateTakerLeg, isAbort } = await import(
+      '../../src/services/maker-taker-simulator.service'
+    );
+    const simResult = simulateTakerLeg({
+      makerFilledPrice: M,
+      takerOrderbook: {
+        market: 'KRW-Y',
+        bid: { price: T, size: 100 },
+        ask: { price: T + 1, size: 100 },
+        timestamp: 0,
+      },
+      quantity: q,
+      feeBpsMaker: makerFeeBps,
+      feeBpsTaker: takerFeeBps,
+    });
+    if (isAbort(simResult)) {
+      throw new Error('sim aborted unexpectedly');
+    }
+    const simNet = simResult.netProfitKrw;
+
+    // Live executor mock — 동일 가격/수수료 가정
+    // maker leg paid_fee = M*q*makerFeeBps/10000 = 1500*10*5/10000 = 7.5
+    // taker leg paid_fee = T*q*takerFeeBps/10000 = 1502*10*5/10000 = 7.51
+    const client = mkClient();
+    client.getOrder.mockResolvedValueOnce({
+      uuid: 'maker-uuid',
+      state: 'done',
+      executed_volume: String(q),
+      paid_fee: '7.5',
+      trades: [{ funds: String(M * q), price: String(M), volume: String(q) }],
+    });
+    client.placeBestIoc.mockResolvedValueOnce({
+      uuid: 'taker-uuid',
+      executed_volume: String(q),
+      paid_fee: '7.51',
+      trades: [{ funds: String(T * q), price: String(T), volume: String(q) }],
+    });
+
+    const liveResult = await processLiveBot({
+      bot: baseBot,
+      pending: {
+        ...({
+          id: 999n,
+          status: 'PENDING',
+          makerOrderUuid: 'maker-uuid',
+          makerOrderPrice: M,
+          createdAt: new Date(Date.now() - 10_000),
+          notes: 'sanity',
+        } as PendingTradeInput),
+      },
+      books,
+      client,
+      isLocked: () => false,
+      preCheckOk: true,
+    });
+
+    expect(liveResult.kind).toBe('filled');
+    if (liveResult.kind !== 'filled') return;
+
+    // 정합성: |sim - live| < 1 KRW (수수료 round 허용)
+    expect(Math.abs(liveResult.netProfitKrw - simNet)).toBeLessThan(1);
+
+    // 둘 다 spec 공식: (T - M) * q − fees
+    const expected = (T - M) * q - (M * q * makerFeeBps + T * q * takerFeeBps) / 10000;
+    expect(liveResult.netProfitKrw).toBeCloseTo(expected, 2);
+    expect(simNet).toBeCloseTo(expected, 2);
   });
 });
