@@ -147,7 +147,8 @@ model MakerTakerSimBot {
   quantity     Decimal @db.Decimal(20, 8)
   maxPendingMs Int     @default(3600000)
 
-  minTakerBidKrw Int?
+  minTakerBidKrw  Int?
+  minTakerBalance Int? // 자동 일시정지 임계값. null=비활성. 잔고 < 이 값이면 enabled=false.
 
   makerFeeBps Int @default(5)
   takerFeeBps Int @default(5)

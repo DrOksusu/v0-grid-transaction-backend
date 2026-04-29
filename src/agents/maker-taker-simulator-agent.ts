@@ -21,6 +21,8 @@ import {
   type LiveExecutorResult,
 } from '../services/maker-taker-live-executor';
 import { tradingLock } from '../services/stablecoin-trading-lock';
+import { checkMakerPlacementBalance } from '../services/maker-taker-balance-precheck';
+import { shouldAutoPauseForMinBalance } from '../services/maker-taker-min-balance-guard';
 import { UpbitService } from '../services/upbit.service';
 import { BalanceCache } from '../services/upbit-balance-cache';
 import { decrypt } from '../utils/encryption';
@@ -211,7 +213,6 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
 
   /**
    * live=true 봇 처리. maker-taker-live-executor에 위임 + DB write 적용.
-   * preCheck는 PR C 범위에서 단순 maker post_only라 잔고/lock 체크만 충분 (spec note).
    *
    * 메서드명은 `handleLiveBot` — import한 executor 함수 `processLiveBot`(alias `runLiveExecutor`)와 구분.
    */
@@ -219,7 +220,6 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     bot: Awaited<ReturnType<typeof prisma.makerTakerSimBot.findMany>>[number],
     books: ReadonlyMap<string, OrderbookTop>,
   ): Promise<void> {
-    // killSwitch 봇은 skip (executor에서 검사하지 않으므로 caller responsibility)
     if (bot.killSwitch) return;
 
     // 1. PENDING 조회 (live=true 트레이드만)
@@ -251,6 +251,58 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       return;
     }
 
+    // 3. 잔고 가드 + pre-check (CASE A — pending null일 때만)
+    let preCheckOk = true;
+    if (pending === null) {
+      let balances: Record<string, number>;
+      try {
+        balances = await upbitClient.cache.get();
+      } catch (err: any) {
+        console.error(
+          `[MakerTakerSimulatorAgent] bot ${bot.id} balance fetch 실패:`,
+          err.message,
+        );
+        return;
+      }
+
+      // (a) minTakerBalance 자동 일시정지
+      const guard = shouldAutoPauseForMinBalance({
+        takerCoin: bot.takerCoin,
+        takerBalance: balances[bot.takerCoin] ?? 0,
+        minTakerBalance: bot.minTakerBalance,
+      });
+      if (guard.autoPause) {
+        await prisma.makerTakerSimBot.update({
+          where: { id: bot.id },
+          data: { enabled: false },
+        });
+        console.warn(
+          `[MakerTakerSimulatorAgent] bot ${bot.id} 자동 일시정지 (enabled=false): ${guard.reason}`,
+        );
+        return;
+      }
+
+      // (b) 사전 잔고 체크 — maker placement 직전
+      const makerBook = books.get(`KRW-${bot.makerCoin}`);
+      if (!makerBook) {
+        return;
+      }
+      const makerOrderPrice = makerBook.bid.price + bot.bidOffsetKrw;
+      const precheck = checkMakerPlacementBalance({
+        takerCoin: bot.takerCoin,
+        quantity: Number(bot.quantity),
+        makerOrderPrice,
+        makerFeeBps: bot.makerFeeBps,
+        balances,
+      });
+      if (!precheck.ok) {
+        console.log(
+          `[MakerTakerSimulatorAgent] bot ${bot.id} pre-check 실패: ${precheck.reason}`,
+        );
+        preCheckOk = false;
+      }
+    }
+
     const client: OrderClient = {
       placeLimit: (m, s, p) => upbitClient.upbit.placeLimitOrder(m, s, p),
       placeBestIoc: (m, s, p) => upbitClient.upbit.placeBestIoc(m, s, p),
@@ -264,7 +316,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       makerCoin: bot.makerCoin,
       takerCoin: bot.takerCoin,
       bidOffsetKrw: bot.bidOffsetKrw,
-      quantity: Number(bot.quantity), // Decimal -> number
+      quantity: Number(bot.quantity),
       maxPendingMs: bot.maxPendingMs,
       killSwitch: bot.killSwitch,
     };
@@ -275,7 +327,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       books,
       client,
       isLocked: () => tradingLock.isLocked(),
-      preCheckOk: true, // PR C: maker bot은 잔고 부족 시 placeLimit이 실패하므로 pre-check 별도 X
+      preCheckOk,
     });
 
     // 거래 직후 잔고 캐시 invalidate (다음 evaluate에서 fresh)
@@ -288,7 +340,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       upbitClient.cache.invalidate();
     }
 
-    // 3. 결과별 DB write
+    // 4. 결과별 DB write
     await this.persistLiveResult(bot, pending, result);
   }
 

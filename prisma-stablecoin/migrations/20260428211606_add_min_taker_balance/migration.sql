@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE `maker_taker_sim_bots` ADD COLUMN `minTakerBalance` INTEGER NULL;

@@ -266,6 +266,7 @@ export type CreateMakerBotInput = {
   quantity: number;
   maxPendingMs?: number;
   minTakerBidKrw?: number | null;
+  minTakerBalance?: number | null;
   makerFeeBps?: number;
   takerFeeBps?: number;
 };
@@ -285,6 +286,7 @@ export async function createMakerBot(input: CreateMakerBotInput) {
       quantity: input.quantity,
       maxPendingMs: input.maxPendingMs ?? 600_000,
       minTakerBidKrw: input.minTakerBidKrw ?? null,
+      minTakerBalance: input.minTakerBalance ?? null,
       makerFeeBps: input.makerFeeBps ?? 5,
       takerFeeBps: input.takerFeeBps ?? 5,
     },
@@ -299,6 +301,7 @@ export type PatchMakerBotInput = Partial<{
   quantity: number;
   maxPendingMs: number;
   minTakerBidKrw: number | null;
+  minTakerBalance: number | null;
   makerFeeBps: number;
   takerFeeBps: number;
 }>;
