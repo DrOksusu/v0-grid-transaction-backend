@@ -334,7 +334,6 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     if (
       result.kind === 'placed' ||
       result.kind === 'filled' ||
-      result.kind === 'rolled_back' ||
       result.kind === 'partial_hold'
     ) {
       upbitClient.cache.invalidate();
@@ -413,7 +412,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             realizedSpreadBps: result.realizedSpreadBps,
             notes:
               (pending?.notes ?? '') +
-              ` | LIVE FILLED sell=${result.filledSellKrw} buy=${result.filledBuyKrw} fees=${feeKrw} net=${netProfitKrw}`,
+              ` | LIVE FILLED maker=${result.filledMakerKrw} sell=${result.filledSellKrw} fees=${feeKrw} net=${netProfitKrw}`,
           },
         });
         return;
@@ -424,16 +423,6 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           where: { id: result.pendingId },
           data: {
             status: 'PARTIAL_HOLD',
-            notes: (pending?.notes ?? '') + ` | LIVE ${result.reason}`,
-          },
-        });
-        return;
-
-      case 'rolled_back':
-        await prisma.makerTakerSimTrade.update({
-          where: { id: result.pendingId },
-          data: {
-            status: 'ROLLED_BACK',
             notes: (pending?.notes ?? '') + ` | LIVE ${result.reason}`,
           },
         });
