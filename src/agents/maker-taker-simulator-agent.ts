@@ -319,7 +319,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       quantity: Number(bot.quantity),
       maxPendingMs: bot.maxPendingMs,
       killSwitch: bot.killSwitch,
-      minSpreadKrw: bot.minSpreadKrw ?? 0, // PR H — agent 가 spread gate 결정 시 사용
+      minSpreadKrw: bot.minSpreadKrw, // PR H — agent 가 spread gate 결정 시 사용 (Prisma NOT NULL, Int @default(12))
     };
 
     const result = await runLiveExecutor({
