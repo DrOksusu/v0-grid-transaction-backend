@@ -4,6 +4,7 @@ import * as arbService from '../services/stablecoin-arb.service';
 import type { OpportunityStats } from '../services/stablecoin-arb.service';
 import { getAllStablecoinOrderbooks, type OrderbookTop } from '../services/upbit-price-manager';
 import { AppError } from '../middlewares/errorHandler';
+import { reconcileBotAssets } from '../services/maker-taker-asset-reconciliation.service';
 
 /**
  * GET /api/admin/stablecoin/bot
@@ -222,11 +223,14 @@ export const postKillswitch = async (req: AuthRequest, res: Response, next: Next
 /**
  * MakerTakerSimBot의 quantity 필드(Decimal)를 string으로 직렬화.
  * Prisma Decimal은 JSON.stringify 시 빈 객체가 되므로 변환 필수.
+ * minSpreadKrw, lastResumeAt 포함 (PR H — canary stage 3 검증 필드).
  */
 function serializeMakerBot(bot: any) {
   return {
     ...bot,
     quantity: bot.quantity?.toString() ?? null,
+    minSpreadKrw: bot.minSpreadKrw,
+    lastResumeAt: bot.lastResumeAt?.toISOString() ?? null,
   };
 }
 
@@ -284,6 +288,9 @@ export const createMakerBot = async (req: AuthRequest, res: Response, next: Next
     if (body.takerFeeBps !== undefined && (!Number.isInteger(body.takerFeeBps) || body.takerFeeBps < 0)) {
       throw new AppError('Invalid body: takerFeeBps must be non-negative integer', 400);
     }
+    if (body.minSpreadKrw !== undefined && (!Number.isInteger(body.minSpreadKrw) || body.minSpreadKrw < 0)) {
+      throw new AppError('Invalid body: minSpreadKrw must be non-negative integer', 400);
+    }
 
     const bot = await arbService.createMakerBot({
       userId,
@@ -296,6 +303,7 @@ export const createMakerBot = async (req: AuthRequest, res: Response, next: Next
       minTakerBalance: body.minTakerBalance,
       makerFeeBps: body.makerFeeBps,
       takerFeeBps: body.takerFeeBps,
+      minSpreadKrw: body.minSpreadKrw,
     });
     res.json(serializeMakerBot(bot));
   } catch (error) {
@@ -358,6 +366,10 @@ export const patchMakerBot = async (req: AuthRequest, res: Response, next: NextF
       if (!Number.isInteger(body.takerFeeBps) || body.takerFeeBps < 0) throw new AppError('Invalid body: takerFeeBps must be non-negative integer', 400);
       patch.takerFeeBps = body.takerFeeBps;
     }
+    if (body.minSpreadKrw !== undefined) {
+      if (!Number.isInteger(body.minSpreadKrw) || body.minSpreadKrw < 0) throw new AppError('Invalid body: minSpreadKrw must be non-negative integer', 400);
+      patch.minSpreadKrw = body.minSpreadKrw;
+    }
 
     const bot = await arbService.patchMakerBot(id, userId, patch);
     res.json(serializeMakerBot(bot));
@@ -387,6 +399,33 @@ export const deleteMakerBot = async (req: AuthRequest, res: Response, next: Next
     const msg = error?.message || '';
     if (msg.includes('PENDING')) return next(new AppError(msg, 422));
     if (msg.includes('not found')) return next(new AppError(msg, 404));
+    next(error);
+  }
+};
+
+/**
+ * POST /api/admin/stablecoin/maker-bots/:id/verify-reconciliation
+ *
+ * 봇 #id 의 lastResumeAt 이후 DB FILLED 합계와 Upbit done order 합계를 비교한다.
+ * 응답: ReconciliationReport (서비스 동일 타입)
+ */
+export const verifyMakerBotReconciliation = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) throw new AppError('Invalid id', 400);
+
+    const report = await reconcileBotAssets({ botId: id, userId });
+    res.json(report);
+  } catch (error: any) {
+    if (error?.message?.includes('not found')) return next(new AppError('Bot not found', 404));
+    if (error?.message?.includes('not owned')) return next(new AppError('Bot not owned by user', 403));
+    if (error?.message?.includes('credential not registered'))
+      return next(new AppError('Upbit credential not registered', 400));
     next(error);
   }
 };
