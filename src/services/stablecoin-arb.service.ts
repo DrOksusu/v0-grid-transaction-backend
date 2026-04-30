@@ -269,6 +269,7 @@ export type CreateMakerBotInput = {
   minTakerBalance?: number | null;
   makerFeeBps?: number;
   takerFeeBps?: number;
+  minSpreadKrw?: number;
 };
 
 /**
@@ -289,6 +290,8 @@ export async function createMakerBot(input: CreateMakerBotInput) {
       minTakerBalance: input.minTakerBalance ?? null,
       makerFeeBps: input.makerFeeBps ?? 5,
       takerFeeBps: input.takerFeeBps ?? 5,
+      // minSpreadKrw 미지정 시 Prisma 스키마 기본값(12) 사용
+      ...(input.minSpreadKrw !== undefined && { minSpreadKrw: input.minSpreadKrw }),
     },
   });
 }
@@ -304,28 +307,38 @@ export type PatchMakerBotInput = Partial<{
   minTakerBalance: number | null;
   makerFeeBps: number;
   takerFeeBps: number;
+  minSpreadKrw: number;
+  lastResumeAt: Date;
 }>;
 
 /**
  * Maker-Taker 봇 부분 업데이트.
- * ownership 보호: userId 매칭 안 되면 update 실패 → "Bot not found" throw.
+ * ownership 보호: userId 매칭 안 되면 findFirst → null → "Bot not found" throw.
  *
- * Prisma의 update는 unique where만 허용하므로, ownership 검증을 위해
- * updateMany({ where: { id, userId } }) 패턴 사용.
+ * PR H — prev row 조회 방식으로 변경:
+ *   1. findFirst로 현재 row 조회 (ownership 검증)
+ *   2. enabled false→true 전환 감지 → lastResumeAt 자동 갱신 (canary T_start 의도)
+ *   3. update (unique where) 실행
  */
 export async function patchMakerBot(id: number, userId: number, patch: PatchMakerBotInput) {
-  const result = await prisma.makerTakerSimBot.updateMany({
+  // PR H — prev row 조회 (ownership 검증 + enabled 전환 감지)
+  const existing = await prisma.makerTakerSimBot.findFirst({
     where: { id, userId },
-    data: patch,
   });
-  if (result.count === 0) {
+  if (!existing) {
     throw new Error('Bot not found or not owned by user');
   }
-  // 업데이트 후 최신 상태 반환
-  const updated = await prisma.makerTakerSimBot.findUnique({
+
+  // enabled false→true 전환 시에만 lastResumeAt 갱신 (canary T_start 의도)
+  const finalPatch: PatchMakerBotInput = { ...patch };
+  if (existing.enabled === false && patch.enabled === true) {
+    finalPatch.lastResumeAt = new Date();
+  }
+
+  const updated = await prisma.makerTakerSimBot.update({
     where: { id },
+    data: finalPatch,
   });
-  if (!updated) throw new Error('Bot not found after update');
   return updated;
 }
 

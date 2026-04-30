@@ -14,6 +14,7 @@ import {
   createMakerBot,
   patchMakerBot,
   deleteMakerBot,
+  verifyMakerBotReconciliation,
 } from '../controllers/stablecoin-admin.controller';
 
 const router = Router();
@@ -36,5 +37,6 @@ router.get('/maker-bots', listMakerBots);
 router.post('/maker-bots', createMakerBot);
 router.patch('/maker-bots/:id', patchMakerBot);
 router.delete('/maker-bots/:id', deleteMakerBot);
+router.post('/maker-bots/:id/verify-reconciliation', verifyMakerBotReconciliation);
 
 export default router;

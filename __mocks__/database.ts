@@ -39,11 +39,19 @@ const stablecoinPrisma = {
   },
   makerTakerSimBot: {
     findMany: jest.fn(),
+    findFirst: jest.fn(),     // PR H — patchMakerBot prev row 조회
+    findUnique: jest.fn(),    // PR H — reconcileBotAssets bot 조회
+    update: jest.fn(),        // PR H — patchMakerBot 업데이트
+    create: jest.fn(),
   },
   makerTakerSimTrade: {
     findMany: jest.fn(),
+    findFirst: jest.fn(),     // PR H — pending trade 조회
+    count: jest.fn(),         // PR H — reconcileBotAssets pending count
     groupBy: jest.fn(),
     aggregate: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
   },
 };
 

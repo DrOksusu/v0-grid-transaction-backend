@@ -153,6 +153,10 @@ model MakerTakerSimBot {
   makerFeeBps Int @default(5)
   takerFeeBps Int @default(5)
 
+  // PR H — Canary Stage 3 사전 정비
+  minSpreadKrw Int       @default(12)  // (bestAsk - bestBid) >= 이 값일 때만 placement
+  lastResumeAt DateTime?               // enabled false→true 전환 시각 (canary T_start)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
