@@ -26,6 +26,7 @@ import { shouldAutoPauseForMinBalance } from '../services/maker-taker-min-balanc
 import { UpbitService } from '../services/upbit.service';
 import { BalanceCache } from '../services/upbit-balance-cache';
 import { decrypt } from '../utils/encryption';
+import { isSpreadProfitable } from '../services/maker-taker-spread-gate';
 
 /**
  * Maker-Taker 시뮬레이터 (실거래 없이 DB 가상 기록)
@@ -128,6 +129,13 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     });
 
     if (!pending) {
+      // PR H — 수익성 게이팅 (live/sim 정합성)
+      const gate = isSpreadProfitable(makerBook, bot.minSpreadKrw);
+      if (!gate.ok) {
+        // row 미생성 — 통계 단절 리스크는 spec §7 R1 참조
+        return;
+      }
+
       // 새 가상 주문 생성: makerCoin의 현재 best bid + bidOffsetKrw
       const makerOrderPrice = makerBook.bid.price + bot.bidOffsetKrw;
       await prisma.makerTakerSimTrade.create({
@@ -138,7 +146,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           makerOrderPrice,
           quantity: bot.quantity,
           status: 'PENDING',
-          notes: `생성: makerBid=${makerBook.bid.price}, offset=${bot.bidOffsetKrw}`,
+          notes: `생성: makerBid=${makerBook.bid.price}, offset=${bot.bidOffsetKrw}, spread=${gate.spreadKrw}`,
         },
       });
       return;
@@ -300,6 +308,17 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           `[MakerTakerSimulatorAgent] bot ${bot.id} pre-check 실패: ${precheck.reason}`,
         );
         preCheckOk = false;
+      }
+
+      // PR H — 수익성 게이팅 (precheck 통과 후에만 검사)
+      if (preCheckOk) {
+        const gate = isSpreadProfitable(makerBook, bot.minSpreadKrw);
+        if (!gate.ok) {
+          console.log(
+            `[MakerTakerSimulatorAgent] bot ${bot.id} spread gate: ${gate.reason}`,
+          );
+          preCheckOk = false;
+        }
       }
     }
 
