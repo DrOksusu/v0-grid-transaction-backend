@@ -35,6 +35,7 @@ const baseBot: LiveBotInput = {
   quantity: 5,
   maxPendingMs: 600_000,
   killSwitch: false,
+  minSpreadKrw: 0, // PR H — executor 는 이 필드 미사용, 0=비활성
 };
 
 const books: ReadonlyMap<string, OrderbookTop> = new Map([

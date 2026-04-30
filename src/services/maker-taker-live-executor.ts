@@ -65,6 +65,7 @@ export type LiveBotInput = {
   quantity: number;
   maxPendingMs: number;
   killSwitch: boolean;
+  minSpreadKrw: number; // PR H — agent 가 spread gate 결정 시 사용 (executor 자체 미사용)
 };
 
 /** 현재 PENDING 트레이드 스냅샷 (DB 모델의 일부) */
