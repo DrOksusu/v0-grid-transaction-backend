@@ -80,32 +80,39 @@ export function runAll(args: PrecheckArgs): PrecheckResult {
   }
 
   // 4단계: 잔고 검증 (매수측 KRW + 매도측 코인)
+  // 매수는 한쪽 거래소에서만 발생 → 방향별 buy-side ask만 사용. 10% 안전 마진 곱함.
   const { coin, quantity } = args.bot;
-  const requiredKrwForBuy = (args.snapshot.upbitAsk + args.snapshot.bithumbAsk) * quantity * 0.55;
+  const buyAsk = args.direction === 'UB' ? args.snapshot.upbitAsk : args.snapshot.bithumbAsk;
+  const requiredKrwForBuy = buyAsk * quantity * 1.1;
+
   if (args.direction === 'UB') {
-    if ((args.balances.upbit.KRW ?? 0) < requiredKrwForBuy) {
+    const upbitKrw = args.balances.upbit.KRW ?? 0;
+    if (upbitKrw < requiredKrwForBuy) {
       return {
         ok: false,
-        abortReason: `balance: Upbit KRW ${args.balances.upbit.KRW} < required ${requiredKrwForBuy.toFixed(0)}`,
+        abortReason: `balance: Upbit KRW ${upbitKrw} < required ${requiredKrwForBuy.toFixed(0)}`,
       };
     }
-    if ((args.balances.bithumb[coin] ?? 0) < quantity) {
+    const bithumbCoin = args.balances.bithumb[coin] ?? 0;
+    if (bithumbCoin < quantity) {
       return {
         ok: false,
-        abortReason: `balance: Bithumb ${coin} ${args.balances.bithumb[coin]} < quantity ${quantity}`,
+        abortReason: `balance: Bithumb ${coin} ${bithumbCoin} < quantity ${quantity}`,
       };
     }
   } else {
-    if ((args.balances.bithumb.KRW ?? 0) < requiredKrwForBuy) {
+    const bithumbKrw = args.balances.bithumb.KRW ?? 0;
+    if (bithumbKrw < requiredKrwForBuy) {
       return {
         ok: false,
-        abortReason: `balance: Bithumb KRW ${args.balances.bithumb.KRW} < required ${requiredKrwForBuy.toFixed(0)}`,
+        abortReason: `balance: Bithumb KRW ${bithumbKrw} < required ${requiredKrwForBuy.toFixed(0)}`,
       };
     }
-    if ((args.balances.upbit[coin] ?? 0) < quantity) {
+    const upbitCoin = args.balances.upbit[coin] ?? 0;
+    if (upbitCoin < quantity) {
       return {
         ok: false,
-        abortReason: `balance: Upbit ${coin} ${args.balances.upbit[coin]} < quantity ${quantity}`,
+        abortReason: `balance: Upbit ${coin} ${upbitCoin} < quantity ${quantity}`,
       };
     }
   }

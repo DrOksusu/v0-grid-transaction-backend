@@ -75,4 +75,29 @@ describe('cross-exchange precheck — runAll', () => {
     expect(result.ok).toBe(false);
     expect(result.abortReason).toMatch(/limit|한도/i);
   });
+
+  it('4단계 BU direction 잔고 부족 → balance reason', () => {
+    // baseArgs.snapshot은 UB 우호적이라 BU는 spread gate에서 먼저 실패함 → snapshot 뒤집어 BU 우호 케이스로
+    const result = runAll({
+      ...baseArgs,
+      snapshot: { upbitBid: 999, upbitAsk: 1000, bithumbBid: 1010, bithumbAsk: 1011 },
+      direction: 'BU',
+      bot: { ...baseArgs.bot, depegMinKrw: 990, depegMaxKrw: 1020 },
+      balances: { upbit: { KRW: 1000000, USDE: 50 }, bithumb: { KRW: 100, USDE: 50 } },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.abortReason).toMatch(/balance|잔고/i);
+    expect(result.abortReason).toContain('Bithumb KRW');
+  });
+
+  it('4단계 잔고 키 누락 시 undefined 출력 안 함', () => {
+    const result = runAll({
+      ...baseArgs,
+      bot: { ...baseArgs.bot, depegMinKrw: 990, depegMaxKrw: 1020 },
+      balances: { upbit: {}, bithumb: { KRW: 1000000, USDE: 50 } },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.abortReason).not.toContain('undefined');
+    expect(result.abortReason).toContain('Upbit KRW 0');
+  });
 });
