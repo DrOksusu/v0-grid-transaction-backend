@@ -21,7 +21,12 @@ export interface UpbitClientCreds {
 
 const UPBIT_PUBLIC_URL = 'https://api.upbit.com/v1';
 const ORDERBOOK_TIMEOUT_MS = 5000;
-const SLIPPAGE_BUFFER = 1.05; // 시장가 매수 KRW 금액에 5% 버퍼 (IOC 라 실제 체결분만 사용)
+/**
+ * 시장가 매수 시 KRW 금액 산정용 슬리피지 버퍼.
+ * IOC 주문이라 실제 체결분만큼만 사용되므로 안전 마진. 5%는 호가 1단 슬리피지 + 미세 가격 변동 흡수.
+ * 호가 깊이 부족(매수량 > 1단 ask 수량) 시 미체결분 발생 가능 — Task 7 precheck 의 liquidity gate (1.5x) 가 1차 방어.
+ */
+const SLIPPAGE_BUFFER = 1.05;
 
 export class UpbitClient implements ExchangeClient {
   exchangeName: 'upbit' = 'upbit';
@@ -52,7 +57,9 @@ export class UpbitClient implements ExchangeClient {
         askQty: parseFloat(top.ask_size),
         timestamp: data.timestamp ?? Date.now(),
       };
-    } catch {
+    } catch (error: any) {
+      console.error(`[UpbitClient] getOrderbookTop(${symbol}) 실패:`,
+        error?.response?.status, error?.message);
       return null;
     }
   }
@@ -98,10 +105,11 @@ export class UpbitClient implements ExchangeClient {
       });
     }
 
+    const filledQty = parseFloat(result.executed_volume ?? '0');
     return {
       orderId: result.uuid,
-      status: this.mapStatus(result.state),
-      filledQty: parseFloat(result.executed_volume ?? '0'),
+      status: this.mapStatus(result.state, filledQty),
+      filledQty,
       avgFillPrice: this.calcAvgPrice(result),
       totalFeeKrw: parseFloat(result.paid_fee ?? '0'),
     };
@@ -110,10 +118,11 @@ export class UpbitClient implements ExchangeClient {
   /** 주문 상세 조회 (polling 용). */
   async getOrder(orderId: string): Promise<PlacedOrder> {
     const order = await this.service.getOrder(orderId);
+    const filledQty = parseFloat(order.executed_volume ?? '0');
     return {
       orderId,
-      status: this.mapStatus(order.state),
-      filledQty: parseFloat(order.executed_volume ?? '0'),
+      status: this.mapStatus(order.state, filledQty),
+      filledQty,
       avgFillPrice: this.calcAvgPrice(order),
       totalFeeKrw: parseFloat(order.paid_fee ?? '0'),
     };
@@ -144,13 +153,18 @@ export class UpbitClient implements ExchangeClient {
    * Upbit raw state -> OrderStatus 매핑 (소문자 컨벤션).
    * - done/completed: filled
    * - wait/watch: pending
-   * - cancel/cancelled: cancelled (IOC 부분체결 케이스 — executed_volume 으로 실 체결 확인 필요)
+   * - cancel/cancelled + executed_volume > 0: partial (IOC 부분체결 — UpbitService line 319-321)
+   * - cancel/cancelled + executed_volume = 0: cancelled (실제 거부)
    * - 기타: failed
    */
-  private mapStatus(state: string): OrderStatus {
+  private mapStatus(state: string, executedVolume: number): OrderStatus {
     if (state === 'done' || state === 'completed') return 'filled';
     if (state === 'wait' || state === 'watch') return 'pending';
-    if (state === 'cancel' || state === 'cancelled') return 'cancelled';
+    if (state === 'cancel' || state === 'cancelled') {
+      // IOC 부분체결: state='cancel' 이지만 executed_volume > 0 (UpbitService line 319-321)
+      if (executedVolume > 0) return 'partial';
+      return 'cancelled';
+    }
     return 'failed';
   }
 }
