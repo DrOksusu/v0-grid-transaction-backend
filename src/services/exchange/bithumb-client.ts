@@ -1,15 +1,17 @@
 // src/services/exchange/bithumb-client.ts
 //
-// Cross-exchange arb (Task 4): Bithumb private API 클라이언트 (HMAC 서명 + 잔고 조회).
+// Cross-exchange arb: Bithumb private API 클라이언트 (HMAC 서명 + 잔고/주문 조회/시장가 주문).
 //
 // Bithumb HMAC 서명 형식: endpoint + chr(0) + body + chr(0) + nonce 를 secretKey 로
 // HMAC-SHA512 후 base64 인코딩. (https://apidocs.bithumb.com/ private API 인증 명세)
 //
 // 주의:
-// - placeMarketOrder / getOrder 는 Task 5 영역. 이번 Task 에서는 throw stub.
 // - getOrderbookTop 은 public API (인증 불필요).
 // - getBalances 는 currency=ALL 로 모든 코인 잔고를 한 번에 조회.
 //   응답 형식: { available_KRW, total_KRW, in_use_KRW, available_BTC, ... }
+// - placeMarketOrder (Task 5): market_buy 는 KRW amount 기준 — Stage 1 단순화로
+//   quantity * 1500 KRW 가정. Stage 2 에서 호가 기반 동적 산정 추가 검토.
+// - getOrder (Task 5): order_status (Completed/Pending/...) → mapStatus 매핑.
 
 import axios from 'axios';
 import crypto from 'crypto';
@@ -44,28 +46,44 @@ export class BithumbClient implements ExchangeClient {
   /**
    * Bithumb private API 호출 (POST + HMAC).
    * 응답의 status 가 '0000' 이 아니면 에러 throw.
+   * Task 4 followup (I-2): try/catch 로 axios 네트워크/타임아웃 에러에 endpoint 컨텍스트 추가.
+   * Bithumb 비즈니스 에러 (status != '0000') 는 그대로 전파 (메시지 prefix 'Bithumb error' 로 식별).
    */
   private async privatePost(
     endpoint: string, params: Record<string, string | number>,
   ): Promise<any> {
     const nonce = String(Date.now());
-    const bodyStr = new URLSearchParams(params as any).toString();
+    // type-safe URLSearchParams 인자: 모든 value 를 string 으로 변환 (M-1 fix)
+    const bodyStr = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
+    ).toString();
     const sign = signRequest(endpoint, bodyStr, nonce, this.creds.secretKey);
-    const response = await axios.post(`${BITHUMB_API_URL}${endpoint}`, bodyStr, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Api-Key': this.creds.accessKey,
-        'Api-Nonce': nonce,
-        'Api-Sign': sign,
-      },
-      timeout: TIMEOUT_MS,
-    });
-    if (response.data?.status !== '0000') {
+    try {
+      const response = await axios.post(`${BITHUMB_API_URL}${endpoint}`, bodyStr, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Api-Key': this.creds.accessKey,
+          'Api-Nonce': nonce,
+          'Api-Sign': sign,
+        },
+        timeout: TIMEOUT_MS,
+      });
+      if (response.data?.status !== '0000') {
+        throw new Error(
+          `Bithumb error ${response.data?.status}: ${response.data?.message ?? 'unknown'}`,
+        );
+      }
+      return response.data;
+    } catch (err: any) {
+      // status '0000' 검증 throw 는 그대로 전파 (Bithumb 비즈니스 에러 메시지 보존)
+      if (err?.message?.startsWith('Bithumb error')) throw err;
+      // 그 외 axios 네트워크/타임아웃 에러는 endpoint + status 컨텍스트 추가
+      const status = err?.response?.status;
+      const respMsg = err?.response?.data?.message;
       throw new Error(
-        `Bithumb error ${response.data?.status}: ${response.data?.message ?? 'unknown'}`,
+        `Bithumb privatePost ${endpoint} 실패 (status=${status}): ${respMsg ?? err.message}`,
       );
     }
-    return response.data;
   }
 
   /**
@@ -101,13 +119,14 @@ export class BithumbClient implements ExchangeClient {
   /**
    * 모든 코인 잔고. KEY 는 코인 심볼 (KRW, USDT, USDE 등).
    * Bithumb 응답: { available_KRW, total_KRW, in_use_KRW, available_BTC, ... }
+   * Task 4 followup (I-1): regex /i flag 로 case-insensitive (Bithumb 응답이 소문자/대문자 혼용 가능성).
    */
   async getBalances(): Promise<Record<string, BalanceEntry>> {
     const data = await this.privatePost('/info/balance', { currency: 'ALL' });
     const out: Record<string, BalanceEntry> = {};
-    for (const [key, _value] of Object.entries(data.data ?? {})) {
-      // available_<SYMBOL> 키만 대상으로 잔고 entry 구성
-      const m = key.match(/^available_(.+)$/);
+    for (const key of Object.keys(data.data ?? {})) {
+      // available_<SYMBOL> 키만 대상으로 잔고 entry 구성 (case-insensitive)
+      const m = key.match(/^available_(.+)$/i);
       if (!m) continue;
       const sym = m[1].toUpperCase();
       const inUseKey = `in_use_${m[1]}`;
@@ -119,14 +138,54 @@ export class BithumbClient implements ExchangeClient {
     return out;
   }
 
+  /**
+   * 시장가 매수/매도 주문.
+   * - 매도: units (코인 수량) 기준
+   * - 매수: amount (KRW 금액) 기준 — Stage 1 캐너리 단순화로 quantity * 1500 KRW 가정
+   *         (Stage 2 에서 호가 기반 동적 산정을 별도 메서드로 추가 검토)
+   * Bithumb 시장가 주문은 즉시 체결 보장이 아니므로 status='pending' 으로 반환,
+   * 호출자(executor) 가 별도 getOrder polling 으로 fill 확인.
+   */
   async placeMarketOrder(
-    _side: 'buy' | 'sell', _symbol: string, _quantity: number,
+    side: 'buy' | 'sell', symbol: string, quantity: number,
   ): Promise<PlacedOrder> {
-    throw new Error('placeMarketOrder: implemented in Task 5');
+    const endpoint = side === 'buy' ? '/trade/market_buy' : '/trade/market_sell';
+    const params: Record<string, string | number> = {
+      order_currency: symbol.toUpperCase(),
+      payment_currency: 'KRW',
+      units: side === 'sell' ? quantity : 0,
+    };
+    if (side === 'buy') {
+      // Stage 1: market_buy 는 KRW 기준 (amount). 임시로 1500 KRW 가정 후 quantity 곱.
+      // Stage 2 에서 호가 기반 동적 산정으로 개선 (placeMarketBuyKrw 별도 메서드 권장).
+      params.amount = Math.ceil(quantity * 1500);
+      delete params.units;
+    }
+    const response = await this.privatePost(endpoint, params);
+    return {
+      orderId: response.order_id ?? response.data?.order_id ?? '',
+      status: 'pending', // 빗썸 시장가 결과 비동기 — getOrder polling 필요
+      filledQty: 0,
+      avgFillPrice: 0,
+      totalFeeKrw: 0,
+    };
   }
 
-  async getOrder(_orderId: string): Promise<PlacedOrder> {
-    throw new Error('getOrder: implemented in Task 5');
+  /**
+   * 주문 상세 조회 (polling 용).
+   * Bithumb /info/order_detail 응답의 order_status (Completed/Pending/Cancelled 등) 를
+   * lowercase 변환 후 mapStatus 로 OrderStatus 에 매핑.
+   */
+  async getOrder(orderId: string): Promise<PlacedOrder> {
+    const response = await this.privatePost('/info/order_detail', { order_id: orderId });
+    const d = response.data;
+    return {
+      orderId,
+      status: this.mapStatus((d?.order_status ?? '').toLowerCase()),
+      filledQty: parseFloat(d?.order_qty ?? '0'),
+      avgFillPrice: parseFloat(d?.order_price ?? '0'),
+      totalFeeKrw: parseFloat(d?.fee ?? '0'),
+    };
   }
 
   /**
