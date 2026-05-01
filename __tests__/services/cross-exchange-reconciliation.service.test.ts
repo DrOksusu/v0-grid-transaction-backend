@@ -62,4 +62,36 @@ describe('reconcileCrossExchangeBot', () => {
     expect(result.pageTruncated).toBe(true);
     expect(result.dbFilledCount).toBe(100);
   });
+
+  it('pageTruncated=true 면 카운트 일치해도 isReconciled=false (false-positive 방지)', async () => {
+    const stablecoinPrisma = {
+      crossExchangeArbBot: { findUnique: jest.fn().mockResolvedValue(mockBot()) },
+      crossExchangeArbTrade: {
+        findMany: jest.fn().mockResolvedValue(
+          Array.from({ length: 101 }, (_, i) => ({ id: BigInt(i + 1), status: 'FILLED', legAFilledQty: 10, legBFilledQty: 10, createdAt: new Date() })),
+        ),
+      },
+    };
+    const result = await reconcileCrossExchangeBot(1, stablecoinPrisma, {} as any, {} as any, {
+      mockUpbitOrders: Array.from({ length: 100 }, () => ({ filledQty: 10, side: 'buy' as const, timestamp: new Date() })),
+      mockBithumbOrders: Array.from({ length: 100 }, () => ({ filledQty: 10, side: 'sell' as const, timestamp: new Date() })),
+    });
+    expect(result.pageTruncated).toBe(true);
+    expect(result.isReconciled).toBe(false);
+    expect(result.diff).toContain('truncated');
+  });
+
+  it('lastResumeAt 없으면 sinceSource=createdAt fallback', async () => {
+    const stablecoinPrisma = {
+      crossExchangeArbBot: { findUnique: jest.fn().mockResolvedValue(mockBot({ lastResumeAt: null })) },
+      crossExchangeArbTrade: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    const result = await reconcileCrossExchangeBot(1, stablecoinPrisma, {} as any, {} as any, {
+      mockUpbitOrders: [], mockBithumbOrders: [],
+    });
+    expect(result.sinceSource).toBe('createdAt');
+    expect(result.sinceAt.toISOString()).toBe('2026-04-30T00:00:00.000Z');
+  });
 });

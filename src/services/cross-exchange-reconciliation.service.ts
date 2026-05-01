@@ -67,11 +67,15 @@ export async function reconcileCrossExchangeBot(
   const upbitDoneCount = upbitOrders.length;
   const bithumbDoneCount = bithumbOrders.length;
 
-  // 세 카운트 모두 일치해야 reconciled
-  const isReconciled = dbFilledCount === upbitDoneCount && dbFilledCount === bithumbDoneCount;
+  // 세 카운트 모두 일치해야 reconciled.
+  // pageTruncated 시에는 DB 가 100건 cap 되므로 카운트 일치는 false-positive 가능 → reconciled=false 강제
+  const countsMatch = dbFilledCount === upbitDoneCount && dbFilledCount === bithumbDoneCount;
+  const isReconciled = !pageTruncated && countsMatch;
   const diff = isReconciled
     ? undefined
-    : `db=${dbFilledCount}, upbit=${upbitDoneCount}, bithumb=${bithumbDoneCount}`;
+    : pageTruncated
+      ? `db=${dbFilledCount}+ (truncated), upbit=${upbitDoneCount}, bithumb=${bithumbDoneCount}`
+      : `db=${dbFilledCount}, upbit=${upbitDoneCount}, bithumb=${bithumbDoneCount}`;
 
   return {
     botId,
