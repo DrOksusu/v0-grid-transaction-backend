@@ -69,4 +69,26 @@ describe('isSpreadProfitable', () => {
     expect(result.ok).toBe(true);
     expect(result.spreadBps).toBe(0);
   });
+
+  test('UB direction zero denominator: bithumbAsk=0 must NOT pass gate', () => {
+    const result = isSpreadProfitable(
+      { upbitBid: 1410, upbitAsk: 1411, bithumbBid: 1399, bithumbAsk: 0 },
+      'UB',
+      50,
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('invalid orderbook');
+    expect(result.reason).toContain('UB');
+  });
+
+  test('BU direction NaN input: must NOT pass gate', () => {
+    const result = isSpreadProfitable(
+      { upbitBid: 1399, upbitAsk: NaN, bithumbBid: 1410, bithumbAsk: 1411 },
+      'BU',
+      50,
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('invalid orderbook');
+    expect(result.reason).toContain('BU');
+  });
 });

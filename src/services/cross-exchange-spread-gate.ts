@@ -16,9 +16,23 @@ export function isSpreadProfitable(
   direction: 'UB' | 'BU',
   minSpreadBps: number,
 ): SpreadGateResult {
-  const ratio = direction === 'UB'
-    ? snapshot.upbitBid / snapshot.bithumbAsk
-    : snapshot.bithumbBid / snapshot.upbitAsk;
+  const numerator = direction === 'UB' ? snapshot.upbitBid : snapshot.bithumbBid;
+  const denominator = direction === 'UB' ? snapshot.bithumbAsk : snapshot.upbitAsk;
+
+  if (
+    !Number.isFinite(numerator) ||
+    !Number.isFinite(denominator) ||
+    numerator <= 0 ||
+    denominator <= 0
+  ) {
+    return {
+      ok: false,
+      spreadBps: 0,
+      reason: `invalid orderbook (${direction}): numerator=${numerator}, denominator=${denominator}`,
+    };
+  }
+
+  const ratio = numerator / denominator;
   const spreadBps = Math.floor((ratio - 1) * 10000);
   if (spreadBps < minSpreadBps) {
     return {
