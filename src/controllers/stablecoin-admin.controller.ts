@@ -5,6 +5,8 @@ import type { OpportunityStats } from '../services/stablecoin-arb.service';
 import { getAllStablecoinOrderbooks, type OrderbookTop } from '../services/upbit-price-manager';
 import { AppError } from '../middlewares/errorHandler';
 import { reconcileBotAssets } from '../services/maker-taker-asset-reconciliation.service';
+import { stablecoinPrisma } from '../config/database';
+import { reconcileCrossExchangeBot } from '../services/cross-exchange-reconciliation.service';
 
 /**
  * GET /api/admin/stablecoin/bot
@@ -427,5 +429,164 @@ export const verifyMakerBotReconciliation = async (
     if (error?.message?.includes('credential not registered'))
       return next(new AppError('Upbit credential not registered', 400));
     next(error);
+  }
+};
+
+// ===== Cross-Exchange Arbitrage Bot CRUD (Admin 전용) =====
+
+/**
+ * CrossExchangeArbBot 직렬화.
+ * lastResumeAt 은 nullable → ISO string 또는 null.
+ */
+function serializeCrossExchangeBot(bot: any) {
+  return {
+    id: bot.id,
+    userId: bot.userId,
+    coin: bot.coin,
+    targetDirection: bot.targetDirection,
+    quantity: bot.quantity,
+    minSpreadBps: bot.minSpreadBps,
+    enabled: bot.enabled,
+    killSwitch: bot.killSwitch,
+    depegMinKrw: bot.depegMinKrw,
+    depegMaxKrw: bot.depegMaxKrw,
+    liquidityMultiplier: bot.liquidityMultiplier,
+    dailyCountLimit: bot.dailyCountLimit,
+    dailyLossLimitKrw: bot.dailyLossLimitKrw,
+    lastResumeAt: bot.lastResumeAt?.toISOString() ?? null,
+    createdAt: bot.createdAt.toISOString(),
+    updatedAt: bot.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * GET /api/admin/stablecoin/cross-exchange-bots
+ * 사용자의 cross-exchange 봇 목록.
+ */
+export const listCrossExchangeBots = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const bots = await stablecoinPrisma.crossExchangeArbBot.findMany({ where: { userId } });
+    res.json({ bots: bots.map(serializeCrossExchangeBot) });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/admin/stablecoin/cross-exchange-bots
+ * Body: { coin, targetDirection, quantity, minSpreadBps?, depegMinKrw?, depegMaxKrw?, liquidityMultiplier?, dailyCountLimit?, dailyLossLimitKrw? }
+ *
+ * 필수 3개(coin/targetDirection/quantity) + optional 안전장치 임계값들 (default 적용).
+ */
+export const createCrossExchangeBot = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const body = req.body;
+    if (!['UB', 'BU'].includes(body.targetDirection)) {
+      throw new AppError('targetDirection must be UB or BU', 400);
+    }
+    if (!Number.isInteger(body.quantity) || body.quantity <= 0) {
+      throw new AppError('quantity must be positive integer', 400);
+    }
+    const bot = await stablecoinPrisma.crossExchangeArbBot.create({
+      data: {
+        userId,
+        coin: body.coin,
+        targetDirection: body.targetDirection,
+        quantity: body.quantity,
+        minSpreadBps: body.minSpreadBps ?? 50,
+        depegMinKrw: body.depegMinKrw ?? 1380,
+        depegMaxKrw: body.depegMaxKrw ?? 1420,
+        liquidityMultiplier: body.liquidityMultiplier ?? 1.5,
+        dailyCountLimit: body.dailyCountLimit ?? 5,
+        dailyLossLimitKrw: body.dailyLossLimitKrw ?? 50000,
+      },
+    });
+    res.status(201).json({ bot: serializeCrossExchangeBot(bot) });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PATCH /api/admin/stablecoin/cross-exchange-bots/:id
+ * 부분 업데이트. enabled false→true 전환 시 lastResumeAt 자동 갱신.
+ * userId 미일치 시 404.
+ */
+export const patchCrossExchangeBot = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id, 10);
+    const body = req.body;
+    const existing = await stablecoinPrisma.crossExchangeArbBot.findFirst({ where: { id, userId } });
+    if (!existing) throw new AppError('Bot not found', 404);
+
+    const patch: any = {};
+    if (body.enabled !== undefined) patch.enabled = body.enabled;
+    if (body.killSwitch !== undefined) patch.killSwitch = body.killSwitch;
+    if (body.minSpreadBps !== undefined) patch.minSpreadBps = body.minSpreadBps;
+    if (body.quantity !== undefined) patch.quantity = body.quantity;
+    if (body.depegMinKrw !== undefined) patch.depegMinKrw = body.depegMinKrw;
+    if (body.depegMaxKrw !== undefined) patch.depegMaxKrw = body.depegMaxKrw;
+    if (body.liquidityMultiplier !== undefined) patch.liquidityMultiplier = body.liquidityMultiplier;
+    if (body.dailyCountLimit !== undefined) patch.dailyCountLimit = body.dailyCountLimit;
+    if (body.dailyLossLimitKrw !== undefined) patch.dailyLossLimitKrw = body.dailyLossLimitKrw;
+
+    // enabled false→true 전환 시 lastResumeAt 자동 갱신
+    if (existing.enabled === false && patch.enabled === true) {
+      patch.lastResumeAt = new Date();
+    }
+
+    const updated = await stablecoinPrisma.crossExchangeArbBot.update({ where: { id }, data: patch });
+    res.json({ bot: serializeCrossExchangeBot(updated) });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * DELETE /api/admin/stablecoin/cross-exchange-bots/:id
+ * userId scope — 다른 유저 봇은 영향 없음.
+ */
+export const deleteCrossExchangeBot = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id, 10);
+    await stablecoinPrisma.crossExchangeArbBot.deleteMany({ where: { id, userId } });
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/admin/stablecoin/cross-exchange-bots/:id/verify-reconciliation
+ *
+ * Stage 1 캐너리: 거래소 done-order endpoint 미구현 → mockOrders 로 빈 배열 (upbit/bithumb done count = 0).
+ * dbFilledCount > 0 이면 isReconciled=false 가 정상 (operator 가 직접 거래소 UI 로 검증).
+ * Stage 2 에서 ExchangeClient 에 fetchDoneOrders 추가 시 mockOrders 제거.
+ */
+export const verifyCrossExchangeReconciliation = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id, 10);
+    const bot = await stablecoinPrisma.crossExchangeArbBot.findFirst({ where: { id, userId } });
+    if (!bot) throw new AppError('Bot not found', 404);
+
+    const report = await reconcileCrossExchangeBot(
+      id,
+      stablecoinPrisma,
+      null as any,
+      null as any,
+      undefined,
+    );
+    res.json(report);
+  } catch (err) {
+    next(err);
   }
 };
