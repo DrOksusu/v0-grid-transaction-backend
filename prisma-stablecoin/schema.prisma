@@ -201,3 +201,72 @@ model MakerTakerSimTrade {
   @@index([status])
   @@map("maker_taker_sim_trades")
 }
+
+// Cross-Exchange Arbitrage Bot 설정 (2026-05-01)
+// Upbit-Bithumb 양 거래소에서 동일 스테이블코인 cross-exchange 차익 거래.
+model CrossExchangeArbBot {
+  id     Int @id @default(autoincrement())
+  userId Int
+
+  enabled    Boolean @default(false)
+  killSwitch Boolean @default(false)
+
+  coin            String  // "USDE" | "USD1" | "USDS" 등 (KRW 제외)
+  targetDirection String  // "UB" (Upbit→Bithumb 차익) | "BU" (Bithumb→Upbit 차익)
+  quantity        Int     // 1회 거래 수량 (코인 단위)
+  minSpreadBps    Int     @default(50)
+
+  // 안전장치 임계값
+  depegMinKrw         Int   @default(1380)
+  depegMaxKrw         Int   @default(1420)
+  liquidityMultiplier Float @default(1.5)
+  dailyCountLimit     Int   @default(5)
+  dailyLossLimitKrw   Int   @default(50000)
+
+  // 추적
+  lastResumeAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  trades CrossExchangeArbTrade[]
+
+  @@map("cross_exchange_arb_bots")
+}
+
+// Cross-Exchange Arbitrage 개별 거래 기록.
+// LegA (legA*), LegB (legB*) 양쪽 결과 기록. status 로 성공/실패 추적.
+model CrossExchangeArbTrade {
+  id    BigInt              @id @default(autoincrement())
+  botId Int
+  bot   CrossExchangeArbBot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  direction            String // "UB" | "BU"
+  spreadBpsAtPlacement Int
+
+  // Leg A (먼저 실행)
+  legAExchange  String
+  legASide      String
+  legAOrderId   String?
+  legAFilledQty Decimal? @db.Decimal(24, 8)
+  legAAvgPrice  Decimal? @db.Decimal(18, 4)
+  legAFeeKrw    Decimal? @db.Decimal(18, 4)
+
+  // Leg B (반대 거래)
+  legBExchange  String
+  legBSide      String
+  legBOrderId   String?
+  legBFilledQty Decimal? @db.Decimal(24, 8)
+  legBAvgPrice  Decimal? @db.Decimal(18, 4)
+  legBFeeKrw    Decimal? @db.Decimal(18, 4)
+
+  profitKrw     Decimal? @db.Decimal(18, 4)
+  status        String   // "FILLED" | "LEG_A_FAILED" | "LEG_B_FAILED" | "PENDING"
+  failureReason String?  @db.Text
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([botId, createdAt])
+  @@index([status])
+  @@map("cross_exchange_arb_trades")
+}
