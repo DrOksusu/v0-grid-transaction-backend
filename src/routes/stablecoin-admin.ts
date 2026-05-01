@@ -15,6 +15,11 @@ import {
   patchMakerBot,
   deleteMakerBot,
   verifyMakerBotReconciliation,
+  listCrossExchangeBots,
+  createCrossExchangeBot,
+  patchCrossExchangeBot,
+  deleteCrossExchangeBot,
+  verifyCrossExchangeReconciliation,
 } from '../controllers/stablecoin-admin.controller';
 
 const router = Router();
@@ -38,5 +43,12 @@ router.post('/maker-bots', createMakerBot);
 router.patch('/maker-bots/:id', patchMakerBot);
 router.delete('/maker-bots/:id', deleteMakerBot);
 router.post('/maker-bots/:id/verify-reconciliation', verifyMakerBotReconciliation);
+
+// Cross-Exchange 봇 CRUD (Admin 전용)
+router.get('/cross-exchange-bots', listCrossExchangeBots);
+router.post('/cross-exchange-bots', createCrossExchangeBot);
+router.patch('/cross-exchange-bots/:id', patchCrossExchangeBot);
+router.delete('/cross-exchange-bots/:id', deleteCrossExchangeBot);
+router.post('/cross-exchange-bots/:id/verify-reconciliation', verifyCrossExchangeReconciliation);
 
 export default router;
