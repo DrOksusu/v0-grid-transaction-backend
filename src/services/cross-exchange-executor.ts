@@ -31,20 +31,28 @@ export interface ExecutorResult {
   shouldKillSwitch: boolean;
 }
 
-/** 주문이 filled/cancelled/failed 등 종료 상태가 될 때까지 deadline 내에서 polling */
+/**
+ * 주문이 filled/cancelled/failed 등 종료 상태가 될 때까지 deadline 내에서 polling.
+ * getOrder 가 throw 하면 order=null + pollError 로 반환 (라이브 머니 경로에서 unhandled
+ * rejection 으로 빠지면 재고 노출 위험 → 호출자가 명시적으로 처리).
+ */
 async function pollOrderUntilDone(
   client: ExchangeClient,
   orderId: string,
   maxMs: number,
   intervalMs: number,
-): Promise<PlacedOrder> {
+): Promise<{ order: PlacedOrder | null; pollError?: string }> {
   const deadline = Date.now() + maxMs;
-  let last = await client.getOrder(orderId);
-  while (last.status === 'pending' && Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, intervalMs));
-    last = await client.getOrder(orderId);
+  try {
+    let last = await client.getOrder(orderId);
+    while (last.status === 'pending' && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, intervalMs));
+      last = await client.getOrder(orderId);
+    }
+    return { order: last };
+  } catch (err: any) {
+    return { order: null, pollError: err?.message ?? String(err) };
   }
-  return last;
 }
 
 /**
@@ -83,12 +91,27 @@ export async function execute(args: ExecutorArgs): Promise<ExecutorResult> {
   if (legAPlaced.status === 'filled') {
     legAFinal = legAPlaced;
   } else {
-    legAFinal = await pollOrderUntilDone(legAClient, legAPlaced.orderId, pollMax, pollInt);
-    if (legAFinal.status !== 'filled') {
+    const polled = await pollOrderUntilDone(legAClient, legAPlaced.orderId, pollMax, pollInt);
+    if (polled.order === null) {
+      // 폴링 도중 throw → 주문 최종 상태 알 수 없음 → 재고 노출 가능 → kill switch
       return {
         status: 'LEG_A_FAILED',
-        failureReason: `LegA polling timeout (${legAFinal.status})`,
-        shouldKillSwitch: false,
+        failureReason: `LegA polling error: ${polled.pollError}`,
+        shouldKillSwitch: true,
+      };
+    }
+    legAFinal = polled.order;
+    if (legAFinal.status !== 'filled') {
+      // partial / cancelled with executed_volume>0 → 재고 노출 → kill switch
+      // pending(timeout) / cancelled with 0 fill → 재고 없음 → kill switch 불필요
+      const inventoryExposed = legAFinal.filledQty > 0;
+      return {
+        status: 'LEG_A_FAILED',
+        legA: inventoryExposed
+          ? { ...legAFinal, exchange: legAClient.exchangeName, side: legASide }
+          : undefined,
+        failureReason: `LegA not filled: status=${legAFinal.status}, filledQty=${legAFinal.filledQty}`,
+        shouldKillSwitch: inventoryExposed,
       };
     }
   }
@@ -111,19 +134,48 @@ export async function execute(args: ExecutorArgs): Promise<ExecutorResult> {
   if (legBPlaced.status === 'filled') {
     legBFinal = legBPlaced;
   } else {
-    legBFinal = await pollOrderUntilDone(legBClient, legBPlaced.orderId, pollMax, pollInt);
-    if (legBFinal.status !== 'filled') {
+    const polled = await pollOrderUntilDone(legBClient, legBPlaced.orderId, pollMax, pollInt);
+    if (polled.order === null) {
+      // LegB 폴링 throw → LegA 재고 무조건 노출 → kill switch
       return {
         status: 'LEG_B_FAILED',
         legA: { ...legAFinal, exchange: legAClient.exchangeName, side: legASide },
-        failureReason: `LegB polling timeout (${legBFinal.status})`,
+        failureReason: `LegB polling error: ${polled.pollError}`,
+        shouldKillSwitch: true,
+      };
+    }
+    legBFinal = polled.order;
+    if (legBFinal.status !== 'filled') {
+      // LegB partial / pending / cancelled — LegA 재고 노출 + LegB 일부 체결 가능 → 무조건 kill switch
+      // legB 정보도 result 에 포함해 reconcile 가능하게 함
+      return {
+        status: 'LEG_B_FAILED',
+        legA: { ...legAFinal, exchange: legAClient.exchangeName, side: legASide },
+        legB: { ...legBFinal, exchange: legBClient.exchangeName, side: legBSide },
+        failureReason: `LegB not filled: status=${legBFinal.status}, filledQty=${legBFinal.filledQty}`,
         shouldKillSwitch: true,
       };
     }
   }
 
+  // === Quantity mismatch 가드 ===
+  // 양쪽 모두 'filled' 라도 수량이 다르면 lopsided position. canary 5건에서도 안 잡힐 수 있으므로
+  // P&L 계산하지 말고 reconcile 대상으로 분류.
+  if (legAFinal.filledQty !== legBFinal.filledQty) {
+    return {
+      status: 'LEG_B_FAILED',
+      legA: { ...legAFinal, exchange: legAClient.exchangeName, side: legASide },
+      legB: { ...legBFinal, exchange: legBClient.exchangeName, side: legBSide },
+      failureReason: `quantity mismatch: legA ${legAFinal.filledQty} != legB ${legBFinal.filledQty}`,
+      shouldKillSwitch: true,
+    };
+  }
+
   // === P&L 계산 ===
-  // 매수(legA): KRW 지출, 매도(legB): KRW 수령
+  // P&L semantics: avgFillPrice 가 fee 를 제외한 raw price 라고 가정. Upbit executed_funds = price*qty 이고
+  // paid_fee 는 별도. 이 가정이 틀리면 totalFeeKrw 가 이중 차감되어 profit 이 실제보다 낮게 나옴.
+  // Stage 1 canary 첫 FILLED row 에서 검증: profitKrw vs (Upbit 거래내역 net + Bithumb 거래내역 net).
+  // 불일치 시 즉시 공식 재검토.
   const legAKrw = legAFinal.filledQty * legAFinal.avgFillPrice;
   const legBKrw = legBFinal.filledQty * legBFinal.avgFillPrice;
   const profitKrw = legBKrw - legAKrw - legAFinal.totalFeeKrw - legBFinal.totalFeeKrw;
