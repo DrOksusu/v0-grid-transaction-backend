@@ -60,6 +60,8 @@ export class CrossExchangeArbAgent extends BaseAgent {
   private upbit: ExchangeClient | null = null;
   private bithumb: ExchangeClient | null = null;
   private cycleInFlight = false;
+  /** DB write 실패 / killSwitch 적용 실패 시 즉시 차단할 봇 ID 집합. process 재시작 시 초기화. */
+  private emergencyBlocked: Set<number> = new Set();
 
   constructor() {
     super({
@@ -72,31 +74,22 @@ export class CrossExchangeArbAgent extends BaseAgent {
 
   protected async onStart(): Promise<void> {
     // Upbit: prisma.credential 에서 admin user(=2) 의 upbit 자격증명 로드 후 복호화
-    try {
-      const credential = await mainPrisma.credential.findFirst({
-        where: { userId: UPBIT_ADMIN_USER_ID, exchange: 'upbit' },
-      });
-      if (!credential) {
-        console.warn(
-          `[CrossExchangeArb] Upbit credential 없음 (userId=${UPBIT_ADMIN_USER_ID}) — clients null 유지`,
-        );
-        return;
-      }
-      const accessKey = decrypt(credential.apiKey);
-      const secretKey = decrypt(credential.secretKey);
-      this.upbit = new UpbitClient({ accessKey, secretKey });
-    } catch (err: any) {
-      console.warn('[CrossExchangeArb] Upbit credential 로드 실패:', err.message);
-      return;
+    // 자격증명 누락은 throw — BaseAgent 가 status='error' + lastError 로 표면화 (silent disable 방지).
+    const credential = await mainPrisma.credential.findFirst({
+      where: { userId: UPBIT_ADMIN_USER_ID, exchange: 'upbit' },
+    });
+    if (!credential) {
+      throw new Error(`[CrossExchangeArb] Upbit credential 없음 (userId=${UPBIT_ADMIN_USER_ID})`);
     }
+    const accessKey = decrypt(credential.apiKey);
+    const secretKey = decrypt(credential.secretKey);
+    this.upbit = new UpbitClient({ accessKey, secretKey });
 
     // Bithumb: env 직접 (Stage 1 단순화 — 글로벌 admin 키 1조만 운영)
     const bithumbAccessKey = process.env.BITHUMB_ACCESS_KEY;
     const bithumbSecretKey = process.env.BITHUMB_SECRET_KEY;
     if (!bithumbAccessKey || !bithumbSecretKey) {
-      console.warn('[CrossExchangeArb] BITHUMB_ACCESS_KEY/SECRET_KEY env 없음 — clients null 유지');
-      this.upbit = null;
-      return;
+      throw new Error('[CrossExchangeArb] BITHUMB_ACCESS_KEY/SECRET_KEY 환경변수 없음');
     }
     this.bithumb = new BithumbClient({
       accessKey: bithumbAccessKey,
@@ -141,8 +134,11 @@ export class CrossExchangeArbAgent extends BaseAgent {
   private async processBot(
     bot: Awaited<ReturnType<typeof stablecoinPrisma.crossExchangeArbBot.findMany>>[number],
   ): Promise<void> {
-    const upbit = this.upbit!;
-    const bithumb = this.bithumb!;
+    // emergency blocklist: DB write 실패 / killSwitch 실패 fallback. process 재시작 전까지 차단.
+    if (this.emergencyBlocked.has(bot.id)) return;
+    if (!this.upbit || !this.bithumb) return;
+    const upbit = this.upbit;
+    const bithumb = this.bithumb;
 
     // 양 거래소 호가 동시 조회 (한쪽만 살아있어도 의미 없음)
     const [upbitBook, bithumbBook] = await Promise.all([
@@ -178,11 +174,13 @@ export class CrossExchangeArbAgent extends BaseAgent {
       return;
     }
 
-    // 일일 카운트 + 손실 집계 (KST 자정 이후 FILLED 만)
+    // 일일 카운트 + 손실 집계 (KST 자정 기준)
+    // todayCount 는 모든 row (FILLED + LEG_A_FAILED + LEG_B_FAILED) — 실패 누적도 dailyCountLimit 에 카운트
+    // todayLossKrw 는 FILLED + profitKrw<0 만 — 실패는 손실 미반영
     const sinceAt = startOfTodayKst();
     const [todayCount, lossAgg] = await Promise.all([
       stablecoinPrisma.crossExchangeArbTrade.count({
-        where: { botId: bot.id, status: 'FILLED', createdAt: { gte: sinceAt } },
+        where: { botId: bot.id, createdAt: { gte: sinceAt } },
       }),
       stablecoinPrisma.crossExchangeArbTrade.aggregate({
         _sum: { profitKrw: true },
@@ -250,29 +248,50 @@ export class CrossExchangeArbAgent extends BaseAgent {
     const legAExchange = isUB ? 'upbit' : 'bithumb';
     const legBExchange = isUB ? 'bithumb' : 'upbit';
 
-    await stablecoinPrisma.crossExchangeArbTrade.create({
-      data: {
-        botId: bot.id,
-        direction,
-        spreadBpsAtPlacement: spreadBps,
-        legAExchange,
-        legASide: 'buy',
-        legAOrderId: result.legA?.orderId ?? null,
-        legAFilledQty: result.legA?.filledQty ?? null,
-        legAAvgPrice: result.legA?.avgFillPrice ?? null,
-        legAFeeKrw: result.legA?.totalFeeKrw ?? null,
-        legBExchange,
-        legBSide: 'sell',
-        legBOrderId: result.legB?.orderId ?? null,
-        legBFilledQty: result.legB?.filledQty ?? null,
-        legBAvgPrice: result.legB?.avgFillPrice ?? null,
-        legBFeeKrw: result.legB?.totalFeeKrw ?? null,
-        profitKrw: result.profitKrw ?? null,
-        status: result.status,
-        failureReason: result.failureReason ?? null,
-        completedAt: result.status === 'FILLED' ? new Date() : null,
-      },
-    });
+    // === 거래소 체결 발생 후 DB 기록 — 실패 시 자본 노출 누적 위험 ===
+    try {
+      await stablecoinPrisma.crossExchangeArbTrade.create({
+        data: {
+          botId: bot.id,
+          direction,
+          spreadBpsAtPlacement: spreadBps,
+          legAExchange,
+          legASide: 'buy',
+          legAOrderId: result.legA?.orderId ?? null,
+          legAFilledQty: result.legA?.filledQty ?? null,
+          legAAvgPrice: result.legA?.avgFillPrice ?? null,
+          legAFeeKrw: result.legA?.totalFeeKrw ?? null,
+          legBExchange,
+          legBSide: 'sell',
+          legBOrderId: result.legB?.orderId ?? null,
+          legBFilledQty: result.legB?.filledQty ?? null,
+          legBAvgPrice: result.legB?.avgFillPrice ?? null,
+          legBFeeKrw: result.legB?.totalFeeKrw ?? null,
+          profitKrw: result.profitKrw ?? null,
+          status: result.status,
+          failureReason: result.failureReason ?? null,
+          completedAt: result.status === 'FILLED' ? new Date() : null,
+        },
+      });
+    } catch (err) {
+      // 거래소 체결 발생했는데 DB 기록 실패 → 즉시 봇 차단 (5건 cap 무력화 + 다음 cycle 또 거래 위험)
+      this.emergencyBlocked.add(bot.id);
+      console.error(
+        `[CrossExchangeArb] bot ${bot.id} TRADE ROW WRITE FAILED — emergency blocked. status=${result.status}, profit=${result.profitKrw ?? 'n/a'}, err=${(err as any)?.message}`,
+      );
+      // killSwitch 도 시도 — DB 가 회복돼도 다른 instance/restart 시 자동 차단되도록
+      try {
+        await stablecoinPrisma.crossExchangeArbBot.update({
+          where: { id: bot.id },
+          data: { killSwitch: true },
+        });
+      } catch (killErr) {
+        console.error(
+          `[CrossExchangeArb] bot ${bot.id} killSwitch update ALSO FAILED — emergencyBlocked remains in-memory only. err=${(killErr as any)?.message}`,
+        );
+      }
+      return; // shouldKillSwitch 분기 건너뛰고 다음 봇으로
+    }
 
     if (result.status === 'FILLED') {
       console.log(
@@ -282,13 +301,21 @@ export class CrossExchangeArbAgent extends BaseAgent {
 
     // 자동 kill switch (LegB 실패 등 재고 노출 시나리오)
     if (result.shouldKillSwitch) {
-      await stablecoinPrisma.crossExchangeArbBot.update({
-        where: { id: bot.id },
-        data: { killSwitch: true },
-      });
-      console.error(
-        `[CrossExchangeArb] bot ${bot.id} killSwitch 자동 ON: ${result.failureReason}`,
-      );
+      try {
+        await stablecoinPrisma.crossExchangeArbBot.update({
+          where: { id: bot.id },
+          data: { killSwitch: true },
+        });
+        console.error(
+          `[CrossExchangeArb] bot ${bot.id} autoKillSwitch ON: ${result.failureReason}`,
+        );
+      } catch (err) {
+        // killSwitch DB update 실패 → in-memory blocklist 로 fallback (재고 노출 상태로 재거래 방지)
+        this.emergencyBlocked.add(bot.id);
+        console.error(
+          `[CrossExchangeArb] bot ${bot.id} killSwitch update FAILED — emergencyBlocked in-memory. Restart 시 잃을 수 있으므로 운영자 즉시 개입 필요. err=${(err as any)?.message}`,
+        );
+      }
     }
   }
 }
