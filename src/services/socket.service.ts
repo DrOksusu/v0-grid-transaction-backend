@@ -1,5 +1,6 @@
 import { Server as SocketServer, Socket } from 'socket.io';
 import { Server as HttpServer } from 'http';
+import type { PairScannerSnapshot } from './pair-scanner.service';
 
 // 가격 데이터 인터페이스
 interface PriceData {
@@ -18,6 +19,7 @@ class SocketService {
   private socketUserMap: Map<string, number> = new Map(); // socketId -> userId
   private whaleSubscribers: Set<string> = new Set(); // 고래 활동 구독자 socket ids
   private maSubscribers: Set<string> = new Set(); // MA 지표 구독자 socket ids
+  private pairScannerSubscribers: Set<string> = new Set(); // 페어 스캐너 구독자 socket ids
 
   initialize(httpServer: HttpServer) {
     // CORS 설정: 쉼표로 구분된 여러 도메인 허용
@@ -133,6 +135,20 @@ class SocketService {
         console.log(`[Socket] ${socket.id} unsubscribed from MA indicator`);
       });
 
+      // 페어 스캐너 구독
+      socket.on('subscribe:pair-scanner', () => {
+        socket.join('pair-scanner');
+        this.pairScannerSubscribers.add(socket.id);
+        console.log(`[Socket] ${socket.id} subscribed to pair scanner (total: ${this.pairScannerSubscribers.size})`);
+      });
+
+      // 페어 스캐너 구독 해제
+      socket.on('unsubscribe:pair-scanner', () => {
+        socket.leave('pair-scanner');
+        this.pairScannerSubscribers.delete(socket.id);
+        console.log(`[Socket] ${socket.id} unsubscribed from pair scanner`);
+      });
+
       // 연결 해제
       socket.on('disconnect', (reason) => {
         console.log(`[Socket] Client disconnected: ${socket.id} (reason: ${reason})`);
@@ -150,6 +166,9 @@ class SocketService {
 
         // MA 구독자에서도 제거
         this.maSubscribers.delete(socket.id);
+
+        // 페어 스캐너 구독자에서도 제거
+        this.pairScannerSubscribers.delete(socket.id);
 
         // 봇 구독자에서도 제거
         const userId = this.socketUserMap.get(socket.id);
@@ -455,6 +474,19 @@ class SocketService {
   // MA 구독자 수
   getMASubscribersCount(): number {
     return this.maSubscribers.size;
+  }
+
+  // 페어 스캐너 업데이트 브로드캐스트
+  emitPairScannerUpdate(data: PairScannerSnapshot) {
+    if (!this.io || this.pairScannerSubscribers.size === 0) {
+      return;
+    }
+    this.io.to('pair-scanner').emit('pair-scanner:update', data);
+  }
+
+  // 페어 스캐너 구독자 수
+  getPairScannerSubscribersCount(): number {
+    return this.pairScannerSubscribers.size;
   }
 }
 

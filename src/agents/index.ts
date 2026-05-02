@@ -9,3 +9,4 @@ export { StablecoinArbAgent } from './stablecoin-arb-agent';
 export { CrossExchangeObserverAgent } from './cross-exchange-observer-agent';
 export { MakerTakerSimulatorAgent } from './maker-taker-simulator-agent';
 export { CrossExchangeArbAgent } from './cross-exchange-arb-agent';
+export { PairScannerAgent } from './pair-scanner-agent';

@@ -16,6 +16,7 @@ import adminDonationRoutes from './admin-donation';
 import maRoutes from './ma';
 import agentRoutes from './agents';
 import stablecoinAdminRoutes from './stablecoin-admin';
+import pairScannerRoutes from './pair-scanner';
 
 const router = Router();
 
@@ -44,5 +45,6 @@ router.use('/admin', adminDonationRoutes);
 router.use('/ma', maRoutes);
 router.use('/agents', agentRoutes);
 router.use('/admin/stablecoin', stablecoinAdminRoutes);
+router.use('/pair-scanner', pairScannerRoutes);
 
 export default router;
