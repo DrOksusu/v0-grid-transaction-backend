@@ -1,15 +1,21 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response, NextFunction } from 'express';
 import { pairScannerService, PairConfig } from '../services/pair-scanner.service';
+import { authenticate } from '../middlewares/auth';
+import { requireAdmin } from '../middlewares/requireAdmin';
+import { stablecoinPrisma } from '../config/database';
+import { AuthRequest } from '../types';
 
 const router = Router();
 
-// GET /api/pair-scanner/pairs — 등록된 페어 목록 + 설정값
-router.get('/pairs', (_req: Request, res: Response) => {
+// ── 모니터링 엔드포인트 (인증 불필요) ─────────────────────────────────
+
+// GET /api/pair-scanner/pairs
+router.get('/pairs', (_req, res: Response) => {
   res.json({ success: true, data: pairScannerService.getPairs() });
 });
 
-// POST /api/pair-scanner/pairs — 페어 추가
-router.post('/pairs', (req: Request, res: Response) => {
+// POST /api/pair-scanner/pairs
+router.post('/pairs', (req, res: Response) => {
   const { name, makerCoin, takerCoin, qty, makerFeeRate, takerFeeRate } = req.body as Partial<PairConfig>;
 
   if (!name || !makerCoin || !takerCoin || qty == null || makerFeeRate == null || takerFeeRate == null) {
@@ -17,7 +23,12 @@ router.post('/pairs', (req: Request, res: Response) => {
     return;
   }
 
-  const result = pairScannerService.addPair({ name, makerCoin, takerCoin, qty: Number(qty), makerFeeRate: Number(makerFeeRate), takerFeeRate: Number(takerFeeRate) });
+  const result = pairScannerService.addPair({
+    name, makerCoin, takerCoin,
+    qty: Number(qty),
+    makerFeeRate: Number(makerFeeRate),
+    takerFeeRate: Number(takerFeeRate),
+  });
 
   if (!result.success) {
     res.status(400).json(result);
@@ -27,8 +38,8 @@ router.post('/pairs', (req: Request, res: Response) => {
   res.json({ success: true, data: pairScannerService.getPairs() });
 });
 
-// DELETE /api/pair-scanner/pairs/:name — 페어 제거
-router.delete('/pairs/:name', (req: Request, res: Response) => {
+// DELETE /api/pair-scanner/pairs/:name
+router.delete('/pairs/:name', (req, res: Response) => {
   const { name } = req.params;
   const removed = pairScannerService.removePair(name);
 
@@ -40,9 +51,160 @@ router.delete('/pairs/:name', (req: Request, res: Response) => {
   res.json({ success: true, data: pairScannerService.getPairs() });
 });
 
-// GET /api/pair-scanner/stats — 전체 페어 통계 스냅샷 (REST 폴백)
-router.get('/stats', (_req: Request, res: Response) => {
+// GET /api/pair-scanner/stats
+router.get('/stats', (_req, res: Response) => {
   res.json({ success: true, data: pairScannerService.getSnapshot() });
 });
+
+// ── 봇 CRUD (authenticate + requireAdmin 필요) ─────────────────────────
+
+// GET /api/pair-scanner/bots
+router.get(
+  '/bots',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.userId!;
+      const bots = await stablecoinPrisma.makerTakerSimBot.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'asc' },
+      });
+      res.json({ success: true, data: bots });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /api/pair-scanner/bots
+router.post(
+  '/bots',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.userId!;
+      const { makerCoin, takerCoin, qty, makerFeeBps, takerFeeBps, minSpreadKrw, bidOffsetKrw, minTakerBalance } = req.body;
+
+      if (!makerCoin || !takerCoin) {
+        res.status(400).json({ success: false, error: 'makerCoin, takerCoin 필수' });
+        return;
+      }
+
+      const existing = await stablecoinPrisma.makerTakerSimBot.findFirst({
+        where: { userId, makerCoin, takerCoin },
+      });
+      if (existing) {
+        res.status(409).json({ success: false, error: '이미 존재하는 페어입니다', data: existing });
+        return;
+      }
+
+      const bot = await stablecoinPrisma.makerTakerSimBot.create({
+        data: {
+          userId,
+          makerCoin,
+          takerCoin,
+          quantity: qty ?? 10,
+          makerFeeBps: makerFeeBps ?? 5,
+          takerFeeBps: takerFeeBps ?? 5,
+          minSpreadKrw: minSpreadKrw ?? 0,
+          bidOffsetKrw: bidOffsetKrw ?? 0,
+          minTakerBalance: minTakerBalance ?? null,
+          enabled: true,
+          killSwitch: false,
+          live: false,
+        },
+      });
+      res.json({ success: true, data: bot });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PATCH /api/pair-scanner/bots/:id
+router.patch(
+  '/bots/:id',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.userId!;
+      const id = parseInt(req.params.id, 10);
+      const { enabled, killSwitch, minSpreadKrw, live, bidOffsetKrw } = req.body;
+
+      const existing = await stablecoinPrisma.makerTakerSimBot.findFirst({ where: { id, userId } });
+      if (!existing) {
+        res.status(404).json({ success: false, error: '봇을 찾을 수 없습니다' });
+        return;
+      }
+
+      const patch: Record<string, unknown> = {};
+      if (enabled !== undefined) patch.enabled = Boolean(enabled);
+      if (killSwitch !== undefined) patch.killSwitch = Boolean(killSwitch);
+      if (minSpreadKrw !== undefined) patch.minSpreadKrw = Number(minSpreadKrw);
+      if (live !== undefined) patch.live = Boolean(live);
+      if (bidOffsetKrw !== undefined) patch.bidOffsetKrw = Number(bidOffsetKrw);
+
+      const bot = await stablecoinPrisma.makerTakerSimBot.update({ where: { id }, data: patch });
+      res.json({ success: true, data: bot });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// DELETE /api/pair-scanner/bots/:id
+router.delete(
+  '/bots/:id',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.userId!;
+      const id = parseInt(req.params.id, 10);
+
+      const existing = await stablecoinPrisma.makerTakerSimBot.findFirst({ where: { id, userId } });
+      if (!existing) {
+        res.status(404).json({ success: false, error: '봇을 찾을 수 없습니다' });
+        return;
+      }
+
+      await stablecoinPrisma.makerTakerSimBot.delete({ where: { id } });
+      res.json({ success: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// GET /api/pair-scanner/bots/:id/trades
+router.get(
+  '/bots/:id/trades',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.userId!;
+      const id = parseInt(req.params.id, 10);
+
+      const bot = await stablecoinPrisma.makerTakerSimBot.findFirst({ where: { id, userId } });
+      if (!bot) {
+        res.status(404).json({ success: false, error: '봇을 찾을 수 없습니다' });
+        return;
+      }
+
+      const trades = await stablecoinPrisma.makerTakerSimTrade.findMany({
+        where: { botId: id },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      });
+      res.json({ success: true, data: trades });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 export default router;
