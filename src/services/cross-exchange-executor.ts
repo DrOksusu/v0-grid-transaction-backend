@@ -13,6 +13,10 @@ export interface ExecutorArgs {
   spreadBps: number;
   upbit: ExchangeClient;
   bithumb: ExchangeClient;
+  /** 빗썸 매수 시 사용할 KRW/코인 단위 가격 (호가 기반 동적 산정용). 미제공 시 1500 fallback. */
+  bithumbAskKrw?: number;
+  /** 업비트 매수 시 사용할 KRW/코인 단위 가격 (호가 기반 동적 산정용). 미제공 시 1500 fallback. */
+  upbitAskKrw?: number;
   pollingMaxMs?: number;
   pollingIntervalMs?: number;
 }
@@ -73,11 +77,13 @@ export async function execute(args: ExecutorArgs): Promise<ExecutorResult> {
   const legBClient = isUB ? args.bithumb : args.upbit;
   const legASide: 'buy' | 'sell' = 'buy';
   const legBSide: 'buy' | 'sell' = 'sell';
+  // 매수 거래소의 호가 기반 KRW 금액 (bithumb market_buy는 KRW 기준)
+  const legAKrwPerUnit = isUB ? args.upbitAskKrw : args.bithumbAskKrw;
 
   // === LegA: placement ===
   let legAPlaced: PlacedOrder;
   try {
-    legAPlaced = await legAClient.placeMarketOrder(legASide, args.coin, args.quantity);
+    legAPlaced = await legAClient.placeMarketOrder(legASide, args.coin, args.quantity, legAKrwPerUnit);
   } catch (err: any) {
     return {
       status: 'LEG_A_FAILED',

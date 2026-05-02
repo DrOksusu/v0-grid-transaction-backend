@@ -400,6 +400,7 @@ enum Exchange {
   upbit
   binance
   kis
+  bithumb
 }
 
 enum BotStatus {

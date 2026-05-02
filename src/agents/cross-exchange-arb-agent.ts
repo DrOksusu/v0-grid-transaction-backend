@@ -2,6 +2,7 @@ import { BaseAgent } from './base-agent';
 import { stablecoinPrisma } from '../config/database';
 import mainPrisma from '../config/database';
 import { decrypt } from '../utils/encryption';
+import { PushService } from '../services/push.service';
 import { UpbitClient } from '../services/exchange/upbit-client';
 import { BithumbClient } from '../services/exchange/bithumb-client';
 import { ExchangeClient, BalanceEntry } from '../services/exchange/exchange-client';
@@ -85,15 +86,17 @@ export class CrossExchangeArbAgent extends BaseAgent {
     const secretKey = decrypt(credential.secretKey);
     this.upbit = new UpbitClient({ accessKey, secretKey });
 
-    // Bithumb: env 직접 (Stage 1 단순화 — 글로벌 admin 키 1조만 운영)
-    const bithumbAccessKey = process.env.BITHUMB_ACCESS_KEY;
-    const bithumbSecretKey = process.env.BITHUMB_SECRET_KEY;
-    if (!bithumbAccessKey || !bithumbSecretKey) {
-      throw new Error('[CrossExchangeArb] BITHUMB_ACCESS_KEY/SECRET_KEY 환경변수 없음');
+    // Bithumb: prisma.credential 에서 admin user 의 bithumb 자격증명 로드 후 복호화
+    const bithumbCredential = await mainPrisma.credential.findFirst({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      where: { userId: UPBIT_ADMIN_USER_ID, exchange: 'bithumb' as any },
+    });
+    if (!bithumbCredential) {
+      throw new Error(`[CrossExchangeArb] Bithumb credential 없음 (userId=${UPBIT_ADMIN_USER_ID}). 설정 > API 키에서 bithumb 키를 등록하세요.`);
     }
     this.bithumb = new BithumbClient({
-      accessKey: bithumbAccessKey,
-      secretKey: bithumbSecretKey,
+      accessKey: decrypt(bithumbCredential.apiKey),
+      secretKey: decrypt(bithumbCredential.secretKey),
     });
 
     console.log('[CrossExchangeArb] 시작 — 5초마다 enabled 봇 평가');
@@ -231,7 +234,7 @@ export class CrossExchangeArbAgent extends BaseAgent {
       return;
     }
 
-    // executor 실행
+    // executor 실행 (호가 정보 전달 → bithumb market_buy KRW 동적 산정)
     const result = await runExecutor({
       botId: bot.id,
       direction,
@@ -240,6 +243,8 @@ export class CrossExchangeArbAgent extends BaseAgent {
       spreadBps,
       upbit,
       bithumb,
+      upbitAskKrw: upbitBook.ask,
+      bithumbAskKrw: bithumbBook.ask,
     });
 
     // direction 으로 leg 거래소/사이드 도출 (executor isUB 매핑과 동일).
@@ -296,6 +301,17 @@ export class CrossExchangeArbAgent extends BaseAgent {
     if (result.status === 'FILLED') {
       console.log(
         `[CrossExchangeArb] bot ${bot.id} FILLED: profit=${result.profitKrw?.toFixed(2)} KRW spread=${spreadBps}bps`,
+      );
+    }
+
+    // LegB 실패 시 push 알림
+    if (result.status === 'LEG_B_FAILED') {
+      PushService.sendToUser(UPBIT_ADMIN_USER_ID, {
+        title: '[긴급] CrossExchange LegB 실패',
+        body: `bot #${bot.id} (${bot.coin} ${bot.targetDirection}) — ${result.failureReason ?? '원인 불명'}. 재고 노출 가능. 즉시 확인 필요.`,
+        tag: `cross-exchange-legb-fail-${bot.id}`,
+      }).catch((err: any) =>
+        console.error(`[CrossExchangeArb] push 전송 실패:`, err?.message),
       );
     }
 

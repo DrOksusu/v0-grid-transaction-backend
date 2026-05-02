@@ -147,7 +147,7 @@ export class BithumbClient implements ExchangeClient {
    * 호출자(executor) 가 별도 getOrder polling 으로 fill 확인.
    */
   async placeMarketOrder(
-    side: 'buy' | 'sell', symbol: string, quantity: number,
+    side: 'buy' | 'sell', symbol: string, quantity: number, krwPerUnit?: number,
   ): Promise<PlacedOrder> {
     const endpoint = side === 'buy' ? '/trade/market_buy' : '/trade/market_sell';
     const params: Record<string, string | number> = {
@@ -156,9 +156,10 @@ export class BithumbClient implements ExchangeClient {
       units: side === 'sell' ? quantity : 0,
     };
     if (side === 'buy') {
-      // Stage 1: market_buy 는 KRW 기준 (amount). 임시로 1500 KRW 가정 후 quantity 곱.
-      // Stage 2 에서 호가 기반 동적 산정으로 개선 (placeMarketBuyKrw 별도 메서드 권장).
-      params.amount = Math.ceil(quantity * 1500);
+      // market_buy 는 KRW amount 기준. 슬리피지 마진 2% 포함.
+      // krwPerUnit(호가) 미제공 시 1500 KRW fallback.
+      const pricePerUnit = krwPerUnit ?? 1500;
+      params.amount = Math.ceil(quantity * pricePerUnit * 1.02);
       delete params.units;
     }
     const response = await this.privatePost(endpoint, params);

@@ -86,7 +86,7 @@ export class UpbitClient implements ExchangeClient {
    * - 매도: volume(코인 수량) 그대로 placeBestIoc 호출.
    */
   async placeMarketOrder(
-    side: 'buy' | 'sell', symbol: string, quantity: number,
+    side: 'buy' | 'sell', symbol: string, quantity: number, _krwPerUnit?: number,
   ): Promise<PlacedOrder> {
     const market = `KRW-${symbol}`;
 
