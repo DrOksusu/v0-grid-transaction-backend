@@ -53,6 +53,21 @@ const stablecoinPrisma = {
     create: jest.fn(),
     update: jest.fn(),
   },
+  crossExchangeArbBot: {
+    findMany: jest.fn().mockResolvedValue([]),
+    findUnique: jest.fn().mockResolvedValue(null),
+    update: jest.fn().mockResolvedValue({}),
+    updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    create: jest.fn().mockResolvedValue({}),
+    findFirst: jest.fn().mockResolvedValue(null),
+  },
+  crossExchangeArbTrade: {
+    findMany: jest.fn().mockResolvedValue([]),
+    create: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    count: jest.fn().mockResolvedValue(0),
+    aggregate: jest.fn().mockResolvedValue({ _sum: { profitKrw: 0 } }),
+  },
 };
 
 // withRetry: 전달된 함수를 그냥 실행 (재시도 없이)
