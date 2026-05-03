@@ -23,6 +23,8 @@ import {
   getArbAutoConfig,
   patchArbAutoConfig,
   listBithumbArbTrades,
+  getBithumbOrderbooks,
+  getCrossExchangeLatest,
 } from '../controllers/stablecoin-admin.controller';
 
 const router = Router();
@@ -58,5 +60,9 @@ router.post('/cross-exchange-bots/:id/verify-reconciliation', verifyCrossExchang
 router.get('/arb-auto-config', getArbAutoConfig);
 router.patch('/arb-auto-config', patchArbAutoConfig);
 router.get('/bithumb-arb-trades', listBithumbArbTrades);
+
+// 대시보드 보조 — 빗썸 호가 + 크로스 스프레드 최신
+router.get('/bithumb-orderbooks', getBithumbOrderbooks);
+router.get('/cross-exchange-latest', getCrossExchangeLatest);
 
 export default router;

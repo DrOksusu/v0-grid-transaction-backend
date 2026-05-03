@@ -6,7 +6,9 @@ import { getAllStablecoinOrderbooks, type OrderbookTop } from '../services/upbit
 import { AppError } from '../middlewares/errorHandler';
 import { reconcileBotAssets } from '../services/maker-taker-asset-reconciliation.service';
 import { stablecoinPrisma } from '../config/database';
+import mainPrisma from '../config/database';
 import { reconcileCrossExchangeBot } from '../services/cross-exchange-reconciliation.service';
+import { fetchBithumbOrderbooks } from '../services/bithumb-price-manager';
 
 /**
  * GET /api/admin/stablecoin/bot
@@ -724,5 +726,68 @@ export const verifyCrossExchangeReconciliation = async (
     res.json(report);
   } catch (err) {
     next(err);
+  }
+};
+
+// ===== 빗썸 호가 + 크로스거래소 스프레드 (대시보드용) =====
+
+/**
+ * GET /api/admin/stablecoin/bithumb-orderbooks
+ * 빗썸 5종 스테이블코인 실시간 호가.
+ */
+export const getBithumbOrderbooks = async (
+  _req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const coins = ['USDT', 'USDC', 'USDS', 'USD1', 'USDE'];
+    const books = await fetchBithumbOrderbooks(coins);
+    const result: Record<string, { bid: number | null; ask: number | null; timestamp: number }> = {};
+    books.forEach((v, k) => {
+      result[k] = { bid: v.bid, ask: v.ask, timestamp: v.timestamp };
+    });
+    res.json({ books: result, fetchedAt: Date.now() });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/**
+ * GET /api/admin/stablecoin/cross-exchange-latest
+ * 업비트↔빗썸 크로스 스프레드 최신 스냅샷 (5코인).
+ */
+export const getCrossExchangeLatest = async (
+  _req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const coins = ['USDT', 'USDC', 'USDS', 'USD1', 'USDE'];
+    const snaps = await Promise.all(
+      coins.map((market) =>
+        mainPrisma.crossExchangeSnapshot.findFirst({
+          where: { market },
+          orderBy: { timestamp: 'desc' },
+        }),
+      ),
+    );
+    const serialized = snaps
+      .filter(Boolean)
+      .map((s) => ({
+        id: s!.id.toString(),
+        market: s!.market,
+        upbitBid: s!.upbitBid.toString(),
+        upbitAsk: s!.upbitAsk.toString(),
+        bithumbBid: s!.bithumbBid.toString(),
+        bithumbAsk: s!.bithumbAsk.toString(),
+        ubSpreadBps: s!.ubSpreadBps.toString(),
+        buSpreadBps: s!.buSpreadBps.toString(),
+        maxSpreadBps: s!.maxSpreadBps.toString(),
+        timestamp: s!.timestamp.toISOString(),
+      }));
+    res.json({ snapshots: serialized, fetchedAt: Date.now() });
+  } catch (e) {
+    next(e);
   }
 };
