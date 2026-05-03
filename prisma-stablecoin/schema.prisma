@@ -270,3 +270,65 @@ model CrossExchangeArbTrade {
   @@index([status])
   @@map("cross_exchange_arb_trades")
 }
+
+// 빗썸 단일 차익거래 글로벌 설정 (1개 row 운영)
+// bithumbCoins: JSON 배열 (예: ["USDT","USDC"])
+// bithumbQty: 1회 거래 수량 (코인 단위)
+// bithumbMinSpreadBps: 최소 스프레드 (bps, 0.01% = 1bps)
+// bithumbDailyCountLimit: 일일 최대 거래 건수
+// bithumbDailyLossLimitKrw: 일일 최대 손실 한도 (KRW)
+model ArbAutoConfig {
+  id Int @id @default(autoincrement())
+
+  bithumbEnabled           Boolean @default(false)
+  bithumbCoins             Json    @default("[\"USDT\",\"USDC\"]")
+  bithumbQty               Int     @default(10)
+  bithumbMinSpreadBps      Int     @default(10)
+  bithumbDailyCountLimit   Int     @default(20)
+  bithumbDailyLossLimitKrw Int     @default(50000)
+
+  // 향후 업비트 단일 / 크로스 auto mode 확장용 (현재 미사용)
+  upbitEnabled Boolean @default(false)
+  crossEnabled Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("arb_auto_config")
+}
+
+// 빗썸 단일 차익거래 개별 거래 기록
+// coinSell: 매도 코인, coinBuy: 매수 코인 (같은 거래소 내)
+// spreadBpsAtExec: 실행 시점 스프레드 (bps)
+// status: "FILLED" | "LEG_A_FAILED" | "LEG_B_FAILED"
+model BithumbSingleArbTrade {
+  id BigInt @id @default(autoincrement())
+
+  coinSell String
+  coinBuy  String
+  qty      Decimal @db.Decimal(20, 8)
+
+  spreadBpsAtExec Int
+
+  legASellOrderId String?
+  legAFilledQty   Decimal? @db.Decimal(20, 8)
+  legAAvgPriceKrw Decimal? @db.Decimal(18, 4)
+  legAFeeKrw      Decimal? @db.Decimal(18, 4)
+  legAReceivedKrw Decimal? @db.Decimal(18, 4)
+
+  legBBuyOrderId  String?
+  legBFilledQty   Decimal? @db.Decimal(20, 8)
+  legBAvgPriceKrw Decimal? @db.Decimal(18, 4)
+  legBFeeKrw      Decimal? @db.Decimal(18, 4)
+  legBSpentKrw    Decimal? @db.Decimal(18, 4)
+
+  profitKrw     Decimal? @db.Decimal(18, 4)
+  status        String
+  failureReason String?  @db.Text
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([createdAt])
+  @@index([status])
+  @@map("bithumb_single_arb_trades")
+}

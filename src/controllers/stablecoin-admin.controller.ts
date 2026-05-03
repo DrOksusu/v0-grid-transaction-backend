@@ -560,6 +560,142 @@ export const deleteCrossExchangeBot = async (req: AuthRequest, res: Response, ne
   }
 };
 
+// ===== ArbAutoConfig (빗썸 단일 차익거래 글로벌 설정) =====
+
+/**
+ * GET /api/admin/stablecoin/arb-auto-config
+ * 글로벌 설정 조회. row 없으면 기본값으로 생성.
+ */
+export const getArbAutoConfig = async (
+  _req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    let config = await stablecoinPrisma.arbAutoConfig.findFirst();
+    if (!config) {
+      config = await stablecoinPrisma.arbAutoConfig.create({ data: {} });
+    }
+    res.json({ config });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/**
+ * PATCH /api/admin/stablecoin/arb-auto-config
+ * 글로벌 설정 부분 업데이트. 알려진 필드만 허용 (화이트리스트).
+ */
+export const patchArbAutoConfig = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const body = req.body ?? {};
+    const patch: Record<string, any> = {};
+
+    // bithumb 설정
+    if (body.bithumbEnabled !== undefined) {
+      if (typeof body.bithumbEnabled !== 'boolean')
+        throw new AppError('bithumbEnabled must be boolean', 400);
+      patch.bithumbEnabled = body.bithumbEnabled;
+    }
+    if (body.bithumbCoins !== undefined) {
+      if (
+        !Array.isArray(body.bithumbCoins) ||
+        !body.bithumbCoins.every((c: any) => typeof c === 'string')
+      )
+        throw new AppError('bithumbCoins must be string array', 400);
+      patch.bithumbCoins = body.bithumbCoins;
+    }
+    if (body.bithumbQty !== undefined) {
+      if (!Number.isInteger(body.bithumbQty) || body.bithumbQty <= 0)
+        throw new AppError('bithumbQty must be positive integer', 400);
+      patch.bithumbQty = body.bithumbQty;
+    }
+    if (body.bithumbMinSpreadBps !== undefined) {
+      if (!Number.isInteger(body.bithumbMinSpreadBps) || body.bithumbMinSpreadBps < 0)
+        throw new AppError('bithumbMinSpreadBps must be non-negative integer', 400);
+      patch.bithumbMinSpreadBps = body.bithumbMinSpreadBps;
+    }
+    if (body.bithumbDailyCountLimit !== undefined) {
+      if (!Number.isInteger(body.bithumbDailyCountLimit) || body.bithumbDailyCountLimit <= 0)
+        throw new AppError('bithumbDailyCountLimit must be positive integer', 400);
+      patch.bithumbDailyCountLimit = body.bithumbDailyCountLimit;
+    }
+    if (body.bithumbDailyLossLimitKrw !== undefined) {
+      if (!Number.isInteger(body.bithumbDailyLossLimitKrw) || body.bithumbDailyLossLimitKrw <= 0)
+        throw new AppError('bithumbDailyLossLimitKrw must be positive integer', 400);
+      patch.bithumbDailyLossLimitKrw = body.bithumbDailyLossLimitKrw;
+    }
+
+    // 향후 확장 필드
+    if (body.upbitEnabled !== undefined) {
+      if (typeof body.upbitEnabled !== 'boolean')
+        throw new AppError('upbitEnabled must be boolean', 400);
+      patch.upbitEnabled = body.upbitEnabled;
+    }
+    if (body.crossEnabled !== undefined) {
+      if (typeof body.crossEnabled !== 'boolean')
+        throw new AppError('crossEnabled must be boolean', 400);
+      patch.crossEnabled = body.crossEnabled;
+    }
+
+    let config = await stablecoinPrisma.arbAutoConfig.findFirst();
+    if (!config) {
+      config = await stablecoinPrisma.arbAutoConfig.create({ data: {} });
+    }
+
+    const updated = await stablecoinPrisma.arbAutoConfig.update({
+      where: { id: config.id },
+      data: patch,
+    });
+    res.json({ config: updated });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/**
+ * GET /api/admin/stablecoin/bithumb-arb-trades?limit=50
+ * 빗썸 단일 차익거래 내역 조회.
+ * BigInt id + Decimal 필드를 string 직렬화.
+ */
+export const listBithumbArbTrades = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const limit = Math.min(parseInt((req.query.limit as string) || '50', 10), 200);
+    const trades = await stablecoinPrisma.bithumbSingleArbTrade.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: Number.isFinite(limit) ? limit : 50,
+    });
+
+    // BigInt + Decimal → string 직렬화 (JSON stringify 호환)
+    const serialized = trades.map((t) => ({
+      ...t,
+      id: t.id.toString(),
+      qty: t.qty.toString(),
+      legAFilledQty: t.legAFilledQty?.toString() ?? null,
+      legAAvgPriceKrw: t.legAAvgPriceKrw?.toString() ?? null,
+      legAFeeKrw: t.legAFeeKrw?.toString() ?? null,
+      legAReceivedKrw: t.legAReceivedKrw?.toString() ?? null,
+      legBFilledQty: t.legBFilledQty?.toString() ?? null,
+      legBAvgPriceKrw: t.legBAvgPriceKrw?.toString() ?? null,
+      legBFeeKrw: t.legBFeeKrw?.toString() ?? null,
+      legBSpentKrw: t.legBSpentKrw?.toString() ?? null,
+      profitKrw: t.profitKrw?.toString() ?? null,
+    }));
+
+    res.json({ trades: serialized });
+  } catch (e) {
+    next(e);
+  }
+};
+
 /**
  * GET /api/admin/stablecoin/cross-exchange-bots/:id/verify-reconciliation
  *
