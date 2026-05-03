@@ -35,7 +35,10 @@ export function signRequest(
   endpoint: string, body: string, nonce: string, secretKey: string,
 ): string {
   const data = endpoint + String.fromCharCode(0) + body + String.fromCharCode(0) + nonce;
-  return crypto.createHmac('sha512', secretKey).update(data).digest('base64');
+  // 빗썸 공식 서명: HMAC-SHA512 hex digest → base64 (PHP: base64_encode(hash_hmac('sha512', data, key, false)))
+  // .digest('base64')는 바이너리를 직접 base64하므로 다름 — hex string을 base64해야 함
+  const hexDigest = crypto.createHmac('sha512', secretKey).update(data).digest('hex');
+  return Buffer.from(hexDigest).toString('base64');
 }
 
 export class BithumbClient implements ExchangeClient {
