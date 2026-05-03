@@ -7,12 +7,22 @@ import {
   triggerSnapshot,
   fetchCurrentPrices,
   createManual,
+  getAutoTradeConfig,
+  updateAutoTradeConfig,
+  listAutoOrders,
+  checkBinancePermissions,
 } from '../controllers/upbit-listing-admin.controller';
 
 const router = Router();
 
 router.use(authenticate);
 router.use(requireAdmin);
+
+// 자동매수 관련 (/:id 라우트보다 먼저 등록)
+router.get('/auto-trade/config', getAutoTradeConfig);
+router.put('/auto-trade/config', updateAutoTradeConfig);
+router.get('/auto-trade/orders', listAutoOrders);
+router.get('/auto-trade/check-permissions', checkBinancePermissions);
 
 router.get('/', listAnnouncements);
 router.post('/manual', createManual);

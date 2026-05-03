@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { Prisma } from '@prisma/client';
 import prisma from '../config/database';
+import { listingAutoTraderService } from './listing-auto-trader.service';
 
 // 상장 공지 인터페이스
 export interface UpbitNotice {
@@ -217,13 +218,16 @@ class UpbitListingMonitorService {
       },
     });
 
-    // 즉시 스냅샷 (공지 시점)
     if (ticker) {
-      await this.captureSnapshots(announcement.id, ticker, 'announced');
-    }
+      // 자동매수 + 공지 시점 스냅샷 병렬 실행 (속도 우선)
+      await Promise.all([
+        listingAutoTraderService.executeBuy(announcement.id, ticker).catch(e =>
+          console.error('[ListingMonitor] 자동매수 오류:', e)
+        ),
+        this.captureSnapshots(announcement.id, ticker, 'announced'),
+      ]);
 
-    // +1h, +4h, +24h 스케줄 등록
-    if (ticker) {
+      // +2h, +4h 스케줄 등록
       this.scheduleFollowUpSnapshots(announcement.id, ticker);
     }
   }

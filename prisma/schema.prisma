@@ -571,11 +571,46 @@ model UpbitListingAnnouncement {
   listedAt    DateTime?
   status      String   @default("announced") // announced | listed | complete
   snapshots   ListingPriceSnapshot[]
+  autoOrders  ListingAutoOrder[]
 
   @@index([announcedAt])
   @@index([ticker])
   @@index([status])
   @@map("upbit_listing_announcements")
+}
+
+// 신규상장 자동매수 설정 (싱글톤 — id=1 고정)
+model ListingAutoTradeConfig {
+  id         Int      @id @default(autoincrement())
+  enabled    Boolean  @default(false)
+  amountKrw  Int      @default(100000)
+  useBinance Boolean  @default(true)
+  useBithumb Boolean  @default(true)
+  updatedAt  DateTime @updatedAt
+
+  @@map("listing_auto_trade_config")
+}
+
+// 신규상장 자동매수 주문 기록
+model ListingAutoOrder {
+  id             Int      @id @default(autoincrement())
+  announcementId Int
+  exchange       String   // binance | bithumb
+  ticker         String
+  amountKrw      Int
+  amountUsdt     Float?   // Binance 주문 시 환산된 USDT 금액
+  orderId        String?
+  status         String   @default("pending") // pending | filled | failed | skipped
+  filledQty      Float?
+  filledPrice    Float?
+  errorMsg       String?  @db.Text
+  createdAt      DateTime @default(now())
+  announcement   UpbitListingAnnouncement @relation(fields: [announcementId], references: [id])
+
+  @@unique([announcementId, exchange])
+  @@index([status])
+  @@index([createdAt])
+  @@map("listing_auto_orders")
 }
 
 // 상장 공지 전후 거래소별 가격 스냅샷

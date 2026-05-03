@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthRequest } from '../types';
 import { successResponse } from '../utils/response';
 import { upbitListingMonitorService } from '../services/upbit-listing-monitor.service';
+import { listingAutoTraderService } from '../services/listing-auto-trader.service';
 
 /**
  * POST /api/admin/upbit-listings/manual
@@ -106,6 +107,61 @@ export const fetchCurrentPrices = async (req: AuthRequest, res: Response, next: 
 
     const prices = await upbitListingMonitorService.fetchAllPrices(announcement.ticker);
     return successResponse(res, { ticker: announcement.ticker, prices });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /api/admin/upbit-listings/auto-trade/config
+ * 자동매수 설정 조회
+ */
+export const getAutoTradeConfig = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const config = await listingAutoTraderService.getConfig();
+    return successResponse(res, config);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * PUT /api/admin/upbit-listings/auto-trade/config
+ * 자동매수 설정 변경
+ * Body: { enabled?, amountKrw?, useBinance?, useBithumb? }
+ */
+export const updateAutoTradeConfig = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { enabled, amountKrw, useBinance, useBithumb } = req.body;
+    const config = await listingAutoTraderService.updateConfig({ enabled, amountKrw, useBinance, useBithumb });
+    return successResponse(res, config);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /api/admin/upbit-listings/auto-trade/orders
+ * 최근 자동매수 주문 이력 조회
+ */
+export const listAutoOrders = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const orders = await listingAutoTraderService.listRecentOrders(limit);
+    return successResponse(res, orders);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /api/admin/upbit-listings/auto-trade/check-permissions
+ * Binance API 키 스팟 거래 권한 확인
+ */
+export const checkBinancePermissions = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await listingAutoTraderService.checkBinancePermissions();
+    return successResponse(res, result);
   } catch (error) {
     next(error);
   }
