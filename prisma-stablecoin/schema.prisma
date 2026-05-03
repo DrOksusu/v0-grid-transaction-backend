@@ -280,16 +280,16 @@ model CrossExchangeArbTrade {
 model ArbAutoConfig {
   id Int @id @default(autoincrement())
 
-  bithumbEnabled           Boolean @default(false)
-  bithumbCoins             Json    @default("[\"USDT\",\"USDC\"]")
+  bithumbEnabled           Boolean @default(true)
+  bithumbCoins             Json    @default("[\"USDT\",\"USDC\",\"USDS\",\"USD1\",\"USDE\"]")
   bithumbQty               Int     @default(10)
   bithumbMinSpreadBps      Int     @default(10)
   bithumbDailyCountLimit   Int     @default(20)
   bithumbDailyLossLimitKrw Int     @default(50000)
 
   // 향후 업비트 단일 / 크로스 auto mode 확장용 (현재 미사용)
-  upbitEnabled Boolean @default(false)
-  crossEnabled Boolean @default(false)
+  upbitEnabled Boolean @default(true)
+  crossEnabled Boolean @default(true)
 
   updatedAt DateTime @updatedAt
 
