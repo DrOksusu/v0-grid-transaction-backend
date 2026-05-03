@@ -559,3 +559,38 @@ model GeneralArbConfig {
 
   @@map("general_arb_config")
 }
+
+// 업비트 신규 상장 공지 감지 기록
+model UpbitListingAnnouncement {
+  id          Int      @id @default(autoincrement())
+  noticeId    Int      @unique
+  title       String
+  ticker      String?
+  url         String
+  announcedAt DateTime @default(now())
+  listedAt    DateTime?
+  status      String   @default("announced") // announced | listed | complete
+  snapshots   ListingPriceSnapshot[]
+
+  @@index([announcedAt])
+  @@index([ticker])
+  @@index([status])
+  @@map("upbit_listing_announcements")
+}
+
+// 상장 공지 전후 거래소별 가격 스냅샷
+model ListingPriceSnapshot {
+  id             Int                      @id @default(autoincrement())
+  announcementId Int
+  exchange       String                   // binance | bybit | mexc | bithumb | upbit
+  price          Decimal                  @db.Decimal(30, 8)
+  volume24h      Decimal?                 @db.Decimal(30, 4)
+  snapshotType   String                   // announced | listed | +1h | +4h | +24h
+  recordedAt     DateTime                 @default(now())
+  announcement   UpbitListingAnnouncement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  @@index([announcementId])
+  @@index([announcementId, snapshotType])
+  @@index([exchange, snapshotType])
+  @@map("listing_price_snapshots")
+}

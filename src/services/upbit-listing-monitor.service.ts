@@ -1,0 +1,378 @@
+import axios from 'axios';
+import { Prisma } from '@prisma/client';
+import prisma from '../config/database';
+
+// 상장 공지 인터페이스
+export interface UpbitNotice {
+  id: number;
+  title: string;
+  url: string;
+  created_at: string;
+}
+
+// 거래소별 가격 스냅샷
+export interface ExchangePriceResult {
+  exchange: string;
+  price: number | null;
+  volume24h: number | null;
+  error?: string;
+}
+
+// 상장 공지 DTO
+export interface ListingAnnouncementDto {
+  id: number;
+  noticeId: number;
+  title: string;
+  ticker: string | null;
+  url: string;
+  announcedAt: Date;
+  listedAt: Date | null;
+  status: string;
+  snapshots: ListingSnapshotDto[];
+}
+
+export interface ListingSnapshotDto {
+  id: number;
+  exchange: string;
+  price: number;
+  volume24h: number | null;
+  snapshotType: string;
+  recordedAt: Date;
+}
+
+// 상장 공지 키워드 (제목에 포함되어야 신규 상장으로 판단)
+const LISTING_KEYWORDS = ['마켓 추가', '원화 마켓', 'KRW 마켓', '거래 지원', '상장', '신규 상장'];
+// 티커로 오인할 수 있는 제외 단어
+const TICKER_EXCLUDES = new Set(['KRW', 'BTC', 'USDT', 'ETH', 'BNB', 'USDC']);
+
+// +1h, +4h, +24h 스냅샷 스케줄 (ms 단위)
+const SNAPSHOT_SCHEDULE = [
+  { type: '+1h', delayMs: 60 * 60 * 1000 },
+  { type: '+4h', delayMs: 4 * 60 * 60 * 1000 },
+  { type: '+24h', delayMs: 24 * 60 * 60 * 1000 },
+];
+
+class UpbitListingMonitorService {
+  // 알림이 발생한 noticeId 캐시 (중복 방지, 재시작 후엔 DB로 복원)
+  private seenNoticeIds: Set<number> = new Set();
+  // 업비트 마켓 목록 캐시
+  private upbitMarkets: Set<string> = new Set();
+  // 스냅샷 스케줄 타이머 (announcementId → timer ids)
+  private snapshotTimers: Map<number, ReturnType<typeof setTimeout>[]> = new Map();
+
+  // 서비스 초기화 (에이전트 시작 시 호출)
+  async initialize(): Promise<void> {
+    // 기존 공지 ID를 DB에서 로드
+    const existing = await (prisma as any).upbitListingAnnouncement.findMany({
+      select: { noticeId: true },
+    });
+    for (const row of existing) {
+      this.seenNoticeIds.add(row.noticeId);
+    }
+
+    // 업비트 마켓 목록 초기 로드
+    await this.refreshUpbitMarkets();
+
+    // 진행 중인 공지 (listed 미완료) 스케줄 복원
+    await this.restorePendingSchedules();
+  }
+
+  // 업비트 공지 폴링 (에이전트 tick에서 호출)
+  async pollAnnouncements(): Promise<void> {
+    let notices: UpbitNotice[] = [];
+    try {
+      const res = await axios.get('https://api.upbit.com/v1/notices?page=1&per_page=20', {
+        timeout: 8000,
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      });
+      notices = Array.isArray(res.data?.data?.list) ? res.data.data.list : [];
+    } catch {
+      return;
+    }
+
+    for (const notice of notices) {
+      if (this.seenNoticeIds.has(notice.id)) continue;
+      if (!this.isListingNotice(notice.title)) continue;
+
+      // 새 상장 공지 발견
+      this.seenNoticeIds.add(notice.id);
+      await this.handleNewListing(notice);
+    }
+  }
+
+  // 업비트 마켓 변경 감지 (에이전트 tick에서 호출)
+  async checkNewUpbitMarkets(): Promise<void> {
+    const prev = new Set(this.upbitMarkets);
+    await this.refreshUpbitMarkets();
+
+    // 새로 추가된 마켓
+    for (const market of this.upbitMarkets) {
+      if (!prev.has(market)) {
+        const ticker = market.replace('KRW-', '');
+        await this.handleUpbitListed(ticker);
+      }
+    }
+  }
+
+  // 모든 상장 공지 조회
+  async listAnnouncements(limit = 50): Promise<ListingAnnouncementDto[]> {
+    const rows = await (prisma as any).upbitListingAnnouncement.findMany({
+      orderBy: { announcedAt: 'desc' },
+      take: limit,
+      include: { snapshots: { orderBy: { recordedAt: 'asc' } } },
+    });
+    return rows.map(this.toDto);
+  }
+
+  // 개별 공지 조회
+  async getAnnouncement(id: number): Promise<ListingAnnouncementDto | null> {
+    const row = await (prisma as any).upbitListingAnnouncement.findUnique({
+      where: { id },
+      include: { snapshots: { orderBy: { recordedAt: 'asc' } } },
+    });
+    return row ? this.toDto(row) : null;
+  }
+
+  // ── Private helpers ──
+
+  private isListingNotice(title: string): boolean {
+    return LISTING_KEYWORDS.some(kw => title.includes(kw));
+  }
+
+  // 제목에서 티커 파싱: "페페(PEPE)" → "PEPE"
+  parseTicker(title: string): string | null {
+    const matches = [...title.matchAll(/\(([A-Z0-9]{2,12})\)/g)];
+    for (const m of matches) {
+      const candidate = m[1];
+      if (!TICKER_EXCLUDES.has(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  private async handleNewListing(notice: UpbitNotice): Promise<void> {
+    const ticker = this.parseTicker(notice.title);
+
+    // DB에 공지 저장
+    const announcement = await (prisma as any).upbitListingAnnouncement.create({
+      data: {
+        noticeId: notice.id,
+        title: notice.title,
+        ticker,
+        url: notice.url ?? `https://upbit.com/service_center/notice?id=${notice.id}`,
+        status: 'announced',
+      },
+    });
+
+    // 즉시 스냅샷 (공지 시점)
+    if (ticker) {
+      await this.captureSnapshots(announcement.id, ticker, 'announced');
+    }
+
+    // +1h, +4h, +24h 스케줄 등록
+    if (ticker) {
+      this.scheduleFollowUpSnapshots(announcement.id, ticker);
+    }
+  }
+
+  private async handleUpbitListed(ticker: string): Promise<void> {
+    // ticker가 일치하는 announced 상태 공지 찾기
+    const announcement = await (prisma as any).upbitListingAnnouncement.findFirst({
+      where: { ticker, status: 'announced' },
+      orderBy: { announcedAt: 'desc' },
+    });
+    if (!announcement) return;
+
+    const listedAt = new Date();
+    await (prisma as any).upbitListingAnnouncement.update({
+      where: { id: announcement.id },
+      data: { listedAt, status: 'listed' },
+    });
+
+    // 상장 시점 스냅샷
+    await this.captureSnapshots(announcement.id, ticker, 'listed');
+  }
+
+  // 멀티거래소 가격 조회 후 DB 저장
+  async captureSnapshots(announcementId: number, ticker: string, snapshotType: string): Promise<void> {
+    const results = await this.fetchAllPrices(ticker);
+
+    const data = results
+      .filter(r => r.price !== null)
+      .map(r => ({
+        announcementId,
+        exchange: r.exchange,
+        price: new Prisma.Decimal(r.price!),
+        volume24h: r.volume24h !== null ? new Prisma.Decimal(r.volume24h) : null,
+        snapshotType,
+      }));
+
+    if (data.length > 0) {
+      await (prisma as any).listingPriceSnapshot.createMany({ data });
+    }
+  }
+
+  private scheduleFollowUpSnapshots(announcementId: number, ticker: string): void {
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    for (const schedule of SNAPSHOT_SCHEDULE) {
+      const timer = setTimeout(async () => {
+        await this.captureSnapshots(announcementId, ticker, schedule.type);
+        // +24h 완료 시 status → complete
+        if (schedule.type === '+24h') {
+          await (prisma as any).upbitListingAnnouncement.update({
+            where: { id: announcementId },
+            data: { status: 'complete' },
+          });
+        }
+      }, schedule.delayMs);
+      timers.push(timer);
+    }
+
+    this.snapshotTimers.set(announcementId, timers);
+  }
+
+  // 서버 재시작 시 진행 중인 스케줄 복원
+  private async restorePendingSchedules(): Promise<void> {
+    const pending = await (prisma as any).upbitListingAnnouncement.findMany({
+      where: { status: { in: ['announced', 'listed'] }, ticker: { not: null } },
+    });
+
+    for (const ann of pending) {
+      const elapsedMs = Date.now() - new Date(ann.announcedAt).getTime();
+
+      for (const schedule of SNAPSHOT_SCHEDULE) {
+        const remaining = schedule.delayMs - elapsedMs;
+        if (remaining <= 0) {
+          // 이미 지난 스냅샷: 아직 저장 안 됐으면 즉시 실행
+          const exists = await (prisma as any).listingPriceSnapshot.findFirst({
+            where: { announcementId: ann.id, snapshotType: schedule.type },
+          });
+          if (!exists) {
+            await this.captureSnapshots(ann.id, ann.ticker, schedule.type);
+          }
+        } else {
+          // 남은 시간 후 실행
+          setTimeout(() => this.captureSnapshots(ann.id, ann.ticker, schedule.type), remaining);
+        }
+      }
+    }
+  }
+
+  // 멀티거래소 가격 병렬 조회
+  async fetchAllPrices(ticker: string): Promise<ExchangePriceResult[]> {
+    const results = await Promise.allSettled([
+      this.fetchBinancePrice(ticker),
+      this.fetchBybitPrice(ticker),
+      this.fetchMexcPrice(ticker),
+      this.fetchBithumbPrice(ticker),
+    ]);
+
+    return results.map((r, i) => {
+      const exchanges = ['binance', 'bybit', 'mexc', 'bithumb'];
+      if (r.status === 'fulfilled') return r.value;
+      return { exchange: exchanges[i], price: null, volume24h: null, error: String(r.reason) };
+    });
+  }
+
+  private async fetchBinancePrice(ticker: string): Promise<ExchangePriceResult> {
+    try {
+      const res = await axios.get(
+        `https://api.binance.com/api/v3/ticker/24hr?symbol=${ticker}USDT`,
+        { timeout: 5000 },
+      );
+      return {
+        exchange: 'binance',
+        price: parseFloat(res.data.lastPrice),
+        volume24h: parseFloat(res.data.quoteVolume),
+      };
+    } catch {
+      return { exchange: 'binance', price: null, volume24h: null };
+    }
+  }
+
+  private async fetchBybitPrice(ticker: string): Promise<ExchangePriceResult> {
+    try {
+      const res = await axios.get(
+        `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${ticker}USDT`,
+        { timeout: 5000 },
+      );
+      const item = res.data?.result?.list?.[0];
+      if (!item) return { exchange: 'bybit', price: null, volume24h: null };
+      return {
+        exchange: 'bybit',
+        price: parseFloat(item.lastPrice),
+        volume24h: parseFloat(item.turnover24h),
+      };
+    } catch {
+      return { exchange: 'bybit', price: null, volume24h: null };
+    }
+  }
+
+  private async fetchMexcPrice(ticker: string): Promise<ExchangePriceResult> {
+    try {
+      const res = await axios.get(
+        `https://api.mexc.com/api/v3/ticker/24hr?symbol=${ticker}USDT`,
+        { timeout: 5000 },
+      );
+      return {
+        exchange: 'mexc',
+        price: parseFloat(res.data.lastPrice),
+        volume24h: parseFloat(res.data.quoteVolume),
+      };
+    } catch {
+      return { exchange: 'mexc', price: null, volume24h: null };
+    }
+  }
+
+  private async fetchBithumbPrice(ticker: string): Promise<ExchangePriceResult> {
+    try {
+      const res = await axios.get(
+        `https://api.bithumb.com/public/ticker/${ticker}_KRW`,
+        { timeout: 5000 },
+      );
+      if (res.data?.status !== '0000') return { exchange: 'bithumb', price: null, volume24h: null };
+      return {
+        exchange: 'bithumb',
+        price: parseFloat(res.data.data.closing_price),
+        volume24h: parseFloat(res.data.data.acc_trade_value_24H),
+      };
+    } catch {
+      return { exchange: 'bithumb', price: null, volume24h: null };
+    }
+  }
+
+  private async refreshUpbitMarkets(): Promise<void> {
+    try {
+      const res = await axios.get('https://api.upbit.com/v1/market/all', { timeout: 5000 });
+      const krwMarkets: string[] = (res.data as any[])
+        .filter((m: any) => m.market.startsWith('KRW-'))
+        .map((m: any) => m.market);
+      this.upbitMarkets = new Set(krwMarkets);
+    } catch {
+      // 네트워크 오류 시 기존 캐시 유지
+    }
+  }
+
+  private toDto(row: any): ListingAnnouncementDto {
+    return {
+      id: row.id,
+      noticeId: row.noticeId,
+      title: row.title,
+      ticker: row.ticker,
+      url: row.url,
+      announcedAt: row.announcedAt,
+      listedAt: row.listedAt,
+      status: row.status,
+      snapshots: (row.snapshots ?? []).map((s: any) => ({
+        id: s.id,
+        exchange: s.exchange,
+        price: Number(s.price),
+        volume24h: s.volume24h !== null ? Number(s.volume24h) : null,
+        snapshotType: s.snapshotType,
+        recordedAt: s.recordedAt,
+      })),
+    };
+  }
+}
+
+export const upbitListingMonitorService = new UpbitListingMonitorService();
