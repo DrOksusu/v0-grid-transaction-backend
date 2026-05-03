@@ -365,9 +365,23 @@ export const testBithumbConnection = async (
       return errorResponse(res, 'CREDENTIAL_NOT_FOUND', '빗썸 인증 정보를 찾을 수 없습니다', 404);
     }
 
+    const rawAccess = decrypt(credential.apiKey);
+    const rawSecret = decrypt(credential.secretKey);
+
+    // 진단 로그 — 키 앞 6자 + 뒤 4자 마스킹, 길이/공백 여부 확인
+    console.log('[BithumbTest] accessKey:', {
+      len: rawAccess.length,
+      hasWhitespace: /\s/.test(rawAccess),
+      preview: rawAccess.slice(0, 6) + '...' + rawAccess.slice(-4),
+    });
+    console.log('[BithumbTest] secretKey:', {
+      len: rawSecret.length,
+      hasWhitespace: /\s/.test(rawSecret),
+    });
+
     const client = new BithumbClient({
-      accessKey: decrypt(credential.apiKey),
-      secretKey: decrypt(credential.secretKey),
+      accessKey: rawAccess.trim(),
+      secretKey: rawSecret.trim(),
     });
 
     const balances = await client.getBalances();

@@ -82,7 +82,9 @@ export class BithumbClient implements ExchangeClient {
       if (err?.message?.startsWith('Bithumb error')) throw err;
       // 그 외 axios 네트워크/타임아웃 에러는 endpoint + status 컨텍스트 추가
       const status = err?.response?.status;
-      const respMsg = err?.response?.data?.message;
+      const respData = err?.response?.data;
+      console.error(`[BithumbClient] privatePost ${endpoint} 전체 응답:`, JSON.stringify(respData));
+      const respMsg = respData?.message ?? respData?.msg;
       throw new Error(
         `Bithumb privatePost ${endpoint} 실패 (status=${status}): ${respMsg ?? err.message}`,
       );
