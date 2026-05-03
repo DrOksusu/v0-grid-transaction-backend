@@ -41,15 +41,14 @@ export interface ListingSnapshotDto {
 }
 
 // 상장 공지 키워드 (제목에 포함되어야 신규 상장으로 판단)
-const LISTING_KEYWORDS = ['마켓 추가', '원화 마켓', 'KRW 마켓', '거래 지원', '상장', '신규 상장'];
+const LISTING_KEYWORDS = ['신규 거래지원'];
 // 티커로 오인할 수 있는 제외 단어
 const TICKER_EXCLUDES = new Set(['KRW', 'BTC', 'USDT', 'ETH', 'BNB', 'USDC']);
 
-// +1h, +4h, +24h 스냅샷 스케줄 (ms 단위)
+// 공지 직후(announced), +2h, +4h 스냅샷 스케줄 (ms 단위)
 const SNAPSHOT_SCHEDULE = [
-  { type: '+1h', delayMs: 60 * 60 * 1000 },
+  { type: '+2h', delayMs: 2 * 60 * 60 * 1000 },
   { type: '+4h', delayMs: 4 * 60 * 60 * 1000 },
-  { type: '+24h', delayMs: 24 * 60 * 60 * 1000 },
 ];
 
 class UpbitListingMonitorService {
@@ -77,15 +76,25 @@ class UpbitListingMonitorService {
     await this.restorePendingSchedules();
   }
 
-  // 업비트 공지 폴링 (에이전트 tick에서 호출)
+  // 업비트 공지 폴링 (에이전트 tick에서 호출) — 거래 카테고리 최신 10개
   async pollAnnouncements(): Promise<void> {
     let notices: UpbitNotice[] = [];
     try {
-      const res = await axios.get('https://api.upbit.com/v1/notices?page=1&per_page=20', {
-        timeout: 8000,
-        headers: { 'User-Agent': 'Mozilla/5.0' },
-      });
-      notices = Array.isArray(res.data?.data?.list) ? res.data.data.list : [];
+      // Playwright로 확인한 실제 API: api-manager.upbit.com (category=거래 URL encode)
+      const res = await axios.get(
+        'https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&per_page=10&category=%EA%B1%B0%EB%9E%98',
+        {
+          timeout: 8000,
+          headers: { accept: 'application/json', referer: 'https://www.upbit.com/' },
+        },
+      );
+      const raw: any[] = res.data?.data?.notices ?? [];
+      notices = raw.map((n: any) => ({
+        id: n.id,
+        title: n.title,
+        url: `https://www.upbit.com/service_center/notice?id=${n.id}`,
+        created_at: n.listed_at,
+      }));
     } catch {
       return;
     }
@@ -94,10 +103,28 @@ class UpbitListingMonitorService {
       if (this.seenNoticeIds.has(notice.id)) continue;
       if (!this.isListingNotice(notice.title)) continue;
 
-      // 새 상장 공지 발견
+      // 즉시 seenIds에 추가 → 5초 내 중복 폴링 방지
       this.seenNoticeIds.add(notice.id);
       await this.handleNewListing(notice);
     }
+  }
+
+  // 에이전트 onStop 시 예약된 타이머 모두 취소
+  cancelPendingSnapshots(): void {
+    for (const timers of this.snapshotTimers.values()) {
+      timers.forEach(t => clearTimeout(t));
+    }
+    this.snapshotTimers.clear();
+  }
+
+  // 에이전트 getExtraInfo용 통계
+  getStats(): Record<string, any> {
+    const pendingSymbols: string[] = [];
+    return {
+      seenNoticeCount: this.seenNoticeIds.size,
+      pendingAnnouncementCount: this.snapshotTimers.size,
+      pendingSymbols,
+    };
   }
 
   // 업비트 마켓 변경 감지 (에이전트 tick에서 호출)
@@ -244,8 +271,8 @@ class UpbitListingMonitorService {
     for (const schedule of SNAPSHOT_SCHEDULE) {
       const timer = setTimeout(async () => {
         await this.captureSnapshots(announcementId, ticker, schedule.type);
-        // +24h 완료 시 status → complete
-        if (schedule.type === '+24h') {
+        // +4h 완료 시 status → complete
+        if (schedule.type === '+4h') {
           await (prisma as any).upbitListingAnnouncement.update({
             where: { id: announcementId },
             data: { status: 'complete' },
