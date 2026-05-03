@@ -264,6 +264,7 @@ export const getKisStatus = async (
           accountNo: credential.accountNo,
           tokenExpireAt: tokenExpireAt,
           lastValidatedAt: credential.lastValidatedAt,
+          maskedAppKey: maskApiKey(decrypt(credential.apiKey)),
         };
       })
     );
