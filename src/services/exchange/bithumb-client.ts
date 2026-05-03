@@ -33,18 +33,25 @@ export interface BithumbCreds {
  */
 export function signRequest(
   endpoint: string, body: string, nonce: string, secretKey: string,
+  mode: 'hex-base64' | 'binary-base64' = 'hex-base64',
 ): string {
   const data = endpoint + String.fromCharCode(0) + body + String.fromCharCode(0) + nonce;
-  // 빗썸 공식 서명: HMAC-SHA512 hex digest → base64 (PHP: base64_encode(hash_hmac('sha512', data, key, false)))
-  // .digest('base64')는 바이너리를 직접 base64하므로 다름 — hex string을 base64해야 함
+  if (mode === 'binary-base64') {
+    // 방식 2: raw binary → base64 (digest('base64'))
+    return crypto.createHmac('sha512', secretKey).update(data).digest('base64');
+  }
+  // 방식 1 (기본): hex digest → base64 (PHP: base64_encode(hash_hmac('sha512', data, key, false)))
   const hexDigest = crypto.createHmac('sha512', secretKey).update(data).digest('hex');
   return Buffer.from(hexDigest).toString('base64');
 }
 
 export class BithumbClient implements ExchangeClient {
   exchangeName: 'bithumb' = 'bithumb';
+  signMode: 'hex-base64' | 'binary-base64' = 'hex-base64';
 
-  constructor(private creds: BithumbCreds) {}
+  constructor(private creds: BithumbCreds, signMode?: 'hex-base64' | 'binary-base64') {
+    if (signMode) this.signMode = signMode;
+  }
 
   /**
    * Bithumb private API 호출 (POST + HMAC).
@@ -60,7 +67,11 @@ export class BithumbClient implements ExchangeClient {
     const bodyStr = new URLSearchParams(
       Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
     ).toString();
-    const sign = signRequest(endpoint, bodyStr, nonce, this.creds.secretKey);
+    // 서명 방식 1: hex→base64, 방식 2: binary→base64 — 두 길이 진단
+    const sign1 = signRequest(endpoint, bodyStr, nonce, this.creds.secretKey, 'hex-base64');
+    const sign2 = signRequest(endpoint, bodyStr, nonce, this.creds.secretKey, 'binary-base64');
+    console.log('[BithumbSign] hex-base64 len:', sign1.length, 'binary-base64 len:', sign2.length);
+    const sign = this.signMode === 'binary-base64' ? sign2 : sign1;
     try {
       const response = await axios.post(`${BITHUMB_API_URL}${endpoint}`, bodyStr, {
         headers: {

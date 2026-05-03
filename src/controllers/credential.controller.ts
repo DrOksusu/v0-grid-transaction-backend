@@ -390,32 +390,29 @@ export const testBithumbConnection = async (
     }
     console.log('[BithumbTest] serverOutboundIp:', serverIp);
 
-    // Secret Key 형식 진단: raw 키로 먼저 시도, 5300 실패 시 base64 디코딩 후 재시도
-    let balances: Record<string, any>;
-    let keyFormat = 'raw';
-    try {
-      const client = new BithumbClient({
-        accessKey: rawAccess.trim(),
-        secretKey: rawSecret.trim(),
-      });
-      balances = await client.getBalances();
-    } catch (firstErr: any) {
-      const is5300 = firstErr.message?.includes('5300') || firstErr.message?.includes('Invalid Apikey');
-      if (is5300) {
-        const decodedSecret = Buffer.from(rawSecret.trim(), 'base64').toString('utf-8');
-        console.log('[BithumbTest] raw key 실패(5300), base64 디코딩 시도. 디코딩 후 len:', decodedSecret.length);
-        const client2 = new BithumbClient({
-          accessKey: rawAccess.trim(),
-          secretKey: decodedSecret,
-        });
-        balances = await client2.getBalances();
-        keyFormat = 'base64-decoded';
-        console.log('[BithumbTest] base64 디코딩 키로 성공!');
-      } else {
-        throw firstErr;
+    // 서명 방식 × 키 형식 조합 4가지 순서대로 시도 (진단용)
+    const secretVariants = [
+      { label: 'raw+hex-b64',      secret: rawSecret.trim(),                                    sign: 'hex-base64'    as const },
+      { label: 'raw+bin-b64',      secret: rawSecret.trim(),                                    sign: 'binary-base64' as const },
+      { label: 'decoded+hex-b64',  secret: Buffer.from(rawSecret.trim(), 'base64').toString(),  sign: 'hex-base64'    as const },
+      { label: 'decoded+bin-b64',  secret: Buffer.from(rawSecret.trim(), 'base64').toString(),  sign: 'binary-base64' as const },
+    ];
+    let balances: Record<string, any> | null = null;
+    let keyFormat = 'none';
+    for (const v of secretVariants) {
+      try {
+        console.log('[BithumbTest] 시도:', v.label);
+        const client = new BithumbClient({ accessKey: rawAccess.trim(), secretKey: v.secret }, v.sign);
+        balances = await client.getBalances();
+        keyFormat = v.label;
+        console.log('[BithumbTest] 성공!', v.label);
+        break;
+      } catch (e: any) {
+        console.log('[BithumbTest] 실패:', v.label, e.message?.slice(0, 60));
       }
     }
-    const krw = balances!['KRW'];
+    if (!balances) throw new Error('모든 서명 방식 실패 — 빗썸 API 인증 불가');
+    const krw = balances['KRW'];
 
     // lastValidatedAt 갱신
     await prisma.credential.update({
