@@ -156,10 +156,15 @@ class UpbitListingMonitorService {
 
     this.seenNoticeIds.add(noticeId);
 
-    // 즉시 스냅샷
-    await this.captureSnapshots(announcement.id, ticker, 'announced');
+    // 자동매수 + 즉시 스냅샷 병렬 실행
+    await Promise.all([
+      listingAutoTraderService.executeBuy(announcement.id, ticker).catch(e =>
+        console.error('[ListingMonitor] 수동등록 자동매수 오류:', e)
+      ),
+      this.captureSnapshots(announcement.id, ticker, 'announced'),
+    ]);
 
-    // +1h/+4h/+24h 스케줄
+    // +2h/+4h 스케줄
     this.scheduleFollowUpSnapshots(announcement.id, ticker);
 
     const result = await (prisma as any).upbitListingAnnouncement.findUnique({
