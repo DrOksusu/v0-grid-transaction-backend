@@ -1,17 +1,12 @@
 // src/services/exchange/bithumb-client.ts
 //
-// Cross-exchange arb: Bithumb private API 클라이언트 (HMAC 서명 + 잔고/주문 조회/시장가 주문).
+// Bithumb REST API v1 클라이언트 (JWT HS256 인증).
 //
-// Bithumb HMAC 서명 형식: endpoint + chr(0) + body + chr(0) + nonce 를 secretKey 로
-// HMAC-SHA512 후 base64 인코딩. (https://apidocs.bithumb.com/ private API 인증 명세)
+// 인증 방식: access_key + secret_key 로 JWT HS256 생성 → Authorization: Bearer {jwt}
+// JWT Payload: { access_key, nonce: UUID, timestamp: ms_unix, [query_hash, query_hash_alg] }
+// query_hash: 파라미터가 있는 요청 시 쿼리스트링/바디를 SHA-512 해시 (hex)
 //
-// 주의:
-// - getOrderbookTop 은 public API (인증 불필요).
-// - getBalances 는 currency=ALL 로 모든 코인 잔고를 한 번에 조회.
-//   응답 형식: { available_KRW, total_KRW, in_use_KRW, available_BTC, ... }
-// - placeMarketOrder (Task 5): market_buy 는 KRW amount 기준 — Stage 1 단순화로
-//   quantity * 1500 KRW 가정. Stage 2 에서 호가 기반 동적 산정 추가 검토.
-// - getOrder (Task 5): order_status (Completed/Pending/...) → mapStatus 매핑.
+// 참조: https://apidocs.bithumb.com/docs/빠른-시작-가이드
 
 import axios from 'axios';
 import crypto from 'crypto';
@@ -28,129 +23,126 @@ export interface BithumbCreds {
 }
 
 /**
- * Bithumb private API HMAC SHA512 서명.
- * endpoint + chr(0) + body + chr(0) + nonce 를 secretKey 로 서명 후 base64 인코딩.
+ * Bithumb JWT HS256 토큰 생성.
+ * query 파라미터가 있을 때는 SHA-512 query_hash 를 payload 에 추가.
  */
-export function signRequest(
-  endpoint: string, body: string, nonce: string, secretKey: string,
-  mode: 'hex-base64' | 'binary-base64' = 'hex-base64',
-): string {
-  const data = endpoint + String.fromCharCode(0) + body + String.fromCharCode(0) + nonce;
-  if (mode === 'binary-base64') {
-    // 방식 2: raw binary → base64 (digest('base64'))
-    return crypto.createHmac('sha512', secretKey).update(data).digest('base64');
+function generateJwt(accessKey: string, secretKey: string, queryString?: string): string {
+  const b64url = (input: string) =>
+    Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+
+  const header = JSON.stringify({ alg: 'HS256', typ: 'JWT' });
+  const payloadObj: Record<string, unknown> = {
+    access_key: accessKey,
+    nonce: crypto.randomUUID(),
+    timestamp: Date.now(),
+  };
+  if (queryString) {
+    payloadObj.query_hash = crypto.createHash('sha512').update(queryString, 'utf-8').digest('hex');
+    payloadObj.query_hash_alg = 'SHA512';
   }
-  // 방식 1 (기본): hex digest → base64 (PHP: base64_encode(hash_hmac('sha512', data, key, false)))
-  const hexDigest = crypto.createHmac('sha512', secretKey).update(data).digest('hex');
-  return Buffer.from(hexDigest).toString('base64');
+
+  const data = `${b64url(header)}.${b64url(JSON.stringify(payloadObj))}`;
+  const sig = crypto.createHmac('sha256', secretKey).update(data).digest('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  return `${data}.${sig}`;
 }
 
 export class BithumbClient implements ExchangeClient {
   exchangeName: 'bithumb' = 'bithumb';
-  signMode: 'hex-base64' | 'binary-base64' = 'hex-base64';
 
-  constructor(private creds: BithumbCreds, signMode?: 'hex-base64' | 'binary-base64') {
-    if (signMode) this.signMode = signMode;
+  constructor(private creds: BithumbCreds) {}
+
+  private authHeader(queryString?: string): string {
+    return `Bearer ${generateJwt(this.creds.accessKey, this.creds.secretKey, queryString)}`;
   }
 
   /**
-   * Bithumb private API 호출 (POST + HMAC).
-   * 응답의 status 가 '0000' 이 아니면 에러 throw.
-   * Task 4 followup (I-2): try/catch 로 axios 네트워크/타임아웃 에러에 endpoint 컨텍스트 추가.
-   * Bithumb 비즈니스 에러 (status != '0000') 는 그대로 전파 (메시지 prefix 'Bithumb error' 로 식별).
+   * Bithumb v1 GET API 호출 (JWT 인증).
    */
-  private async privatePost(
-    endpoint: string, params: Record<string, string | number>,
-  ): Promise<any> {
-    const nonce = String(Date.now());
-    // type-safe URLSearchParams 인자: 모든 value 를 string 으로 변환 (M-1 fix)
-    const bodyStr = new URLSearchParams(
-      Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
-    ).toString();
-    // 서명 방식 1: hex→base64, 방식 2: binary→base64 — 두 길이 진단
-    const sign1 = signRequest(endpoint, bodyStr, nonce, this.creds.secretKey, 'hex-base64');
-    const sign2 = signRequest(endpoint, bodyStr, nonce, this.creds.secretKey, 'binary-base64');
-    console.log('[BithumbSign] hex-base64 len:', sign1.length, 'binary-base64 len:', sign2.length);
-    const sign = this.signMode === 'binary-base64' ? sign2 : sign1;
+  private async apiGet<T = any>(endpoint: string, params?: Record<string, string>): Promise<T> {
+    const queryString = params ? new URLSearchParams(params).toString() : undefined;
+    const url = `${BITHUMB_API_URL}${endpoint}${queryString ? '?' + queryString : ''}`;
     try {
-      console.log('[BithumbReq]', { endpoint, body: bodyStr, nonceLen: nonce.length, signLen: sign.length });
-      const response = await axios.post(`${BITHUMB_API_URL}${endpoint}`, bodyStr, {
+      const response = await axios.get<T>(url, {
+        headers: { Authorization: this.authHeader(queryString) },
+        timeout: TIMEOUT_MS,
+      });
+      return response.data;
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const errName = err?.response?.data?.error?.name ?? err?.response?.data?.status;
+      const errMsg = err?.response?.data?.error?.message ?? err?.response?.data?.message;
+      throw new Error(`Bithumb GET ${endpoint} 실패 (${status} ${errName}): ${errMsg ?? err.message}`);
+    }
+  }
+
+  /**
+   * Bithumb v1 POST API 호출 (JSON 바디, JWT 인증).
+   * query_hash 는 바디 파라미터를 URL-encoded 형식으로 직렬화한 값으로 계산.
+   */
+  private async apiPost<T = any>(endpoint: string, body: Record<string, unknown>): Promise<T> {
+    const queryString = new URLSearchParams(
+      Object.fromEntries(Object.entries(body).map(([k, v]) => [k, String(v)])),
+    ).toString();
+    try {
+      const response = await axios.post<T>(`${BITHUMB_API_URL}${endpoint}`, body, {
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Api-Key': this.creds.accessKey,
-          'Api-Nonce': nonce,
-          'Api-Sign': sign,
-          'Api-Client-Type': '0',
+          Authorization: this.authHeader(queryString),
+          'Content-Type': 'application/json',
         },
         timeout: TIMEOUT_MS,
       });
-      if (response.data?.status !== '0000') {
-        throw new Error(
-          `Bithumb error ${response.data?.status}: ${response.data?.message ?? 'unknown'}`,
-        );
-      }
       return response.data;
     } catch (err: any) {
-      // status '0000' 검증 throw 는 그대로 전파 (Bithumb 비즈니스 에러 메시지 보존)
-      if (err?.message?.startsWith('Bithumb error')) throw err;
-      // 그 외 axios 네트워크/타임아웃 에러는 endpoint + status 컨텍스트 추가
       const status = err?.response?.status;
-      const respData = err?.response?.data;
-      console.error(`[BithumbClient] privatePost ${endpoint} 전체 응답:`, JSON.stringify(respData));
-      const respMsg = respData?.message ?? respData?.msg;
-      throw new Error(
-        `Bithumb privatePost ${endpoint} 실패 (status=${status}): ${respMsg ?? err.message}`,
-      );
+      const errName = err?.response?.data?.error?.name ?? err?.response?.data?.status;
+      const errMsg = err?.response?.data?.error?.message ?? err?.response?.data?.message;
+      throw new Error(`Bithumb POST ${endpoint} 실패 (${status} ${errName}): ${errMsg ?? err.message}`);
     }
   }
 
   /**
    * 단일 코인 최우선 호가 + 수량 조회. Public API (인증 불필요). 실패 시 null.
+   * GET /v1/orderbook?markets=KRW-{symbol}
    */
   async getOrderbookTop(symbol: string): Promise<OrderbookTop | null> {
     try {
       const response = await axios.get(
-        `${BITHUMB_API_URL}/public/orderbook/${symbol}_KRW`,
-        { timeout: TIMEOUT_MS },
+        `${BITHUMB_API_URL}/v1/orderbook`,
+        {
+          params: { markets: `KRW-${symbol.toUpperCase()}` },
+          timeout: TIMEOUT_MS,
+        },
       );
-      const data = response.data;
-      if (data?.status !== '0000' || !data.data) return null;
-      const topBid = data.data.bids?.[0];
-      const topAsk = data.data.asks?.[0];
+      const data = Array.isArray(response.data) ? response.data[0] : null;
+      if (!data) return null;
+      const topBid = data.bid_levels?.[0];
+      const topAsk = data.ask_levels?.[0];
       if (!topBid || !topAsk) return null;
       return {
         bid: parseFloat(topBid.price),
         ask: parseFloat(topAsk.price),
-        bidQty: parseFloat(topBid.quantity),
-        askQty: parseFloat(topAsk.quantity),
+        bidQty: parseFloat(topBid.size),
+        askQty: parseFloat(topAsk.size),
         timestamp: Date.now(),
       };
     } catch (err: any) {
-      console.error(
-        `[Bithumb] orderbook ${symbol} 조회 실패:`,
-        err?.response?.status, err.message,
-      );
+      console.error(`[Bithumb] orderbook ${symbol} 조회 실패:`, err?.response?.status, err.message);
       return null;
     }
   }
 
   /**
-   * 모든 코인 잔고. KEY 는 코인 심볼 (KRW, USDT, USDE 등).
-   * Bithumb 응답: { available_KRW, total_KRW, in_use_KRW, available_BTC, ... }
-   * Task 4 followup (I-1): regex /i flag 로 case-insensitive (Bithumb 응답이 소문자/대문자 혼용 가능성).
+   * 모든 코인 잔고. KEY 는 코인 심볼 (KRW, USDT 등).
+   * GET /v1/accounts → [{ currency, balance, locked, ... }]
    */
   async getBalances(): Promise<Record<string, BalanceEntry>> {
-    const data = await this.privatePost('/info/balance', { currency: 'ALL' });
+    const accounts = await this.apiGet<Array<{ currency: string; balance: string; locked: string }>>('/v1/accounts');
     const out: Record<string, BalanceEntry> = {};
-    for (const key of Object.keys(data.data ?? {})) {
-      // available_<SYMBOL> 키만 대상으로 잔고 entry 구성 (case-insensitive)
-      const m = key.match(/^available_(.+)$/i);
-      if (!m) continue;
-      const sym = m[1].toUpperCase();
-      const inUseKey = `in_use_${m[1]}`;
-      out[sym] = {
-        available: parseFloat((data.data as any)[key] ?? '0'),
-        locked: parseFloat((data.data as any)[inUseKey] ?? '0'),
+    for (const acc of accounts) {
+      out[acc.currency.toUpperCase()] = {
+        available: parseFloat(acc.balance ?? '0'),
+        locked: parseFloat(acc.locked ?? '0'),
       };
     }
     return out;
@@ -158,32 +150,32 @@ export class BithumbClient implements ExchangeClient {
 
   /**
    * 시장가 매수/매도 주문.
-   * - 매도: units (코인 수량) 기준
-   * - 매수: amount (KRW 금액) 기준 — Stage 1 캐너리 단순화로 quantity * 1500 KRW 가정
-   *         (Stage 2 에서 호가 기반 동적 산정을 별도 메서드로 추가 검토)
-   * Bithumb 시장가 주문은 즉시 체결 보장이 아니므로 status='pending' 으로 반환,
-   * 호출자(executor) 가 별도 getOrder polling 으로 fill 확인.
+   * POST /v1/orders
+   * - 매도(ask): ord_type=market, volume=coin_qty
+   * - 매수(bid): ord_type=price, price=krw_amount (시장가 매수는 KRW 금액 기준)
    */
   async placeMarketOrder(
     side: 'buy' | 'sell', symbol: string, quantity: number, krwPerUnit?: number,
   ): Promise<PlacedOrder> {
-    const endpoint = side === 'buy' ? '/trade/market_buy' : '/trade/market_sell';
-    const params: Record<string, string | number> = {
-      order_currency: symbol.toUpperCase(),
-      payment_currency: 'KRW',
-      units: side === 'sell' ? quantity : 0,
+    const market = `KRW-${symbol.toUpperCase()}`;
+    const body: Record<string, unknown> = {
+      market,
+      side: side === 'buy' ? 'bid' : 'ask',
     };
-    if (side === 'buy') {
-      // market_buy 는 KRW amount 기준. 슬리피지 마진 2% 포함.
-      // krwPerUnit(호가) 미제공 시 1500 KRW fallback.
+
+    if (side === 'sell') {
+      body.ord_type = 'market';
+      body.volume = String(quantity);
+    } else {
       const pricePerUnit = krwPerUnit ?? 1500;
-      params.amount = Math.ceil(quantity * pricePerUnit * 1.02);
-      delete params.units;
+      body.ord_type = 'price';
+      body.price = String(Math.ceil(quantity * pricePerUnit * 1.02));
     }
-    const response = await this.privatePost(endpoint, params);
+
+    const response = await this.apiPost<{ uuid: string }>('/v1/orders', body);
     return {
-      orderId: response.order_id ?? response.data?.order_id ?? '',
-      status: 'pending', // 빗썸 시장가 결과 비동기 — getOrder polling 필요
+      orderId: response.uuid ?? '',
+      status: 'pending',
       filledQty: 0,
       avgFillPrice: 0,
       totalFeeKrw: 0,
@@ -192,28 +184,23 @@ export class BithumbClient implements ExchangeClient {
 
   /**
    * 주문 상세 조회 (polling 용).
-   * Bithumb /info/order_detail 응답의 order_status (Completed/Pending/Cancelled 등) 를
-   * lowercase 변환 후 mapStatus 로 OrderStatus 에 매핑.
+   * GET /v1/order?uuid={uuid}
    */
   async getOrder(orderId: string): Promise<PlacedOrder> {
-    const response = await this.privatePost('/info/order_detail', { order_id: orderId });
-    const d = response.data;
+    const d = await this.apiGet<any>('/v1/order', { uuid: orderId });
     return {
       orderId,
-      status: this.mapStatus((d?.order_status ?? '').toLowerCase()),
-      filledQty: parseFloat(d?.order_qty ?? '0'),
-      avgFillPrice: parseFloat(d?.order_price ?? '0'),
-      totalFeeKrw: parseFloat(d?.fee ?? '0'),
+      status: this.mapStatus((d?.state ?? '').toLowerCase()),
+      filledQty: parseFloat(d?.executed_volume ?? '0'),
+      avgFillPrice: parseFloat(d?.avg_price ?? '0'),
+      totalFeeKrw: parseFloat(d?.paid_fee ?? '0'),
     };
   }
 
-  /**
-   * Bithumb raw state -> OrderStatus 매핑 (Task 5 에서 확장).
-   * 이번 Task 에서는 minimal stub.
-   */
   protected mapStatus(state: string): OrderStatus {
-    if (state === 'completed') return 'filled';
-    if (state === 'pending') return 'pending';
+    if (state === 'done') return 'filled';
+    if (state === 'wait' || state === 'watch') return 'pending';
+    if (state === 'cancel') return 'cancelled';
     return 'failed';
   }
 }

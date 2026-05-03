@@ -1,5 +1,4 @@
 import { Response, NextFunction } from 'express';
-import axios from 'axios';
 import prisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { encrypt, decrypt, maskApiKey } from '../utils/encryption';
@@ -366,55 +365,14 @@ export const testBithumbConnection = async (
       return errorResponse(res, 'CREDENTIAL_NOT_FOUND', '빗썸 인증 정보를 찾을 수 없습니다', 404);
     }
 
-    const rawAccess = decrypt(credential.apiKey);
-    const rawSecret = decrypt(credential.secretKey);
-
-    // 진단 로그 — 키 앞 6자 + 뒤 4자 마스킹, 길이/공백 여부 확인
-    console.log('[BithumbTest] accessKey:', {
-      len: rawAccess.length,
-      hasWhitespace: /\s/.test(rawAccess),
-      preview: rawAccess.slice(0, 6) + '...' + rawAccess.slice(-4),
-    });
-    console.log('[BithumbTest] secretKey:', {
-      len: rawSecret.length,
-      hasWhitespace: /\s/.test(rawSecret),
+    const client = new BithumbClient({
+      accessKey: decrypt(credential.apiKey).trim(),
+      secretKey: decrypt(credential.secretKey).trim(),
     });
 
-    // 서버 아웃바운드 IP 확인 (IP 화이트리스트 진단용)
-    let serverIp = 'unknown';
-    try {
-      const ipRes = await axios.get('https://api.ipify.org?format=json', { timeout: 3000 });
-      serverIp = ipRes.data?.ip ?? 'unknown';
-    } catch {
-      serverIp = 'fetch-failed';
-    }
-    console.log('[BithumbTest] serverOutboundIp:', serverIp);
-
-    // 서명 방식 × 키 형식 조합 4가지 순서대로 시도 (진단용)
-    const secretVariants = [
-      { label: 'raw+hex-b64',      secret: rawSecret.trim(),                                    sign: 'hex-base64'    as const },
-      { label: 'raw+bin-b64',      secret: rawSecret.trim(),                                    sign: 'binary-base64' as const },
-      { label: 'decoded+hex-b64',  secret: Buffer.from(rawSecret.trim(), 'base64').toString(),  sign: 'hex-base64'    as const },
-      { label: 'decoded+bin-b64',  secret: Buffer.from(rawSecret.trim(), 'base64').toString(),  sign: 'binary-base64' as const },
-    ];
-    let balances: Record<string, any> | null = null;
-    let keyFormat = 'none';
-    for (const v of secretVariants) {
-      try {
-        console.log('[BithumbTest] 시도:', v.label);
-        const client = new BithumbClient({ accessKey: rawAccess.trim(), secretKey: v.secret }, v.sign);
-        balances = await client.getBalances();
-        keyFormat = v.label;
-        console.log('[BithumbTest] 성공!', v.label);
-        break;
-      } catch (e: any) {
-        console.log('[BithumbTest] 실패:', v.label, e.message?.slice(0, 60));
-      }
-    }
-    if (!balances) throw new Error('모든 서명 방식 실패 — 빗썸 API 인증 불가');
+    const balances = await client.getBalances();
     const krw = balances['KRW'];
 
-    // lastValidatedAt 갱신
     await prisma.credential.update({
       where: { id: credential.id },
       data: { isValid: true, lastValidatedAt: new Date() },
@@ -425,8 +383,6 @@ export const testBithumbConnection = async (
       krwAvailable: krw?.available ?? 0,
       krwLocked: krw?.locked ?? 0,
       lastValidatedAt: new Date(),
-      serverIp,
-      keyFormat,
     }, '빗썸 연결 성공');
   } catch (error: any) {
     console.error('Bithumb connection test error:', error);
