@@ -114,6 +114,33 @@ class UpbitListingMonitorService {
     }
   }
 
+  // 수동 공지 등록 + 즉시 스냅샷 (테스트/긴급 추적용)
+  async createManualEntry(noticeId: number, title: string, ticker: string): Promise<ListingAnnouncementDto> {
+    const announcement = await (prisma as any).upbitListingAnnouncement.create({
+      data: {
+        noticeId,
+        title,
+        ticker,
+        url: `https://upbit.com/service_center/notice`,
+        status: 'announced',
+      },
+    });
+
+    this.seenNoticeIds.add(noticeId);
+
+    // 즉시 스냅샷
+    await this.captureSnapshots(announcement.id, ticker, 'announced');
+
+    // +1h/+4h/+24h 스케줄
+    this.scheduleFollowUpSnapshots(announcement.id, ticker);
+
+    const result = await (prisma as any).upbitListingAnnouncement.findUnique({
+      where: { id: announcement.id },
+      include: { snapshots: { orderBy: { recordedAt: 'asc' } } },
+    });
+    return this.toDto(result);
+  }
+
   // 모든 상장 공지 조회
   async listAnnouncements(limit = 50): Promise<ListingAnnouncementDto[]> {
     const rows = await (prisma as any).upbitListingAnnouncement.findMany({

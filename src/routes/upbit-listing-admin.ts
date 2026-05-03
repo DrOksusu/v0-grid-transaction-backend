@@ -6,6 +6,7 @@ import {
   getAnnouncement,
   triggerSnapshot,
   fetchCurrentPrices,
+  createManual,
 } from '../controllers/upbit-listing-admin.controller';
 
 const router = Router();
@@ -14,6 +15,7 @@ router.use(authenticate);
 router.use(requireAdmin);
 
 router.get('/', listAnnouncements);
+router.post('/manual', createManual);
 router.get('/:id', getAnnouncement);
 router.post('/:id/snapshot', triggerSnapshot);
 router.get('/:id/prices', fetchCurrentPrices);

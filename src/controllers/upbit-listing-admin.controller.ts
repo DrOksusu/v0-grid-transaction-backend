@@ -4,6 +4,34 @@ import { successResponse } from '../utils/response';
 import { upbitListingMonitorService } from '../services/upbit-listing-monitor.service';
 
 /**
+ * POST /api/admin/upbit-listings/manual
+ * 공지를 수동으로 등록하고 즉시 가격 스냅샷 수집
+ * Body: { ticker: string, title?: string }
+ */
+export const createManual = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { ticker, title } = req.body as { ticker: string; title?: string };
+    if (!ticker) {
+      res.status(400).json({ success: false, message: 'ticker 필드가 필요합니다.' });
+      return;
+    }
+    const upperTicker = ticker.toUpperCase();
+    const noticeTitle = title || `[수동 등록] 업비트 원화(KRW) 마켓 ${upperTicker} 추가 안내`;
+
+    // noticeId: 수동 등록은 음수 ID 사용 (자동 감지와 충돌 방지)
+    // timestamp 기반으로 유니크하게 생성
+    const manualNoticeId = -(Date.now() % 1_000_000);
+
+    const announcement = await upbitListingMonitorService.createManualEntry(
+      manualNoticeId, noticeTitle, upperTicker
+    );
+    return successResponse(res, announcement);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * GET /api/admin/upbit-listings
  * 상장 공지 목록 조회 (최신순)
  */
