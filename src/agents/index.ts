@@ -11,3 +11,4 @@ export { MakerTakerSimulatorAgent } from './maker-taker-simulator-agent';
 export { CrossExchangeArbAgent } from './cross-exchange-arb-agent';
 export { PairScannerAgent } from './pair-scanner-agent';
 export { BithumbArbAgent } from './bithumb-arb-agent';
+export { GeneralArbScannerAgent, generalArbScannerAgent } from './general-arb-scanner-agent';

@@ -522,3 +522,40 @@ model CrossExchangeSnapshot {
   @@map("cross_exchange_snapshots")
 }
 
+// 일반 아비트리지 모니터링 대상 심볼 목록
+model GeneralArbWatchedSymbol {
+  id        Int      @id @default(autoincrement())
+  symbol    String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("general_arb_watched_symbols")
+}
+
+// 일반 아비트리지 기회 감지 이력
+model GeneralArbOpportunity {
+  id           Int      @id @default(autoincrement())
+  symbol       String
+  upbitPrice   Decimal  @db.Decimal(20, 2)
+  bithumbPrice Decimal  @db.Decimal(20, 2)
+  spreadPct    Decimal  @db.Decimal(10, 4)
+  direction    String   // "upbit_to_bithumb" 또는 "bithumb_to_upbit"
+  thresholdPct Decimal  @db.Decimal(10, 4)
+  detectedAt   DateTime @default(now())
+
+  @@index([symbol, detectedAt])
+  @@index([detectedAt])
+  @@map("general_arb_opportunities")
+}
+
+// 일반 아비트리지 전역 설정 (싱글톤, id=1 고정)
+model GeneralArbConfig {
+  id             Int      @id @default(autoincrement())
+  thresholdPct   Decimal  @db.Decimal(10, 4) @default(0.5)
+  minIntervalSec Int      @default(60)
+  isEnabled      Boolean  @default(true)
+  updatedAt      DateTime @updatedAt
+
+  @@map("general_arb_config")
+}
