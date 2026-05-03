@@ -102,6 +102,27 @@ export class BithumbClient implements ExchangeClient {
   }
 
   /**
+   * Bithumb v1 DELETE API 호출 (JWT 인증).
+   * query_hash 는 쿼리스트링으로 계산.
+   */
+  private async apiDelete<T = any>(endpoint: string, params: Record<string, string>): Promise<T> {
+    const queryString = new URLSearchParams(params).toString();
+    const url = `${BITHUMB_API_URL}${endpoint}?${queryString}`;
+    try {
+      const response = await axios.delete<T>(url, {
+        headers: { Authorization: this.authHeader(queryString) },
+        timeout: TIMEOUT_MS,
+      });
+      return response.data;
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const errName = err?.response?.data?.error?.name ?? err?.response?.data?.status;
+      const errMsg = err?.response?.data?.error?.message ?? err?.response?.data?.message;
+      throw new Error(`Bithumb DELETE ${endpoint} 실패 (${status} ${errName}): ${errMsg ?? err.message}`);
+    }
+  }
+
+  /**
    * 단일 코인 최우선 호가 + 수량 조회. Public API (인증 불필요). 실패 시 null.
    * GET /v1/orderbook?markets=KRW-{symbol}
    */
@@ -202,5 +223,55 @@ export class BithumbClient implements ExchangeClient {
     if (state === 'wait' || state === 'watch') return 'pending';
     if (state === 'cancel') return 'cancelled';
     return 'failed';
+  }
+
+  /**
+   * 지정가 매수 주문.
+   * POST /v1/orders { market, side:'bid', ord_type:'limit', price, volume }
+   */
+  async buyLimit(market: string, price: number, volume: number): Promise<any> {
+    return this.apiPost('/v1/orders', {
+      market,
+      side: 'bid',
+      ord_type: 'limit',
+      price: String(Math.round(price)),
+      volume: String(volume),
+    });
+  }
+
+  /**
+   * 지정가 매도 주문.
+   * POST /v1/orders { market, side:'ask', ord_type:'limit', price, volume }
+   */
+  async sellLimit(market: string, price: number, volume: number): Promise<any> {
+    return this.apiPost('/v1/orders', {
+      market,
+      side: 'ask',
+      ord_type: 'limit',
+      price: String(Math.round(price)),
+      volume: String(volume),
+    });
+  }
+
+  /**
+   * 주문 취소.
+   * DELETE /v1/order?uuid={orderId}
+   */
+  async cancelOrder(uuid: string): Promise<any> {
+    return this.apiDelete('/v1/order', { uuid });
+  }
+
+  /**
+   * 체결 완료 주문 목록 조회 (state=done).
+   * GET /v1/orders?state=done[&market=...][&limit=...]
+   */
+  async getFilledOrders(market?: string, limit: number = 100): Promise<any[]> {
+    const params: Record<string, string> = {
+      state: 'done',
+      limit: String(Math.min(limit, 100)),
+      order_by: 'desc',
+    };
+    if (market) params.market = market;
+    return this.apiGet('/v1/orders', params);
   }
 }

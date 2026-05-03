@@ -4,6 +4,7 @@ import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { GridService, calculateBuyPrices } from '../services/grid.service';
 import { UpbitService } from '../services/upbit.service';
+import { BithumbClient } from '../services/exchange/bithumb-client';
 import { priceManager } from '../services/upbit-price-manager';
 import { decrypt } from '../utils/encryption';
 import { botEngine } from '../services/bot-engine.service';
@@ -28,12 +29,12 @@ export const createBot = async (
     } = req.body;
 
     if (!exchange || !ticker || !lowerPrice || !upperPrice || !priceChangePercent || !orderAmount) {
-      return errorResponse(
-        res,
-        'VALIDATION_ERROR',
-        '필수 필드가 누락되었습니다',
-        400
-      );
+      return errorResponse(res, 'VALIDATION_ERROR', '필수 필드가 누락되었습니다', 400);
+    }
+
+    // 빗썸 그리드는 관리자(userId=2)만 사용 가능
+    if (exchange === 'bithumb' && userId !== 2) {
+      return errorResponse(res, 'FORBIDDEN', '빗썸 그리드 매매는 관리자 전용입니다', 403);
     }
 
     if (lowerPrice >= upperPrice) {
@@ -82,7 +83,7 @@ export const createBot = async (
         priceChangePercent
       );
       // WebSocket 티커 구독 및 OrderManager 알림
-      await botEngine.onBotStarted(bot.id, userId, ticker);
+      await botEngine.onBotStarted(bot.id, userId, ticker, bot.exchange as string);
       console.log(`Bot ${bot.id} created with ${gridCount} grid levels (autoStart)`);
     }
 
@@ -313,7 +314,7 @@ export const startBot = async (
     });
 
     // WebSocket 티커 구독 및 OrderManager 알림
-    await botEngine.onBotStarted(botId, userId, bot.ticker);
+    await botEngine.onBotStarted(botId, userId, bot.ticker, bot.exchange as string);
 
     return successResponse(
       res,
@@ -397,7 +398,7 @@ export const stopBot = async (
     });
 
     // WebSocket 티커 구독 해제 및 OrderManager 알림
-    await botEngine.onBotStopped(botId, userId, bot.ticker);
+    await botEngine.onBotStopped(botId, userId, bot.ticker, bot.exchange as string);
 
     return successResponse(
       res,
@@ -429,9 +430,7 @@ export const deleteBot = async (
       include: {
         user: {
           include: {
-            credentials: {
-              where: { exchange: 'upbit' },
-            },
+            credentials: true,
           },
         },
       },
@@ -449,7 +448,7 @@ export const deleteBot = async (
 
     // WebSocket 티커 구독 해제 (봇이 running 상태였던 경우)
     if (bot.status === 'running') {
-      await botEngine.onBotStopped(botId, userId, bot.ticker);
+      await botEngine.onBotStopped(botId, userId, bot.ticker, bot.exchange as string);
     }
 
     // 즉시 응답 반환
@@ -474,16 +473,16 @@ export const deleteBot = async (
           where: { botId, ...gridLevelFilter },
         });
 
-        // 대기 중인 주문 취소
-        if (cancelType !== 'none' && gridLevels.length > 0 && bot.user.credentials[0]) {
-          const credential = bot.user.credentials[0];
+        // 대기 중인 주문 취소 (거래소별)
+        const botCred = bot.user.credentials.find(c => c.exchange === bot.exchange);
+        if (cancelType !== 'none' && gridLevels.length > 0 && botCred) {
+          const credential = botCred;
           const apiKey = decrypt(credential.apiKey);
           const secretKey = decrypt(credential.secretKey);
 
-          const upbit = new UpbitService({
-            accessKey: apiKey,
-            secretKey: secretKey,
-          });
+          const upbit = bot.exchange === 'bithumb'
+            ? new BithumbClient({ accessKey: apiKey, secretKey })
+            : new UpbitService({ accessKey: apiKey, secretKey });
 
           const cancelTypeLabel = cancelType === 'buy' ? '매수' : '모든';
           console.log(`[DeleteBot] Cancelling ${gridLevels.length} ${cancelTypeLabel} pending orders for bot ${botId}...`);

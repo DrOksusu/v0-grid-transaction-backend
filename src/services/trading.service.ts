@@ -1,10 +1,24 @@
 import prisma, { withRetry } from '../config/database';
 import { UpbitService } from './upbit.service';
+import { BithumbClient } from './exchange/bithumb-client';
 import { GridService } from './grid.service';
 import { decrypt } from '../utils/encryption';
 import { socketService } from './socket.service';
 import { priceManager } from './upbit-price-manager';
+import { bithumbPriceManager } from './bithumb-grid-price-manager';
 import { ProfitService } from './profit.service';
+
+// 그리드 거래에 필요한 최소 거래소 클라이언트 인터페이스
+interface GridTradeClient {
+  buyLimit(market: string, price: number, volume: number): Promise<any>;
+  sellLimit(market: string, price: number, volume: number): Promise<any>;
+  cancelOrder(uuid: string): Promise<any>;
+  getFilledOrders(market?: string, limit?: number): Promise<any[]>;
+}
+
+function getFeeRate(exchange: string): number {
+  return exchange === 'bithumb' ? 0.0025 : 0.0005;
+}
 
 // 자격증명 캐시 (5분 TTL)
 interface CachedCredential {
@@ -20,6 +34,7 @@ interface CachedBotInfo {
   userId: number;
   ticker: string;
   orderAmount: number;
+  exchange: string;
   expireAt: number;
 }
 const botInfoCache = new Map<number, CachedBotInfo>();
@@ -38,7 +53,7 @@ interface UserCredentialCache {
   secretKey: string;
   expireAt: number;
 }
-const userCredentialCache = new Map<number, UserCredentialCache>(); // userId -> credential
+const userCredentialCache = new Map<string, UserCredentialCache>(); // `${userId}-${exchange}` -> credential
 
 export class TradingService {
   // 봇 중지 시 캐시 정리
@@ -48,9 +63,10 @@ export class TradingService {
   }
 
   // 사용자별 자격증명 조회 (중앙 집중식 조회용)
-  private static async getUserCredential(userId: number): Promise<{ apiKey: string; secretKey: string } | null> {
+  private static async getUserCredential(userId: number, exchange: string = 'upbit'): Promise<{ apiKey: string; secretKey: string } | null> {
+    const cacheKey = `${userId}-${exchange}`;
     const now = Date.now();
-    const cached = userCredentialCache.get(userId);
+    const cached = userCredentialCache.get(cacheKey);
 
     if (cached && cached.expireAt > now) {
       return { apiKey: cached.apiKey, secretKey: cached.secretKey };
@@ -58,7 +74,7 @@ export class TradingService {
 
     // 캐시 미스 - DB에서 조회
     const credential = await prisma.credential.findFirst({
-      where: { userId, exchange: 'upbit' },
+      where: { userId, exchange: exchange as any },
       select: { apiKey: true, secretKey: true },
     });
 
@@ -68,7 +84,7 @@ export class TradingService {
     const secretKey = decrypt(credential.secretKey);
 
     // 캐시 저장 (5분 TTL)
-    userCredentialCache.set(userId, {
+    userCredentialCache.set(cacheKey, {
       apiKey,
       secretKey,
       expireAt: now + CREDENTIAL_CACHE_TTL,
@@ -78,25 +94,29 @@ export class TradingService {
   }
 
   // 캐시된 자격증명 조회 (없으면 DB에서 가져와서 캐시)
-  private static async getCachedCredential(botId: number): Promise<{ apiKey: string; secretKey: string; userId: number } | null> {
+  private static async getCachedCredential(botId: number): Promise<{ apiKey: string; secretKey: string; userId: number; exchange: string } | null> {
     const now = Date.now();
     const cached = credentialCache.get(botId);
     const cachedBot = botInfoCache.get(botId);
 
     if (cached && cached.expireAt > now && cachedBot && cachedBot.expireAt > now) {
-      return { apiKey: cached.apiKey, secretKey: cached.secretKey, userId: cachedBot.userId };
+      return { apiKey: cached.apiKey, secretKey: cached.secretKey, userId: cachedBot.userId, exchange: cachedBot.exchange };
     }
 
     // 캐시 미스 - DB에서 조회 (재시도 로직 포함)
     const bot = await withRetry(
       () => prisma.bot.findUnique({
         where: { id: botId },
-        include: {
+        select: {
+          id: true,
+          userId: true,
+          ticker: true,
+          orderAmount: true,
+          exchange: true,
           user: {
             include: {
               credentials: {
-                where: { exchange: 'upbit' },
-                select: { apiKey: true, secretKey: true },
+                select: { apiKey: true, secretKey: true, exchange: true },
               },
             },
           },
@@ -105,11 +125,14 @@ export class TradingService {
       { operationName: `getCachedCredential(botId=${botId})` }
     );
 
-    if (!bot || !bot.user.credentials[0]) return null;
+    if (!bot) return null;
 
-    const credential = bot.user.credentials[0];
-    const apiKey = decrypt(credential.apiKey);
-    const secretKey = decrypt(credential.secretKey);
+    // 봇의 거래소에 맞는 인증정보 선택
+    const matchingCred = bot.user.credentials.find(c => c.exchange === bot.exchange);
+    if (!matchingCred) return null;
+
+    const apiKey = decrypt(matchingCred.apiKey);
+    const secretKey = decrypt(matchingCred.secretKey);
 
     // 캐시 저장
     credentialCache.set(botId, {
@@ -121,10 +144,11 @@ export class TradingService {
       userId: bot.userId,
       ticker: bot.ticker,
       orderAmount: bot.orderAmount,
+      exchange: bot.exchange as string,
       expireAt: now + BOT_INFO_CACHE_TTL,
     });
 
-    return { apiKey, secretKey, userId: bot.userId };
+    return { apiKey, secretKey, userId: bot.userId, exchange: bot.exchange as string };
   }
 
   // 캐시된 봇 정보 조회
@@ -139,7 +163,7 @@ export class TradingService {
     const bot = await withRetry(
       () => prisma.bot.findUnique({
         where: { id: botId },
-        select: { userId: true, ticker: true, orderAmount: true },
+        select: { userId: true, ticker: true, orderAmount: true, exchange: true },
       }),
       { operationName: `getCachedBotInfo(botId=${botId})` }
     );
@@ -150,6 +174,7 @@ export class TradingService {
       userId: bot.userId,
       ticker: bot.ticker,
       orderAmount: bot.orderAmount,
+      exchange: bot.exchange as string,
       expireAt: now + BOT_INFO_CACHE_TTL,
     };
     botInfoCache.set(botId, botInfo);
@@ -185,16 +210,17 @@ export class TradingService {
         return { success: false, message: 'API 인증 정보가 없습니다' };
       }
 
-      const { apiKey, secretKey } = cachedCred;
+      const { apiKey, secretKey, exchange: botExchange } = cachedCred;
 
-      // Upbit 서비스 초기화
-      const upbit = new UpbitService({
-        accessKey: apiKey,
-        secretKey: secretKey,
-      });
+      // 거래소별 클라이언트 초기화
+      const upbit: GridTradeClient = botExchange === 'bithumb'
+        ? new BithumbClient({ accessKey: apiKey, secretKey })
+        : new UpbitService({ accessKey: apiKey, secretKey });
 
-      // 현재가 조회 (WebSocket 캐시 우선, 없으면 REST 폴백)
-      const currentPrice = await priceManager.getPriceWithFallback(bot.ticker);
+      // 현재가 조회 (거래소별 PriceManager 사용)
+      const currentPrice = botExchange === 'bithumb'
+        ? await bithumbPriceManager.getPriceWithFallback(bot.ticker)
+        : await priceManager.getPriceWithFallback(bot.ticker);
 
       // 이전 가격 조회 (가격 크로싱 감지용)
       const previousPrice = lastCheckedPriceMap.get(botId);
@@ -492,40 +518,41 @@ export class TradingService {
         },
         include: {
           bot: {
-            select: { id: true, userId: true, ticker: true, orderAmount: true, status: true },
+            select: { id: true, userId: true, ticker: true, orderAmount: true, status: true, exchange: true },
           },
         },
       });
 
       if (allPendingGrids.length === 0) return;
 
-      // 2. 사용자별로 그리드 그룹화
-      const gridsByUser = new Map<number, typeof allPendingGrids>();
+      // 2. 사용자+거래소 조합별로 그리드 그룹화 (한 사용자가 여러 거래소 봇 운영 가능)
+      const gridsByUserExchange = new Map<string, typeof allPendingGrids>();
 
       for (const grid of allPendingGrids) {
-        const userId = grid.bot.userId;
-        if (!gridsByUser.has(userId)) {
-          gridsByUser.set(userId, []);
+        const key = `${grid.bot.userId}-${grid.bot.exchange}`;
+        if (!gridsByUserExchange.has(key)) {
+          gridsByUserExchange.set(key, []);
         }
-        gridsByUser.get(userId)!.push(grid);
+        gridsByUserExchange.get(key)!.push(grid);
       }
 
-      console.log(`[Trading] 체결 확인: ${allPendingGrids.length}개 pending 주문, ${gridsByUser.size}명 사용자`);
+      console.log(`[Trading] 체결 확인: ${allPendingGrids.length}개 pending 주문, ${gridsByUserExchange.size}개 사용자+거래소 그룹`);
 
-      // 3. 사용자별로 마켓별 체결 주문 조회
-      for (const [userId, grids] of gridsByUser) {
+      // 3. 사용자+거래소별로 체결 주문 조회
+      for (const [userExchangeKey, grids] of gridsByUserExchange) {
+        const [userIdStr, exchange] = userExchangeKey.split('-');
+        const userId = parseInt(userIdStr, 10);
         try {
-          // 사용자 자격증명 조회
-          const credential = await this.getUserCredential(userId);
+          // 사용자 자격증명 조회 (거래소별)
+          const credential = await this.getUserCredential(userId, exchange);
           if (!credential) {
-            console.log(`[Trading] User ${userId}: 자격증명 없음, 스킵`);
+            console.log(`[Trading] User ${userId}(${exchange}): 자격증명 없음, 스킵`);
             continue;
           }
 
-          const upbit = new UpbitService({
-            accessKey: credential.apiKey,
-            secretKey: credential.secretKey,
-          });
+          const upbit: GridTradeClient = exchange === 'bithumb'
+            ? new BithumbClient({ accessKey: credential.apiKey, secretKey: credential.secretKey })
+            : new UpbitService({ accessKey: credential.apiKey, secretKey: credential.secretKey });
 
           // 마켓별로 그리드 그룹화
           const gridsByMarket = new Map<string, typeof grids>();
@@ -552,7 +579,7 @@ export class TradingService {
                 for (const order of filledOrders) {
                   const grid = gridByOrderId.get(order.uuid);
                   if (grid && order.state === 'done' && !processedGridIds.has(grid.id)) {
-                    await this.processFilledOrder(grid, order, upbit, userId);
+                    await this.processFilledOrder(grid, order, upbit, userId, exchange);
                     processedGridIds.add(grid.id);
                     totalFilledCount++;
                   }
@@ -582,31 +609,45 @@ export class TradingService {
             .slice(0, MAX_STALE_CHECK_PER_USER);
 
           if (staleGrids.length > 0) {
-            console.log(`[Trading] User ${userId}: ${staleGrids.length}개 오래된 pending 주문 직접 확인 (10분+, max=${MAX_STALE_CHECK_PER_USER})`);
-
-            const staleOrderIds = staleGrids.map(g => g.orderId!);
+            console.log(`[Trading] User ${userId}(${exchange}): ${staleGrids.length}개 오래된 pending 주문 직접 확인 (10분+, max=${MAX_STALE_CHECK_PER_USER})`);
 
             try {
-              const orders = await upbit.getOrdersByUuids(staleOrderIds);
-              const orderMap = new Map(orders.map(o => [o.uuid, o]));
-
-              for (const grid of staleGrids) {
-                const order = orderMap.get(grid.orderId!);
-                if (!order) continue;
-
-                if (order.state === 'done') {
-                  console.log(`[Trading] User ${userId}: 오래된 체결 감지 - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
-                  await this.processFilledOrder(grid, order, upbit, userId);
-                  totalFilledCount++;
-                } else if (order.state === 'cancel') {
-                  console.log(`[Trading] User ${userId}: 취소된 주문 감지 - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
-                  await prisma.gridLevel.update({
-                    where: { id: grid.id },
-                    data: { status: 'available', orderId: null, filledAt: null },
-                  });
+              if (exchange === 'bithumb') {
+                // 빗썸: getOrdersByUuids 미지원 → 개별 getOrder 조회
+                for (const grid of staleGrids) {
+                  try {
+                    const order = await (upbit as any).getOrder(grid.orderId!);
+                    if (order.state === 'done') {
+                      console.log(`[Trading] User ${userId}: 오래된 체결 감지 (빗썸) - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
+                      await this.processFilledOrder(grid, order, upbit, userId, exchange);
+                      totalFilledCount++;
+                    } else if (order.state === 'cancel') {
+                      await prisma.gridLevel.update({ where: { id: grid.id }, data: { status: 'available', orderId: null, filledAt: null } });
+                    }
+                  } catch { /* 개별 조회 실패는 무시 */ }
                 }
-                // wait 상태: updatedAt 갱신하지 않음 — 다음 사이클에서 재확인되어야 체결 감지 누락 방지
-                // (이전 구현: wait시 updatedAt을 now로 찍어 30분 동안 재조회 배제 → 체결이 그 사이 일어나면 수시간~며칠 미감지)
+              } else {
+                // 업비트: 배치 조회
+                const staleOrderIds = staleGrids.map(g => g.orderId!);
+                const orders = await (upbit as UpbitService).getOrdersByUuids(staleOrderIds);
+                const orderMap = new Map(orders.map(o => [o.uuid, o]));
+
+                for (const grid of staleGrids) {
+                  const order = orderMap.get(grid.orderId!);
+                  if (!order) continue;
+
+                  if (order.state === 'done') {
+                    console.log(`[Trading] User ${userId}: 오래된 체결 감지 - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
+                    await this.processFilledOrder(grid, order, upbit, userId, exchange);
+                    totalFilledCount++;
+                  } else if (order.state === 'cancel') {
+                    console.log(`[Trading] User ${userId}: 취소된 주문 감지 - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
+                    await prisma.gridLevel.update({
+                      where: { id: grid.id },
+                      data: { status: 'available', orderId: null, filledAt: null },
+                    });
+                  }
+                }
               }
             } catch (staleError: any) {
               console.error(`[Trading] User ${userId} 오래된 주문 조회 실패:`, staleError.message);
@@ -673,7 +714,7 @@ export class TradingService {
         where: { id: gridId },
         include: {
           bot: {
-            select: { id: true, userId: true, ticker: true, orderAmount: true, status: true },
+            select: { id: true, userId: true, ticker: true, orderAmount: true, status: true, exchange: true },
           },
         },
       });
@@ -687,23 +728,23 @@ export class TradingService {
         return false;
       }
 
-      // 3. 사용자 자격증명 조회
-      const credential = await this.getUserCredential(grid.bot.userId);
+      // 3. 사용자 자격증명 조회 (거래소별)
+      const botExchange = grid.bot.exchange as string;
+      const credential = await this.getUserCredential(grid.bot.userId, botExchange);
       if (!credential) {
         return false;
       }
 
-      const upbit = new UpbitService({
-        accessKey: credential.apiKey,
-        secretKey: credential.secretKey,
-      });
+      const upbit: GridTradeClient = botExchange === 'bithumb'
+        ? new BithumbClient({ accessKey: credential.apiKey, secretKey: credential.secretKey })
+        : new UpbitService({ accessKey: credential.apiKey, secretKey: credential.secretKey });
 
       // 4. 단건 주문 조회 (API 1회)
-      const order = await upbit.getOrder(grid.orderId);
+      const order = await (upbit as any).getOrder(grid.orderId);
 
       if (order.state === 'done') {
         // 5. 체결 처리
-        await this.processFilledOrder(grid, order, upbit, grid.bot.userId);
+        await this.processFilledOrder(grid, order, upbit, grid.bot.userId, botExchange);
         return true;
       } else if (order.state === 'cancel') {
         // 6. 취소된 주문 → available로 복원
@@ -729,8 +770,9 @@ export class TradingService {
   private static async processFilledOrder(
     grid: any,
     order: any,
-    upbit: UpbitService,
-    userId: number
+    upbit: GridTradeClient,
+    userId: number,
+    exchange: string = 'upbit'
   ) {
     const botId = grid.botId;
     const processStartTime = Date.now(); // 처리 시작 시간 기록
@@ -780,7 +822,7 @@ export class TradingService {
 
     // 수익 계산 (매도 체결 시에만)
     let profit = 0;
-    const UPBIT_FEE_RATE = 0.0005;
+    const feeRate = getFeeRate(exchange);
 
     if (grid.type === 'sell' && grid.buyPrice) {
       const buyPrice = grid.buyPrice;
@@ -789,9 +831,9 @@ export class TradingService {
       const volume = parseFloat(order.executed_volume);
 
       const buyAmount = volume * buyPrice;
-      const buyFee = buyAmount * UPBIT_FEE_RATE;
+      const buyFee = buyAmount * feeRate;
       const sellAmount = volume * sellPrice;
-      const sellFee = sellAmount * UPBIT_FEE_RATE;
+      const sellFee = sellAmount * feeRate;
 
       profit = sellAmount - buyAmount - buyFee - sellFee;
       console.log(`[Trading] Bot ${botId}: 매도 체결 - 매수가 ${buyPrice}원, 매도가 ${sellPrice}원, 수익 ${profit.toFixed(2)}원`);
@@ -808,7 +850,7 @@ export class TradingService {
 
     // 월별 수익 기록
     if (grid.type === 'sell' && profit !== 0) {
-      await ProfitService.recordProfit(userId, 'upbit', profit);
+      await ProfitService.recordProfit(userId, exchange as any, profit);
     }
 
     // 실제 체결가 및 체결량 추출
@@ -900,16 +942,28 @@ export class TradingService {
 
       // 잔고 업데이트 소켓 전송 (체결 후 실시간 잔고 갱신)
       try {
-        const accounts = await upbit.getAccounts();
-        const krwAccount = accounts.find((acc: any) => acc.currency === 'KRW');
-        if (krwAccount) {
-          const availableBalance = parseFloat(krwAccount.balance);
-          const lockedBalance = parseFloat(krwAccount.locked);
-          socketService.emitBalanceUpdate(userId, {
-            availableBalance,
-            lockedBalance,
-            totalBalance: availableBalance + lockedBalance,
-          });
+        if (exchange === 'bithumb') {
+          const balances = await (upbit as BithumbClient).getBalances();
+          const krw = balances['KRW'];
+          if (krw) {
+            socketService.emitBalanceUpdate(userId, {
+              availableBalance: krw.available,
+              lockedBalance: krw.locked,
+              totalBalance: krw.available + krw.locked,
+            });
+          }
+        } else {
+          const accounts = await (upbit as UpbitService).getAccounts();
+          const krwAccount = accounts.find((acc: any) => acc.currency === 'KRW');
+          if (krwAccount) {
+            const availableBalance = parseFloat(krwAccount.balance);
+            const lockedBalance = parseFloat(krwAccount.locked);
+            socketService.emitBalanceUpdate(userId, {
+              availableBalance,
+              lockedBalance,
+              totalBalance: availableBalance + lockedBalance,
+            });
+          }
         }
       } catch (balanceError: any) {
         console.error(`[Trading] Bot ${botId}: 잔고 업데이트 소켓 전송 실패:`, balanceError.message);
@@ -924,7 +978,7 @@ export class TradingService {
             id: botId,
             ticker: botInfo.ticker,
             orderAmount: botInfo.orderAmount,
-          }, grid);
+          }, grid, 0, exchange);
         } else {
           console.log(`[Trading] Bot ${botId}: botInfo를 찾을 수 없어 반대 주문 실행 불가`);
         }
@@ -954,12 +1008,11 @@ export class TradingService {
       const cachedCred = await this.getCachedCredential(botId);
       if (!cachedCred) return;
 
-      const { apiKey, secretKey, userId } = cachedCred;
+      const { apiKey, secretKey, userId, exchange: botExchange } = cachedCred;
 
-      const upbit = new UpbitService({
-        accessKey: apiKey,
-        secretKey: secretKey,
-      });
+      const upbit: GridTradeClient = botExchange === 'bithumb'
+        ? new BithumbClient({ accessKey: apiKey, secretKey })
+        : new UpbitService({ accessKey: apiKey, secretKey });
 
       // orderId가 있는 그리드들만 필터링
       const gridsWithOrderId = pendingGrids.filter(g => g.orderId);
@@ -1002,7 +1055,7 @@ export class TradingService {
 
           // 수익 계산 (매도 체결 시에만, 수수료 포함)
           let profit = 0;
-          const UPBIT_FEE_RATE = 0.0005;
+          const feeRate = getFeeRate(botExchange);
 
           if (grid.type === 'sell' && grid.buyPrice) {
             const buyPrice = grid.buyPrice;
@@ -1011,9 +1064,9 @@ export class TradingService {
             const volume = parseFloat(order.executed_volume);
 
             const buyAmount = volume * buyPrice;
-            const buyFee = buyAmount * UPBIT_FEE_RATE;
+            const buyFee = buyAmount * feeRate;
             const sellAmount = volume * sellPrice;
-            const sellFee = sellAmount * UPBIT_FEE_RATE;
+            const sellFee = sellAmount * feeRate;
 
             profit = sellAmount - buyAmount - buyFee - sellFee;
             console.log(`[Trading] Bot ${botId}: 매도 체결 - 매수가 ${buyPrice}원, 매도가 ${sellPrice}원, 수량 ${volume}, 수익 ${profit.toFixed(2)}원`);
@@ -1030,7 +1083,7 @@ export class TradingService {
 
           // 월별 수익 기록 (매도 체결 시에만)
           if (grid.type === 'sell' && profit !== 0) {
-            await ProfitService.recordProfit(userId, 'upbit', profit);
+            await ProfitService.recordProfit(userId, botExchange as any, profit);
           }
 
           // 실제 체결가 및 체결량 추출
@@ -1091,7 +1144,7 @@ export class TradingService {
                   id: botId,
                   ticker: botInfo.ticker,
                   orderAmount: botInfo.orderAmount,
-                }, grid);
+                }, grid, 0, botExchange);
               }
             }
           }
@@ -1109,18 +1162,24 @@ export class TradingService {
    * 현재가 기준 가까운 N개만 유지하고 나머지 취소
    */
   private static async trimBuyOrdersOnInsufficientBalance(
-    upbit: UpbitService,
+    upbit: GridTradeClient,
     botId: number,
     ticker: string,
-    keepCount: number = 7
+    keepCount: number = 7,
+    exchange: string = 'upbit'
   ): Promise<{ cancelled: number; kept: number }> {
     try {
       console.log(`[Trading] Bot ${botId}: 잔고 부족으로 매수 주문 정리 시작 (유지할 주문: ${keepCount}개)`);
 
-      // 1. 현재가 조회
-      const market = `KRW-${ticker}`;
-      const tickerData = await UpbitService.getCurrentPrice(market);
-      const currentPrice = tickerData.trade_price;
+      // 1. 현재가 조회 (거래소별)
+      const market = ticker.startsWith('KRW-') ? ticker : `KRW-${ticker.replace('KRW-', '')}`;
+      let currentPrice: number;
+      if (exchange === 'bithumb') {
+        currentPrice = await bithumbPriceManager.getPriceWithFallback(market);
+      } else {
+        const tickerData = await UpbitService.getCurrentPrice(market);
+        currentPrice = tickerData.trade_price;
+      }
       console.log(`[Trading] Bot ${botId}: 현재가 ${currentPrice.toLocaleString()}원`);
 
       // 2. 미체결 매수 주문 조회 (pending 상태, buy 타입, orderId 있는 것)
@@ -1204,10 +1263,11 @@ export class TradingService {
 
   // 체결 후 즉시 반대 주문 실행
   private static async executeOppositeOrder(
-    upbit: UpbitService,
+    upbit: GridTradeClient,
     bot: { id: number; ticker: string; orderAmount: number },
     filledGrid: { id: number; type: string; price: number; sellPrice: number | null; buyPrice: number | null; botId: number; _processStartTime?: number; _actualFilledAt?: Date },
-    retryCount: number = 0
+    retryCount: number = 0,
+    exchange: string = 'upbit'
   ): Promise<void> {
     const MAX_RETRIES = 3;
     const oppositeOrderStartTime = Date.now();
@@ -1479,7 +1539,7 @@ export class TradingService {
         console.log(`[Trading] Bot ${bot.id}: ${delay/1000}초 후 반대 주문 재시도 (${retryCount + 1}/${MAX_RETRIES})...`);
 
         await new Promise(resolve => setTimeout(resolve, delay));
-        return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1);
+        return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1, exchange);
       }
 
       // 잔고 부족 에러: 원거리 매수 주문 정리 후 재시도
@@ -1490,14 +1550,15 @@ export class TradingService {
           upbit,
           bot.id,
           bot.ticker,
-          7 // 현재가 기준 7개만 유지
+          7, // 현재가 기준 7개만 유지
+          exchange
         );
 
         // 주문 정리 후 재시도 (한 번만)
         if (result.cancelled > 0 && retryCount === 0) {
           console.log(`[Trading] Bot ${bot.id}: 주문 정리 완료, 매수 주문 재시도`);
           await new Promise(resolve => setTimeout(resolve, 2000)); // 2초 대기
-          return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1);
+          return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1, exchange);
         }
 
         // 정리해도 실패하면 에러 저장

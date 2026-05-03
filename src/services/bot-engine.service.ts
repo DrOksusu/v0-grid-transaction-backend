@@ -1,6 +1,7 @@
 import prisma, { withRetry } from '../config/database';
 import { TradingService } from './trading.service';
 import { priceManager } from './upbit-price-manager';
+import { bithumbPriceManager } from './bithumb-grid-price-manager';
 import { socketService } from './socket.service';
 import { calculateBuyPrices } from './grid.service';
 import { UpbitService } from './upbit.service';
@@ -79,27 +80,39 @@ class BotEngine {
   // PriceManager 초기화 및 실행 중인 봇 티커 구독
   private async initializePriceManager() {
     try {
-      // WebSocket 연결
+      // 업비트 WebSocket 연결
       priceManager.connect();
+      // 빗썸 REST 폴링 시작
+      bithumbPriceManager.connect();
 
-      // 대시보드 기본 종목 (항상 구독)
+      // 대시보드 기본 종목 (항상 업비트 구독)
       const defaultTickers = ['KRW-BTC', 'KRW-ETH', 'KRW-USDT'];
 
-      // 실행 중인 봇들의 티커 조회 (Soft delete 제외)
+      // 실행 중인 봇들의 티커 + 거래소 조회 (Soft delete 제외)
       const runningBots = await withRetry(
         () => prisma.bot.findMany({
           where: { status: 'running', deletedAt: null },
-          select: { ticker: true },
+          select: { ticker: true, exchange: true },
         }),
         { operationName: 'BotEngine.initializePriceManager' }
       );
 
-      // 기본 종목 + 봇 종목 합쳐서 유니크하게 구독
-      const allTickers = [...new Set([...defaultTickers, ...runningBots.map(bot => bot.ticker)])];
-      console.log(`[BotEngine] Subscribing to ${allTickers.length} tickers via WebSocket (including dashboard defaults)`);
+      // 거래소별로 분리하여 구독
+      const upbitTickers = [...new Set([
+        ...defaultTickers,
+        ...runningBots.filter(b => b.exchange !== 'bithumb').map(b => b.ticker),
+      ])];
+      const bithumbTickers = [...new Set(
+        runningBots.filter(b => b.exchange === 'bithumb').map(b => b.ticker),
+      )];
 
-      for (const ticker of allTickers) {
+      console.log(`[BotEngine] 업비트 구독: ${upbitTickers.length}개, 빗썸 구독: ${bithumbTickers.length}개`);
+
+      for (const ticker of upbitTickers) {
         priceManager.subscribe(ticker);
+      }
+      for (const ticker of bithumbTickers) {
+        bithumbPriceManager.subscribe(ticker);
       }
     } catch (error: any) {
       console.error('[BotEngine] Failed to initialize PriceManager:', error.message);
@@ -161,26 +174,32 @@ class BotEngine {
     this.pendingGridCache.clear();
     this.crossCheckCooldown.clear();
 
-    // PriceManager WebSocket 연결 종료
+    // PriceManager 연결 종료
     priceManager.disconnect();
+    bithumbPriceManager.disconnect();
 
     this.isRunning = false;
     console.log('Bot engine stopped');
   }
 
   // 봇 시작 시 티커 구독
-  async onBotStarted(botId: number, userId: number, ticker: string) {
-    priceManager.subscribe(ticker);
-    console.log(`[BotEngine] Bot ${botId} started - subscribed to ${ticker}`);
+  async onBotStarted(botId: number, userId: number, ticker: string, exchange: string = 'upbit') {
+    if (exchange === 'bithumb') {
+      bithumbPriceManager.subscribe(ticker);
+    } else {
+      priceManager.subscribe(ticker);
+    }
+    console.log(`[BotEngine] Bot ${botId} started - subscribed to ${ticker} (${exchange})`);
   }
 
   // 봇 종료 시 티커 구독 해제
-  async onBotStopped(botId: number, userId: number, ticker: string) {
-    // 해당 티커를 사용하는 다른 running 봇이 있는지 확인
+  async onBotStopped(botId: number, userId: number, ticker: string, exchange: string = 'upbit') {
+    // 해당 티커+거래소를 사용하는 다른 running 봇이 있는지 확인
     const otherBots = await withRetry(
       () => prisma.bot.count({
         where: {
           ticker,
+          exchange: exchange as any,
           status: 'running',
           id: { not: botId },
         },
@@ -190,24 +209,29 @@ class BotEngine {
 
     // 다른 봇이 없으면 구독 해제
     if (otherBots === 0) {
-      priceManager.unsubscribe(ticker);
+      if (exchange === 'bithumb') {
+        bithumbPriceManager.unsubscribe(ticker);
+      } else {
+        priceManager.unsubscribe(ticker);
+      }
     }
 
     console.log(`[BotEngine] Bot ${botId} stopped`);
   }
 
-  // 봇 시작 시 티커 구독 (하위 호환성)
+  // 봇 시작 시 티커 구독 (하위 호환성 - Upbit 전용)
   subscribeTicker(ticker: string) {
     priceManager.subscribe(ticker);
   }
 
-  // 봇 종료 시 티커 구독 해제 (하위 호환성)
+  // 봇 종료 시 티커 구독 해제 (하위 호환성 - Upbit 전용)
   async unsubscribeTicker(ticker: string) {
-    // 해당 티커를 사용하는 다른 running 봇이 있는지 확인
+    // 해당 티커를 사용하는 다른 running 업비트 봇이 있는지 확인
     const otherBots = await withRetry(
       () => prisma.bot.count({
         where: {
           ticker,
+          exchange: 'upbit',
           status: 'running',
         },
       }),
@@ -222,7 +246,10 @@ class BotEngine {
 
   // PriceManager 상태 조회
   getPriceManagerStatus() {
-    return priceManager.getConnectionStatus();
+    return {
+      upbit: priceManager.getConnectionStatus(),
+      bithumb: bithumbPriceManager.getConnectionStatus(),
+    };
   }
 
   // pending 그리드 캐시 갱신 (티커별로 정리)

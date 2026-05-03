@@ -5,6 +5,7 @@ import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { priceManager } from '../services/upbit-price-manager';
 import { binancePriceManager } from '../services/binance-price-manager';
+import { bithumbPriceManager } from '../services/bithumb-grid-price-manager';
 
 // 티커 캐시 (메모리 캐시, 5분간 유효)
 let tickerCache: {
@@ -115,7 +116,7 @@ export const getPrice = async (
   try {
     const { exchange, ticker } = req.params;
 
-    if (exchange !== 'upbit' && exchange !== 'binance') {
+    if (exchange !== 'upbit' && exchange !== 'binance' && exchange !== 'bithumb') {
       return errorResponse(
         res,
         'INVALID_EXCHANGE',
@@ -133,6 +134,21 @@ export const getPrice = async (
 
     if (cached && (now - cached.timestamp) < PRICE_CACHE_TTL) {
       return successResponse(res, cached.data);
+    }
+
+    if (exchange === 'bithumb') {
+      const price = await bithumbPriceManager.getPriceWithFallback(ticker);
+      priceData = {
+        ticker,
+        currentPrice: price,
+        change24h: 0,
+        volume24h: 0,
+        high24h: 0,
+        low24h: 0,
+        timestamp: new Date().toISOString(),
+      };
+      priceCache.set(cacheKey, { data: priceData, timestamp: now });
+      return successResponse(res, priceData);
     }
 
     if (exchange === 'upbit') {
