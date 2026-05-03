@@ -73,12 +73,14 @@ export class BithumbClient implements ExchangeClient {
     console.log('[BithumbSign] hex-base64 len:', sign1.length, 'binary-base64 len:', sign2.length);
     const sign = this.signMode === 'binary-base64' ? sign2 : sign1;
     try {
+      console.log('[BithumbReq]', { endpoint, body: bodyStr, nonceLen: nonce.length, signLen: sign.length });
       const response = await axios.post(`${BITHUMB_API_URL}${endpoint}`, bodyStr, {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Api-Key': this.creds.accessKey,
           'Api-Nonce': nonce,
           'Api-Sign': sign,
+          'Api-Client-Type': '0',
         },
         timeout: TIMEOUT_MS,
       });
