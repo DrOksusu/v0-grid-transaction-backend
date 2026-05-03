@@ -390,13 +390,32 @@ export const testBithumbConnection = async (
     }
     console.log('[BithumbTest] serverOutboundIp:', serverIp);
 
-    const client = new BithumbClient({
-      accessKey: rawAccess.trim(),
-      secretKey: rawSecret.trim(),
-    });
-
-    const balances = await client.getBalances();
-    const krw = balances['KRW'];
+    // Secret Key 형식 진단: raw 키로 먼저 시도, 5300 실패 시 base64 디코딩 후 재시도
+    let balances: Record<string, any>;
+    let keyFormat = 'raw';
+    try {
+      const client = new BithumbClient({
+        accessKey: rawAccess.trim(),
+        secretKey: rawSecret.trim(),
+      });
+      balances = await client.getBalances();
+    } catch (firstErr: any) {
+      const is5300 = firstErr.message?.includes('5300') || firstErr.message?.includes('Invalid Apikey');
+      if (is5300) {
+        const decodedSecret = Buffer.from(rawSecret.trim(), 'base64').toString('utf-8');
+        console.log('[BithumbTest] raw key 실패(5300), base64 디코딩 시도. 디코딩 후 len:', decodedSecret.length);
+        const client2 = new BithumbClient({
+          accessKey: rawAccess.trim(),
+          secretKey: decodedSecret,
+        });
+        balances = await client2.getBalances();
+        keyFormat = 'base64-decoded';
+        console.log('[BithumbTest] base64 디코딩 키로 성공!');
+      } else {
+        throw firstErr;
+      }
+    }
+    const krw = balances!['KRW'];
 
     // lastValidatedAt 갱신
     await prisma.credential.update({
@@ -410,6 +429,7 @@ export const testBithumbConnection = async (
       krwLocked: krw?.locked ?? 0,
       lastValidatedAt: new Date(),
       serverIp,
+      keyFormat,
     }, '빗썸 연결 성공');
   } catch (error: any) {
     console.error('Bithumb connection test error:', error);
