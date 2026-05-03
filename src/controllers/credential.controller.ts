@@ -1,4 +1,5 @@
 import { Response, NextFunction } from 'express';
+import axios from 'axios';
 import prisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { encrypt, decrypt, maskApiKey } from '../utils/encryption';
@@ -379,6 +380,16 @@ export const testBithumbConnection = async (
       hasWhitespace: /\s/.test(rawSecret),
     });
 
+    // 서버 아웃바운드 IP 확인 (IP 화이트리스트 진단용)
+    let serverIp = 'unknown';
+    try {
+      const ipRes = await axios.get('https://api.ipify.org?format=json', { timeout: 3000 });
+      serverIp = ipRes.data?.ip ?? 'unknown';
+    } catch {
+      serverIp = 'fetch-failed';
+    }
+    console.log('[BithumbTest] serverOutboundIp:', serverIp);
+
     const client = new BithumbClient({
       accessKey: rawAccess.trim(),
       secretKey: rawSecret.trim(),
@@ -398,6 +409,7 @@ export const testBithumbConnection = async (
       krwAvailable: krw?.available ?? 0,
       krwLocked: krw?.locked ?? 0,
       lastValidatedAt: new Date(),
+      serverIp,
     }, '빗썸 연결 성공');
   } catch (error: any) {
     console.error('Bithumb connection test error:', error);
