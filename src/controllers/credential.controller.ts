@@ -5,6 +5,7 @@ import { encrypt, decrypt, maskApiKey } from '../utils/encryption';
 import { AuthRequest } from '../types';
 import { getUpbitApiKeyInfo } from '../utils/upbit';
 import { UpbitService } from '../services/upbit.service';
+import { BithumbClient } from '../services/exchange/bithumb-client';
 
 export const createCredential = async (
   req: AuthRequest,
@@ -342,6 +343,54 @@ export const getUpbitBalance = async (
       res,
       'UPBIT_API_ERROR',
       error.message || '업비트 잔고 조회 실패',
+      500
+    );
+  }
+};
+
+// 빗썸 API 연결 테스트 (잔고 조회로 인증 검증)
+export const testBithumbConnection = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+
+    const credential = await prisma.credential.findFirst({
+      where: { userId, exchange: 'bithumb' as any },
+    });
+
+    if (!credential) {
+      return errorResponse(res, 'CREDENTIAL_NOT_FOUND', '빗썸 인증 정보를 찾을 수 없습니다', 404);
+    }
+
+    const client = new BithumbClient({
+      accessKey: decrypt(credential.apiKey),
+      secretKey: decrypt(credential.secretKey),
+    });
+
+    const balances = await client.getBalances();
+    const krw = balances['KRW'];
+
+    // lastValidatedAt 갱신
+    await prisma.credential.update({
+      where: { id: credential.id },
+      data: { isValid: true, lastValidatedAt: new Date() },
+    });
+
+    return successResponse(res, {
+      connected: true,
+      krwAvailable: krw?.available ?? 0,
+      krwLocked: krw?.locked ?? 0,
+      lastValidatedAt: new Date(),
+    }, '빗썸 연결 성공');
+  } catch (error: any) {
+    console.error('Bithumb connection test error:', error);
+    return errorResponse(
+      res,
+      'BITHUMB_API_ERROR',
+      error.message || '빗썸 API 연결 실패',
       500
     );
   }
