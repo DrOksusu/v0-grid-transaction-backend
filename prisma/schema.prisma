@@ -401,6 +401,7 @@ enum Exchange {
   binance
   kis
   bithumb
+  mexc
 }
 
 enum BotStatus {
@@ -586,6 +587,7 @@ model ListingAutoTradeConfig {
   amountKrw  Int      @default(100000)
   useBinance Boolean  @default(true)
   useBithumb Boolean  @default(true)
+  useMexc    Boolean  @default(false)
   updatedAt  DateTime @updatedAt
 
   @@map("listing_auto_trade_config")

@@ -1,4 +1,4 @@
-// 신규상장 자동매수 서비스 (Binance + Bithumb)
+// 신규상장 자동매수 서비스 (Binance + Bithumb + MEXC)
 // 업비트 신규 상장 공지 감지 즉시 시장가 매수
 
 import axios from 'axios';
@@ -14,6 +14,7 @@ interface AutoTradeConfig {
   amountKrw: number;
   useBinance: boolean;
   useBithumb: boolean;
+  useMexc: boolean;
 }
 
 interface OrderResult {
@@ -25,33 +26,46 @@ interface OrderResult {
   errorMsg?: string;
 }
 
-// ── Binance HMAC-SHA256 서명 ──────────────────────────────────────────────────
+// ── 공통 HMAC-SHA256 서명 (Binance / MEXC 동일 방식) ────────────────────────
 
-function binanceSign(secretKey: string, params: Record<string, string>): string {
-  const qs = new URLSearchParams(params).toString();
-  return crypto.createHmac('sha256', secretKey).update(qs).digest('hex');
+function hmacSign(secretKey: string, params: Record<string, string>): string {
+  return crypto.createHmac('sha256', secretKey).update(new URLSearchParams(params).toString()).digest('hex');
 }
 
-async function binanceSignedGet(apiKey: string, secretKey: string, endpoint: string, params: Record<string, string> = {}) {
+async function signedGet(
+  baseUrl: string,
+  apiKeyHeader: string,
+  apiKey: string,
+  secretKey: string,
+  endpoint: string,
+  params: Record<string, string> = {},
+) {
   const timestamp = Date.now().toString();
   const allParams = { ...params, timestamp };
-  const signature = binanceSign(secretKey, allParams);
+  const signature = hmacSign(secretKey, allParams);
   const qs = new URLSearchParams({ ...allParams, signature }).toString();
-  const res = await axios.get(`https://api.binance.com${endpoint}?${qs}`, {
-    headers: { 'X-MBX-APIKEY': apiKey },
+  const res = await axios.get(`${baseUrl}${endpoint}?${qs}`, {
+    headers: { [apiKeyHeader]: apiKey },
     timeout: 10000,
   });
   return res.data;
 }
 
-async function binanceSignedPost(apiKey: string, secretKey: string, endpoint: string, params: Record<string, string>) {
+async function signedPost(
+  baseUrl: string,
+  apiKeyHeader: string,
+  apiKey: string,
+  secretKey: string,
+  endpoint: string,
+  params: Record<string, string>,
+) {
   const timestamp = Date.now().toString();
   const allParams = { ...params, timestamp };
-  const signature = binanceSign(secretKey, allParams);
+  const signature = hmacSign(secretKey, allParams);
   const body = new URLSearchParams({ ...allParams, signature });
-  const res = await axios.post(`https://api.binance.com${endpoint}`, body.toString(), {
+  const res = await axios.post(`${baseUrl}${endpoint}`, body.toString(), {
     headers: {
-      'X-MBX-APIKEY': apiKey,
+      [apiKeyHeader]: apiKey,
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     timeout: 10000,
@@ -59,19 +73,23 @@ async function binanceSignedPost(apiKey: string, secretKey: string, endpoint: st
   return res.data;
 }
 
+const BINANCE = { baseUrl: 'https://api.binance.com', apiKeyHeader: 'X-MBX-APIKEY' };
+const MEXC = { baseUrl: 'https://api.mexc.com', apiKeyHeader: 'X-MEXC-APIKEY' };
+
 // ── 설정 관리 ──────────────────────────────────────────────────────────────────
 
 class ListingAutoTraderService {
   async getConfig(): Promise<AutoTradeConfig> {
     const row = await (prisma as any).listingAutoTradeConfig.findUnique({ where: { id: 1 } });
     if (!row) {
-      return { enabled: false, amountKrw: 100000, useBinance: true, useBithumb: true };
+      return { enabled: false, amountKrw: 100000, useBinance: true, useBithumb: true, useMexc: false };
     }
     return {
       enabled: row.enabled,
       amountKrw: row.amountKrw,
       useBinance: row.useBinance,
       useBithumb: row.useBithumb,
+      useMexc: row.useMexc ?? false,
     };
   }
 
@@ -83,6 +101,7 @@ class ListingAutoTraderService {
         amountKrw: data.amountKrw ?? 100000,
         useBinance: data.useBinance ?? true,
         useBithumb: data.useBithumb ?? true,
+        useMexc: data.useMexc ?? false,
       },
       update: data,
     });
@@ -91,6 +110,7 @@ class ListingAutoTraderService {
       amountKrw: row.amountKrw,
       useBinance: row.useBinance,
       useBithumb: row.useBithumb,
+      useMexc: row.useMexc ?? false,
     };
   }
 
@@ -101,7 +121,7 @@ class ListingAutoTraderService {
     if (!cred) return { hasKey: false, permissions: [], canSpot: false, error: 'Binance 인증정보 없음 (userId=2)' };
 
     try {
-      const data = await binanceSignedGet(cred.apiKey, cred.secretKey, '/api/v3/account');
+      const data = await signedGet(BINANCE.baseUrl, BINANCE.apiKeyHeader, cred.apiKey, cred.secretKey, '/api/v3/account');
       const permissions: string[] = data.permissions ?? [];
       return {
         hasKey: true,
@@ -123,6 +143,7 @@ class ListingAutoTraderService {
     const results = await Promise.allSettled([
       config.useBinance ? this.buyOnBinance(announcementId, ticker, config.amountKrw) : null,
       config.useBithumb ? this.buyOnBithumb(announcementId, ticker, config.amountKrw) : null,
+      config.useMexc ? this.buyOnMexc(announcementId, ticker, config.amountKrw) : null,
     ]);
 
     const orders: OrderResult[] = [];
@@ -168,7 +189,7 @@ class ListingAutoTraderService {
       const krwPerUsdt = await this.fetchKrwPerUsdt();
       const usdtAmount = Math.floor((amountKrw / krwPerUsdt) * 100) / 100; // 소수점 2자리
 
-      const data = await binanceSignedPost(cred.apiKey, cred.secretKey, '/api/v3/order', {
+      const data = await signedPost(BINANCE.baseUrl, BINANCE.apiKeyHeader, cred.apiKey, cred.secretKey, '/api/v3/order', {
         symbol: `${ticker}USDT`,
         side: 'BUY',
         type: 'MARKET',
@@ -229,6 +250,52 @@ class ListingAutoTraderService {
     }
   }
 
+  // ── Private: MEXC 시장가 매수 ─────────────────────────────────────────────
+
+  private async buyOnMexc(announcementId: number, ticker: string, amountKrw: number): Promise<OrderResult> {
+    const exchange = 'mexc';
+    const existing = await (prisma as any).listingAutoOrder.findUnique({
+      where: { announcementId_exchange: { announcementId, exchange } },
+    });
+    if (existing) return { exchange, status: 'skipped', amountKrw, orderId: existing.orderId };
+
+    const dbRow = await (prisma as any).listingAutoOrder.create({
+      data: { announcementId, exchange, ticker, amountKrw, status: 'pending' },
+    });
+
+    const cred = await this.getMexcCreds();
+    if (!cred) {
+      await this.updateOrderFailed(dbRow.id, 'MEXC 인증정보 없음');
+      return { exchange, status: 'failed', amountKrw, errorMsg: 'MEXC 인증정보 없음' };
+    }
+
+    try {
+      const krwPerUsdt = await this.fetchKrwPerUsdt();
+      const usdtAmount = Math.floor((amountKrw / krwPerUsdt) * 100) / 100;
+
+      const data = await signedPost(MEXC.baseUrl, MEXC.apiKeyHeader, cred.apiKey, cred.secretKey, '/api/v3/order', {
+        symbol: `${ticker}USDT`,
+        side: 'BUY',
+        type: 'MARKET',
+        quoteOrderQty: usdtAmount.toFixed(2),
+      });
+
+      const orderId = String(data.orderId ?? '');
+      const filledQty = parseFloat(data.executedQty ?? '0');
+      const filledPrice = filledQty > 0 ? usdtAmount / filledQty : 0;
+
+      await (prisma as any).listingAutoOrder.update({
+        where: { id: dbRow.id },
+        data: { orderId, amountUsdt: usdtAmount, status: 'filled', filledQty, filledPrice },
+      });
+      return { exchange, status: 'filled', orderId, amountKrw, amountUsdt: usdtAmount };
+    } catch (err: any) {
+      const msg = err?.response?.data?.msg ?? err.message;
+      await this.updateOrderFailed(dbRow.id, msg);
+      return { exchange, status: 'failed', amountKrw, errorMsg: msg };
+    }
+  }
+
   // ── Private: 헬퍼 ────────────────────────────────────────────────────────
 
   private async getBinanceCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
@@ -243,6 +310,15 @@ class ListingAutoTraderService {
   private async getBithumbCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
     const row = await prisma.credential.findFirst({
       where: { userId: ADMIN_USER_ID, exchange: 'bithumb' },
+      select: { apiKey: true, secretKey: true },
+    });
+    if (!row) return null;
+    return { apiKey: decrypt(row.apiKey), secretKey: decrypt(row.secretKey) };
+  }
+
+  private async getMexcCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
+    const row = await prisma.credential.findFirst({
+      where: { userId: ADMIN_USER_ID, exchange: 'mexc' as any },
       select: { apiKey: true, secretKey: true },
     });
     if (!row) return null;
