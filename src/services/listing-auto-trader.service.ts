@@ -51,6 +51,7 @@ async function signedGet(
   return res.data;
 }
 
+// paramsInBody: Binance = true (body), MEXC = false (querystring)
 async function signedPost(
   baseUrl: string,
   apiKeyHeader: string,
@@ -58,23 +59,31 @@ async function signedPost(
   secretKey: string,
   endpoint: string,
   params: Record<string, string>,
+  paramsInBody = true,
 ) {
   const timestamp = Date.now().toString();
   const allParams = { ...params, timestamp };
   const signature = hmacSign(secretKey, allParams);
-  const body = new URLSearchParams({ ...allParams, signature });
-  const res = await axios.post(`${baseUrl}${endpoint}`, body.toString(), {
-    headers: {
-      [apiKeyHeader]: apiKey,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    timeout: 10000,
-  });
-  return res.data;
+  const qs = new URLSearchParams({ ...allParams, signature }).toString();
+
+  if (paramsInBody) {
+    const res = await axios.post(`${baseUrl}${endpoint}`, qs, {
+      headers: { [apiKeyHeader]: apiKey, 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 10000,
+    });
+    return res.data;
+  } else {
+    // MEXC: 파라미터를 querystring으로 전달, body 없음
+    const res = await axios.post(`${baseUrl}${endpoint}?${qs}`, null, {
+      headers: { [apiKeyHeader]: apiKey },
+      timeout: 10000,
+    });
+    return res.data;
+  }
 }
 
-const BINANCE = { baseUrl: 'https://api.binance.com', apiKeyHeader: 'X-MBX-APIKEY' };
-const MEXC = { baseUrl: 'https://api.mexc.com', apiKeyHeader: 'X-MEXC-APIKEY' };
+const BINANCE = { baseUrl: 'https://api.binance.com', apiKeyHeader: 'X-MBX-APIKEY', paramsInBody: true };
+const MEXC = { baseUrl: 'https://api.mexc.com', apiKeyHeader: 'X-MEXC-APIKEY', paramsInBody: false };
 
 // ── 설정 관리 ──────────────────────────────────────────────────────────────────
 
@@ -194,7 +203,7 @@ class ListingAutoTraderService {
         side: 'BUY',
         type: 'MARKET',
         quoteOrderQty: usdtAmount.toFixed(2),
-      });
+      }, BINANCE.paramsInBody);
 
       const orderId = String(data.orderId ?? '');
       const filledQty = parseFloat(data.executedQty ?? '0');
@@ -278,7 +287,7 @@ class ListingAutoTraderService {
         side: 'BUY',
         type: 'MARKET',
         quoteOrderQty: usdtAmount.toFixed(2),
-      });
+      }, MEXC.paramsInBody);
 
       const orderId = String(data.orderId ?? '');
       const filledQty = parseFloat(data.executedQty ?? '0');
