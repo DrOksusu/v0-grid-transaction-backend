@@ -3,6 +3,7 @@
 
 import axios from 'axios';
 import crypto from 'crypto';
+import https from 'https';
 import prisma from '../config/database';
 import { decrypt } from '../utils/encryption';
 import { BithumbClient } from './exchange/bithumb-client';
@@ -74,9 +75,15 @@ async function signedPost(
     return res.data;
   } else {
     // MEXC: 파라미터를 querystring으로 전달, body 없음
+    // axios가 body=null이어도 Content-Type을 자동 추가하므로 명시적으로 제거
     const res = await axios.post(`${baseUrl}${endpoint}?${qs}`, null, {
-      headers: { [apiKeyHeader]: apiKey },
+      headers: { [apiKeyHeader]: apiKey, 'Content-Type': undefined },
       timeout: 10000,
+      transformRequest: [(data: any, headers: any) => {
+        delete headers['Content-Type'];
+        delete headers['content-type'];
+        return data;
+      }],
     });
     return res.data;
   }
@@ -84,6 +91,44 @@ async function signedPost(
 
 const BINANCE = { baseUrl: 'https://api.binance.com', apiKeyHeader: 'X-MBX-APIKEY', paramsInBody: true };
 const MEXC = { baseUrl: 'https://api.mexc.com', apiKeyHeader: 'X-MEXC-APIKEY', paramsInBody: false };
+
+// MEXC POST: axios가 Content-Type을 강제 추가하므로 Node.js https 모듈 직접 사용
+function mexcPost(apiKey: string, secretKey: string, endpoint: string, params: Record<string, string>): Promise<any> {
+  const timestamp = Date.now().toString();
+  const allParams = { ...params, timestamp };
+  const signature = hmacSign(secretKey, allParams);
+  const qs = new URLSearchParams({ ...allParams, signature }).toString();
+
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'api.mexc.com',
+      path: `${endpoint}?${qs}`,
+      method: 'POST',
+      headers: { 'X-MEXC-APIKEY': apiKey },
+      timeout: 10000,
+    }, (res) => {
+      let data = '';
+      res.on('data', (c: string) => data += c);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (res.statusCode && res.statusCode >= 400) {
+            const err: any = new Error(parsed.msg ?? 'MEXC 오류');
+            err.response = { data: parsed };
+            reject(err);
+          } else {
+            resolve(parsed);
+          }
+        } catch {
+          reject(new Error(`MEXC 파싱 실패: ${data}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('MEXC timeout')); });
+    req.end();
+  });
+}
 
 // ── 설정 관리 ──────────────────────────────────────────────────────────────────
 
@@ -282,12 +327,12 @@ class ListingAutoTraderService {
       const krwPerUsdt = await this.fetchKrwPerUsdt();
       const usdtAmount = Math.floor((amountKrw / krwPerUsdt) * 100) / 100;
 
-      const data = await signedPost(MEXC.baseUrl, MEXC.apiKeyHeader, cred.apiKey, cred.secretKey, '/api/v3/order', {
+      const data = await mexcPost(cred.apiKey, cred.secretKey, '/api/v3/order', {
         symbol: `${ticker}USDT`,
         side: 'BUY',
         type: 'MARKET',
         quoteOrderQty: usdtAmount.toFixed(2),
-      }, MEXC.paramsInBody);
+      });
 
       const orderId = String(data.orderId ?? '');
       const filledQty = parseFloat(data.executedQty ?? '0');
