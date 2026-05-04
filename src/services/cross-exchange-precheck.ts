@@ -2,6 +2,8 @@ import { OrderbookSnapshot, isSpreadProfitable } from './cross-exchange-spread-g
 
 export interface PrecheckBotConfig {
   coin: string;
+  /** 이종 코인 거래 시 매도측 코인. null 이면 coin 으로 fallback. */
+  sellCoin?: string;
   quantity: number;
   minSpreadBps: number;
   depegMinKrw: number;
@@ -81,7 +83,9 @@ export function runAll(args: PrecheckArgs): PrecheckResult {
 
   // 4단계: 잔고 검증 (매수측 KRW + 매도측 코인)
   // 매수는 한쪽 거래소에서만 발생 → 방향별 buy-side ask만 사용. 10% 안전 마진 곱함.
+  // sellCoin: 이종 코인 거래 시 매도측 코인 (null이면 coin 사용)
   const { coin, quantity } = args.bot;
+  const sellCoin = args.bot.sellCoin ?? coin;
   const buyAsk = args.direction === 'UB' ? args.snapshot.upbitAsk : args.snapshot.bithumbAsk;
   const requiredKrwForBuy = buyAsk * quantity * 1.1;
 
@@ -93,11 +97,11 @@ export function runAll(args: PrecheckArgs): PrecheckResult {
         abortReason: `balance: Upbit KRW ${upbitKrw} < required ${requiredKrwForBuy.toFixed(0)}`,
       };
     }
-    const bithumbCoin = args.balances.bithumb[coin] ?? 0;
+    const bithumbCoin = args.balances.bithumb[sellCoin] ?? 0;
     if (bithumbCoin < quantity) {
       return {
         ok: false,
-        abortReason: `balance: Bithumb ${coin} ${bithumbCoin} < quantity ${quantity}`,
+        abortReason: `balance: Bithumb ${sellCoin} ${bithumbCoin} < quantity ${quantity}`,
       };
     }
   } else {
@@ -108,11 +112,11 @@ export function runAll(args: PrecheckArgs): PrecheckResult {
         abortReason: `balance: Bithumb KRW ${bithumbKrw} < required ${requiredKrwForBuy.toFixed(0)}`,
       };
     }
-    const upbitCoin = args.balances.upbit[coin] ?? 0;
+    const upbitCoin = args.balances.upbit[sellCoin] ?? 0;
     if (upbitCoin < quantity) {
       return {
         ok: false,
-        abortReason: `balance: Upbit ${coin} ${upbitCoin} < quantity ${quantity}`,
+        abortReason: `balance: Upbit ${sellCoin} ${upbitCoin} < quantity ${quantity}`,
       };
     }
   }

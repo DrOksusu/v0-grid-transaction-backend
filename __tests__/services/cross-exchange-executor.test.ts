@@ -176,4 +176,23 @@ describe('cross-exchange executor', () => {
     expect(result.shouldKillSwitch).toBe(true);
     expect(result.failureReason).toMatch(/quantity mismatch/i);
   });
+
+  it('이종 코인 UB — LegA USDT 매수, LegB USDS 매도 → 각 거래소 올바른 코인 주문', async () => {
+    const upbit = mockClient({
+      placeMarketOrder: jest.fn().mockResolvedValue({ orderId: 'U-X', status: 'filled', filledQty: 10, avgFillPrice: 1000, totalFeeKrw: 5 }),
+    });
+    const bithumb = mockClient({
+      exchangeName: 'bithumb',
+      placeMarketOrder: jest.fn().mockResolvedValue({ orderId: 'B-X', status: 'filled', filledQty: 10, avgFillPrice: 1010, totalFeeKrw: 5 }),
+    });
+    const result = await execute({
+      botId: 1, direction: 'UB', coin: 'USDT', buyCoin: 'USDT', sellCoin: 'USDS',
+      quantity: 10, spreadBps: 100, upbit, bithumb,
+    });
+    expect(result.status).toBe('FILLED');
+    // LegA(Upbit)에 USDT로 매수 주문
+    expect((upbit.placeMarketOrder as jest.Mock).mock.calls[0][1]).toBe('USDT');
+    // LegB(Bithumb)에 USDS로 매도 주문
+    expect((bithumb.placeMarketOrder as jest.Mock).mock.calls[0][1]).toBe('USDS');
+  });
 });

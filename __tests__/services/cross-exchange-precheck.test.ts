@@ -100,4 +100,25 @@ describe('cross-exchange precheck — runAll', () => {
     expect(result.abortReason).not.toContain('undefined');
     expect(result.abortReason).toContain('Upbit KRW 0');
   });
+
+  it('이종 코인 UB — sellCoin(USDS)으로 빗썸 잔고 검증', () => {
+    // buyCoin=USDT, sellCoin=USDS 이종 코인 봇 시나리오
+    // 빗썸에 USDS 부족 → balance fail
+    const result = runAll({
+      ...baseArgs,
+      bot: { ...baseArgs.bot, coin: 'USDT', sellCoin: 'USDS', depegMinKrw: 990, depegMaxKrw: 1020 },
+      balances: { upbit: { KRW: 1000000, USDT: 50 }, bithumb: { KRW: 1000000, USDS: 5 } }, // USDS 5 < quantity 10
+    });
+    expect(result.ok).toBe(false);
+    expect(result.abortReason).toMatch(/Bithumb USDS/);
+  });
+
+  it('이종 코인 UB — sellCoin(USDS) 잔고 충분 → ok', () => {
+    const result = runAll({
+      ...baseArgs,
+      bot: { ...baseArgs.bot, coin: 'USDT', sellCoin: 'USDS', depegMinKrw: 990, depegMaxKrw: 1020 },
+      balances: { upbit: { KRW: 1000000, USDT: 50 }, bithumb: { KRW: 1000000, USDS: 50 } },
+    });
+    expect(result.ok).toBe(true);
+  });
 });

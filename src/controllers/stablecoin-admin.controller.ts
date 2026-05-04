@@ -445,6 +445,8 @@ function serializeCrossExchangeBot(bot: any) {
     id: bot.id,
     userId: bot.userId,
     coin: bot.coin,
+    buyCoin: bot.buyCoin ?? null,
+    sellCoin: bot.sellCoin ?? null,
     targetDirection: bot.targetDirection,
     quantity: bot.quantity,
     minSpreadBps: bot.minSpreadBps,
@@ -495,6 +497,8 @@ export const createCrossExchangeBot = async (req: AuthRequest, res: Response, ne
       data: {
         userId,
         coin: body.coin,
+        buyCoin: body.buyCoin ?? null,
+        sellCoin: body.sellCoin ?? null,
         targetDirection: body.targetDirection,
         quantity: body.quantity,
         minSpreadBps: body.minSpreadBps ?? 50,
@@ -529,6 +533,8 @@ export const patchCrossExchangeBot = async (req: AuthRequest, res: Response, nex
     if (body.killSwitch !== undefined) patch.killSwitch = body.killSwitch;
     if (body.minSpreadBps !== undefined) patch.minSpreadBps = body.minSpreadBps;
     if (body.quantity !== undefined) patch.quantity = body.quantity;
+    if (body.buyCoin !== undefined) patch.buyCoin = body.buyCoin;
+    if (body.sellCoin !== undefined) patch.sellCoin = body.sellCoin;
     if (body.depegMinKrw !== undefined) patch.depegMinKrw = body.depegMinKrw;
     if (body.depegMaxKrw !== undefined) patch.depegMaxKrw = body.depegMaxKrw;
     if (body.liquidityMultiplier !== undefined) patch.liquidityMultiplier = body.liquidityMultiplier;

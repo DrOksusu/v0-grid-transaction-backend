@@ -9,6 +9,10 @@ export interface ExecutorArgs {
   botId: number;
   direction: 'UB' | 'BU';
   coin: string;
+  /** LegA 에서 매수할 코인. null 이면 coin 사용. */
+  buyCoin?: string;
+  /** LegB 에서 매도할 코인. null 이면 coin 사용. */
+  sellCoin?: string;
   quantity: number;
   spreadBps: number;
   upbit: ExchangeClient;
@@ -77,13 +81,15 @@ export async function execute(args: ExecutorArgs): Promise<ExecutorResult> {
   const legBClient = isUB ? args.bithumb : args.upbit;
   const legASide: 'buy' | 'sell' = 'buy';
   const legBSide: 'buy' | 'sell' = 'sell';
+  const legACoin = args.buyCoin ?? args.coin;
+  const legBCoin = args.sellCoin ?? args.coin;
   // 매수 거래소의 호가 기반 KRW 금액 (bithumb market_buy는 KRW 기준)
   const legAKrwPerUnit = isUB ? args.upbitAskKrw : args.bithumbAskKrw;
 
   // === LegA: placement ===
   let legAPlaced: PlacedOrder;
   try {
-    legAPlaced = await legAClient.placeMarketOrder(legASide, args.coin, args.quantity, legAKrwPerUnit);
+    legAPlaced = await legAClient.placeMarketOrder(legASide, legACoin, args.quantity, legAKrwPerUnit);
   } catch (err: any) {
     return {
       status: 'LEG_A_FAILED',
@@ -125,7 +131,7 @@ export async function execute(args: ExecutorArgs): Promise<ExecutorResult> {
   // === LegB: placement (LegA가 filled 확정된 후에만) ===
   let legBPlaced: PlacedOrder;
   try {
-    legBPlaced = await legBClient.placeMarketOrder(legBSide, args.coin, args.quantity);
+    legBPlaced = await legBClient.placeMarketOrder(legBSide, legBCoin, args.quantity);
   } catch (err: any) {
     return {
       status: 'LEG_B_FAILED',

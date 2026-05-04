@@ -12,6 +12,8 @@ import { ExchangeClient } from './exchange/exchange-client';
 export interface ReconciliationReport {
   botId: number;
   coin: string;
+  buyCoin?: string;
+  sellCoin?: string;
   sinceSource: 'lastResumeAt' | 'createdAt';
   sinceAt: Date;
   dbFilledCount: number;
@@ -80,6 +82,8 @@ export async function reconcileCrossExchangeBot(
   return {
     botId,
     coin: bot.coin,
+    buyCoin: bot.buyCoin ?? undefined,
+    sellCoin: bot.sellCoin ?? undefined,
     sinceSource,
     sinceAt,
     dbFilledCount,

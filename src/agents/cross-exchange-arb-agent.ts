@@ -143,21 +143,31 @@ export class CrossExchangeArbAgent extends BaseAgent {
     const upbit = this.upbit;
     const bithumb = this.bithumb;
 
-    // 양 거래소 호가 동시 조회 (한쪽만 살아있어도 의미 없음)
-    const [upbitBook, bithumbBook] = await Promise.all([
-      upbit.getOrderbookTop(bot.coin),
-      bithumb.getOrderbookTop(bot.coin),
-    ]);
-    if (!upbitBook || !bithumbBook) return;
+    // 이종 코인 지원: buyCoin/sellCoin null이면 coin 으로 fallback
+    const buyCoin = bot.buyCoin ?? bot.coin;
+    const sellCoin = bot.sellCoin ?? bot.coin;
+    const direction = bot.targetDirection as 'UB' | 'BU';
+    const isUB = direction === 'UB';
 
+    // 양 거래소 호가 동시 조회 — 방향별로 각 거래소에서 해당 코인 가격 조회
+    // UB: Upbit에서 buyCoin 매수, Bithumb에서 sellCoin 매도
+    // BU: Bithumb에서 buyCoin 매수, Upbit에서 sellCoin 매도
+    const [buyExchangeBook, sellExchangeBook] = await Promise.all([
+      isUB ? upbit.getOrderbookTop(buyCoin) : bithumb.getOrderbookTop(buyCoin),
+      isUB ? bithumb.getOrderbookTop(sellCoin) : upbit.getOrderbookTop(sellCoin),
+    ]);
+    if (!buyExchangeBook || !sellExchangeBook) return;
+
+    // OrderbookSnapshot: upbit* = 업비트 측 가격, bithumb* = 빗썸 측 가격
+    // 이종 코인 시 upbit*은 buyCoin(UB) 또는 sellCoin(BU) 가격임 — isSpreadProfitable 계산에는 영향 없음
+    const upbitBook = isUB ? buyExchangeBook : sellExchangeBook;
+    const bithumbBook = isUB ? sellExchangeBook : buyExchangeBook;
     const snapshot: OrderbookSnapshot = {
       upbitBid: upbitBook.bid,
       upbitAsk: upbitBook.ask,
       bithumbBid: bithumbBook.bid,
       bithumbAsk: bithumbBook.ask,
     };
-
-    const direction = bot.targetDirection as 'UB' | 'BU';
 
     // 호가 유효성 + 실제 spread 측정 (minSpreadBps=0 으로 호출 → ok=false 면 호가 자체가 invalid)
     const spreadProbe = isSpreadProfitable(snapshot, direction, 0);
@@ -204,6 +214,7 @@ export class CrossExchangeArbAgent extends BaseAgent {
       direction,
       bot: {
         coin: bot.coin,
+        sellCoin: sellCoin !== bot.coin ? sellCoin : undefined,
         quantity: bot.quantity,
         minSpreadBps: bot.minSpreadBps,
         depegMinKrw: bot.depegMinKrw,
@@ -239,6 +250,8 @@ export class CrossExchangeArbAgent extends BaseAgent {
       botId: bot.id,
       direction,
       coin: bot.coin,
+      buyCoin: buyCoin !== bot.coin ? buyCoin : undefined,
+      sellCoin: sellCoin !== bot.coin ? sellCoin : undefined,
       quantity: bot.quantity,
       spreadBps,
       upbit,
@@ -249,7 +262,6 @@ export class CrossExchangeArbAgent extends BaseAgent {
 
     // direction 으로 leg 거래소/사이드 도출 (executor isUB 매핑과 동일).
     // schema 가 NOT NULL 요구 — result.legA/legB 가 undefined 여도 row 에는 항상 채움.
-    const isUB = direction === 'UB';
     const legAExchange = isUB ? 'upbit' : 'bithumb';
     const legBExchange = isUB ? 'bithumb' : 'upbit';
 
@@ -262,12 +274,14 @@ export class CrossExchangeArbAgent extends BaseAgent {
           spreadBpsAtPlacement: spreadBps,
           legAExchange,
           legASide: 'buy',
+          legACoin: buyCoin,
           legAOrderId: result.legA?.orderId ?? null,
           legAFilledQty: result.legA?.filledQty ?? null,
           legAAvgPrice: result.legA?.avgFillPrice ?? null,
           legAFeeKrw: result.legA?.totalFeeKrw ?? null,
           legBExchange,
           legBSide: 'sell',
+          legBCoin: sellCoin,
           legBOrderId: result.legB?.orderId ?? null,
           legBFilledQty: result.legB?.filledQty ?? null,
           legBAvgPrice: result.legB?.avgFillPrice ?? null,
