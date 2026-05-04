@@ -8,7 +8,12 @@
 
 import WebSocket from 'ws';
 import { socketService } from './socket.service';
-import type { OrderbookTop, OrderbookLevel } from './upbit-price-manager';
+import type { OrderbookTop } from './upbit-price-manager';
+import {
+  subscribeBithumbStablecoinOrderbooks,
+  unsubscribeBithumbStablecoinOrderbooks,
+  getAllBithumbStablecoinOrderbooks,
+} from './bithumb-stablecoin-ws-manager';
 
 // ─────────────────────────────────────────────────────────────
 // 타입 정의
@@ -27,6 +32,8 @@ export interface PairConfig {
   makerFeeRate: number;
   /** taker 수수료율 (예: 0.0005 = 0.05%) */
   takerFeeRate: number;
+  /** 거래소 구분 (기본값: 'upbit') */
+  exchange?: 'upbit' | 'bithumb';
 }
 
 export interface PairStats {
@@ -84,6 +91,11 @@ class PairScannerService {
   // debounce broadcast용 타이머
   private broadcastTimer: NodeJS.Timeout | null = null;
 
+  // 빗썸 주기적 갱신
+  private bithumbRefreshTimer: NodeJS.Timeout | null = null;
+  private bithumbSubscribed = false;
+  private static readonly BITHUMB_REFRESH_INTERVAL = 2000;
+
   // ───────────────────────────────────────────────
   // public API
   // ───────────────────────────────────────────────
@@ -103,6 +115,11 @@ class PairScannerService {
     if (this.pairs.size > 0) {
       this.updateWsSubscription();
     }
+
+    if (this.hasBithumbPairs()) {
+      this.ensureBithumbSubscribed();
+    }
+    this.startBithumbRefresh();
   }
 
   /**
@@ -120,6 +137,11 @@ class PairScannerService {
     if (this.broadcastTimer) {
       clearTimeout(this.broadcastTimer);
       this.broadcastTimer = null;
+    }
+    this.stopBithumbRefresh();
+    if (this.bithumbSubscribed) {
+      unsubscribeBithumbStablecoinOrderbooks();
+      this.bithumbSubscribed = false;
     }
     this.closeWs();
   }
@@ -155,10 +177,15 @@ class PairScannerService {
     }
 
     this.pairs.set(config.name, { ...config });
-    console.log(`[PairScanner] 페어 추가: ${config.name} (maker: KRW-${config.makerCoin.toUpperCase()}, taker: KRW-${config.takerCoin.toUpperCase()})`);
+    const exch = config.exchange ?? 'upbit';
+    console.log(`[PairScanner] 페어 추가: ${config.name} (${exch} maker: ${config.makerCoin.toUpperCase()}, taker: ${config.takerCoin.toUpperCase()})`);
 
     if (this.isActive) {
-      this.updateWsSubscription();
+      if (exch === 'bithumb') {
+        this.ensureBithumbSubscribed();
+      } else {
+        this.updateWsSubscription();
+      }
     }
 
     return { success: true };
@@ -179,6 +206,10 @@ class PairScannerService {
 
     if (this.isActive) {
       this.updateWsSubscription();
+      if (!this.hasBithumbPairs() && this.bithumbSubscribed) {
+        unsubscribeBithumbStablecoinOrderbooks();
+        this.bithumbSubscribed = false;
+      }
     }
 
     return true;
@@ -201,6 +232,71 @@ class PairScannerService {
       stats: this.getStats(),
       wsConnected: this.ws !== null && this.ws.readyState === WebSocket.OPEN,
     };
+  }
+
+  // ───────────────────────────────────────────────
+  // 빗썸 갱신 (private)
+  // ───────────────────────────────────────────────
+
+  private hasBithumbPairs(): boolean {
+    for (const config of this.pairs.values()) {
+      if (config.exchange === 'bithumb') return true;
+    }
+    return false;
+  }
+
+  private ensureBithumbSubscribed(): void {
+    if (!this.bithumbSubscribed) {
+      subscribeBithumbStablecoinOrderbooks();
+      this.bithumbSubscribed = true;
+    }
+  }
+
+  private startBithumbRefresh(): void {
+    if (this.bithumbRefreshTimer) return;
+    this.bithumbRefreshTimer = setInterval(() => {
+      this.refreshBithumbStats();
+    }, PairScannerService.BITHUMB_REFRESH_INTERVAL);
+  }
+
+  private stopBithumbRefresh(): void {
+    if (this.bithumbRefreshTimer) {
+      clearInterval(this.bithumbRefreshTimer);
+      this.bithumbRefreshTimer = null;
+    }
+  }
+
+  private refreshBithumbStats(): void {
+    const bithumbBooks = getAllBithumbStablecoinOrderbooks();
+    let updated = false;
+
+    for (const config of this.pairs.values()) {
+      if ((config.exchange ?? 'upbit') !== 'bithumb') continue;
+
+      const makerBook = bithumbBooks.get(config.makerCoin.toUpperCase());
+      const takerBook = bithumbBooks.get(config.takerCoin.toUpperCase());
+      if (!makerBook || !takerBook) continue;
+
+      const makerTop: OrderbookTop = {
+        market: `BITHUMB-${config.makerCoin.toUpperCase()}`,
+        bid: { price: makerBook.bid, size: 0 },
+        ask: { price: makerBook.ask, size: 0 },
+        timestamp: makerBook.timestamp,
+      };
+      const takerTop: OrderbookTop = {
+        market: `BITHUMB-${config.takerCoin.toUpperCase()}`,
+        bid: { price: takerBook.bid, size: 0 },
+        ask: { price: takerBook.ask, size: 0 },
+        timestamp: takerBook.timestamp,
+      };
+
+      this.updateStats(config, makerTop, takerTop);
+      updated = true;
+    }
+
+    if (updated) {
+      this.scheduleEmit();
+    }
   }
 
   // ───────────────────────────────────────────────
