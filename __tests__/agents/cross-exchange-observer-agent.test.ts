@@ -69,6 +69,11 @@ describe('CrossExchangeObserverAgent', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    stablecoinPrisma.arbAutoConfig.findFirst.mockResolvedValue({
+      crossBotMinSpreadBps: 50,
+      crossBotDailyCountLimit: 5,
+      crossBotDailyLossLimitKrw: 50000,
+    });
     stablecoinPrisma.crossExchangeArbBot.findMany.mockResolvedValue([]);
     stablecoinPrisma.crossExchangeArbBot.create.mockResolvedValue({ id: 99 });
     prismaMock.crossExchangeSnapshot.createMany.mockResolvedValue({ count: 5 });

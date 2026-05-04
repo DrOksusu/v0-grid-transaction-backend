@@ -27,6 +27,11 @@ const AUTO_BOT_DEFAULT_QUANTITY = 20;
 /** 자동 봇 생성 시 할당할 시스템 userId (관리자) */
 const AUTO_BOT_SYSTEM_USER_ID = 1;
 
+/** ArbAutoConfig 미설정 시 사용하는 폴백 기본값 */
+const DEFAULT_CROSS_BOT_MIN_SPREAD_BPS = 50;
+const DEFAULT_CROSS_BOT_DAILY_COUNT_LIMIT = 5;
+const DEFAULT_CROSS_BOT_DAILY_LOSS_LIMIT_KRW = 50_000;
+
 type BithumbBook = { bid: number; ask: number };
 
 /**
@@ -209,7 +214,21 @@ export class CrossExchangeObserverAgent extends BaseAgent {
     }
   }
 
-  /** 중복 확인 후 봇 자동 생성 (enabled=false, 사용자가 수동 활성화) */
+  /** ArbAutoConfig에서 cross-bot 기본값 조회 (없으면 상수 폴백) */
+  private async getCrossBotDefaults(): Promise<{
+    minSpreadBps: number;
+    dailyCountLimit: number;
+    dailyLossLimitKrw: number;
+  }> {
+    const cfg = await stablecoinPrisma.arbAutoConfig.findFirst();
+    return {
+      minSpreadBps: cfg?.crossBotMinSpreadBps ?? DEFAULT_CROSS_BOT_MIN_SPREAD_BPS,
+      dailyCountLimit: cfg?.crossBotDailyCountLimit ?? DEFAULT_CROSS_BOT_DAILY_COUNT_LIMIT,
+      dailyLossLimitKrw: cfg?.crossBotDailyLossLimitKrw ?? DEFAULT_CROSS_BOT_DAILY_LOSS_LIMIT_KRW,
+    };
+  }
+
+  /** 중복 확인 후 봇 자동 생성 (관리자 설정값 적용, 즉시 활성화) */
   private async autoCreateBot(
     buyCoin: string,
     sellCoin: string,
@@ -217,10 +236,13 @@ export class CrossExchangeObserverAgent extends BaseAgent {
     spreadBps: number,
   ): Promise<void> {
     try {
-      const existing = await stablecoinPrisma.crossExchangeArbBot.findMany({
-        where: { targetDirection: direction },
-        select: { coin: true, buyCoin: true, sellCoin: true },
-      });
+      const [existing, defaults] = await Promise.all([
+        stablecoinPrisma.crossExchangeArbBot.findMany({
+          where: { targetDirection: direction },
+          select: { coin: true, buyCoin: true, sellCoin: true },
+        }),
+        this.getCrossBotDefaults(),
+      ]);
 
       const duplicate = existing.some(
         (bot) =>
@@ -239,12 +261,16 @@ export class CrossExchangeObserverAgent extends BaseAgent {
           targetDirection: direction,
           quantity: AUTO_BOT_DEFAULT_QUANTITY,
           enabled: true,
+          minSpreadBps: defaults.minSpreadBps,
+          dailyCountLimit: defaults.dailyCountLimit,
+          dailyLossLimitKrw: defaults.dailyLossLimitKrw,
         },
       });
 
       console.log(
         `[CrossExchangeObserver] 자동 봇 생성: ${buyCoin}→${sellCoin} ${direction}` +
-        ` (스프레드 ${spreadBps}bps, ${AUTO_BOT_CONSECUTIVE_THRESHOLD}회 연속 감지)`,
+        ` (스프레드 ${spreadBps}bps, ${AUTO_BOT_CONSECUTIVE_THRESHOLD}회 연속 감지)` +
+        ` [minSpread=${defaults.minSpreadBps}bps, daily=${defaults.dailyCountLimit}회, loss=${defaults.dailyLossLimitKrw}KRW]`,
       );
     } catch (err: any) {
       this.metrics.errors++;

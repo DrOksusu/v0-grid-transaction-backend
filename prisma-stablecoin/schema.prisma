@@ -292,6 +292,11 @@ model ArbAutoConfig {
   bithumbDailyCountLimit   Int     @default(20)
   bithumbDailyLossLimitKrw Int     @default(50000)
 
+  // Cross-Exchange 자동 봇 생성 기본값 (Observer가 사용)
+  crossBotMinSpreadBps      Int @default(50)    // 자동 생성 봇의 실체결 최소 스프레드
+  crossBotDailyCountLimit   Int @default(5)     // 자동 생성 봇의 하루 최대 거래횟수
+  crossBotDailyLossLimitKrw Int @default(50000) // 자동 생성 봇의 하루 손실 한도 (KRW)
+
   // 향후 업비트 단일 / 크로스 auto mode 확장용 (현재 미사용)
   upbitEnabled Boolean @default(true)
   crossEnabled Boolean @default(true)

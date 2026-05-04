@@ -638,6 +638,23 @@ export const patchArbAutoConfig = async (
       patch.bithumbDailyLossLimitKrw = body.bithumbDailyLossLimitKrw;
     }
 
+    // Cross-Exchange 자동 봇 생성 기본값
+    if (body.crossBotMinSpreadBps !== undefined) {
+      if (!Number.isInteger(body.crossBotMinSpreadBps) || body.crossBotMinSpreadBps < 0)
+        throw new AppError('crossBotMinSpreadBps must be non-negative integer', 400);
+      patch.crossBotMinSpreadBps = body.crossBotMinSpreadBps;
+    }
+    if (body.crossBotDailyCountLimit !== undefined) {
+      if (!Number.isInteger(body.crossBotDailyCountLimit) || body.crossBotDailyCountLimit <= 0)
+        throw new AppError('crossBotDailyCountLimit must be positive integer', 400);
+      patch.crossBotDailyCountLimit = body.crossBotDailyCountLimit;
+    }
+    if (body.crossBotDailyLossLimitKrw !== undefined) {
+      if (!Number.isInteger(body.crossBotDailyLossLimitKrw) || body.crossBotDailyLossLimitKrw <= 0)
+        throw new AppError('crossBotDailyLossLimitKrw must be positive integer', 400);
+      patch.crossBotDailyLossLimitKrw = body.crossBotDailyLossLimitKrw;
+    }
+
     // 향후 확장 필드
     if (body.upbitEnabled !== undefined) {
       if (typeof body.upbitEnabled !== 'boolean')

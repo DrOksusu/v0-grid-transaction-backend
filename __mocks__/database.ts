@@ -56,6 +56,13 @@ const stablecoinPrisma = {
     create: jest.fn(),
     update: jest.fn(),
   },
+  arbAutoConfig: {
+    findFirst: jest.fn().mockResolvedValue({
+      crossBotMinSpreadBps: 50,
+      crossBotDailyCountLimit: 5,
+      crossBotDailyLossLimitKrw: 50000,
+    }),
+  },
   crossExchangeArbBot: {
     findMany: jest.fn().mockResolvedValue([]),
     findUnique: jest.fn().mockResolvedValue(null),
