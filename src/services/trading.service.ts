@@ -17,7 +17,7 @@ interface GridTradeClient {
 }
 
 function getFeeRate(exchange: string): number {
-  return exchange === 'bithumb' ? 0.0025 : 0.0005;
+  return exchange === 'bithumb' ? 0.0004 : 0.0005;
 }
 
 // 자격증명 캐시 (5분 TTL)
