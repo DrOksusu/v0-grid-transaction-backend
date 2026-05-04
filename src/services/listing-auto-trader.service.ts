@@ -112,8 +112,11 @@ function mexcPost(apiKey: string, secretKey: string, endpoint: string, params: R
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          if (res.statusCode && res.statusCode >= 400) {
-            const err: any = new Error(parsed.msg ?? 'MEXC 오류');
+          // MEXC는 비즈니스 에러(잔고 부족 등)를 HTTP 200으로 반환하면서 body에 code 필드로 구분
+          const isHttpError = res.statusCode && res.statusCode >= 400;
+          const isBodyError = parsed.code && parsed.code !== 200 && !parsed.orderId;
+          if (isHttpError || isBodyError) {
+            const err: any = new Error(parsed.msg ?? `MEXC 오류 code=${parsed.code}`);
             err.response = { data: parsed };
             reject(err);
           } else {
