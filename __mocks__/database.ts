@@ -1,5 +1,8 @@
 // Prisma 클라이언트 Mock
 const prisma = {
+  crossExchangeSnapshot: {
+    createMany: jest.fn().mockResolvedValue({ count: 5 }),
+  },
   bot: {
     findUnique: jest.fn(),
     findMany: jest.fn(),
