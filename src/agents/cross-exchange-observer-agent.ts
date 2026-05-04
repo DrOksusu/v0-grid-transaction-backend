@@ -238,7 +238,7 @@ export class CrossExchangeObserverAgent extends BaseAgent {
           sellCoin,
           targetDirection: direction,
           quantity: AUTO_BOT_DEFAULT_QUANTITY,
-          enabled: false,
+          enabled: true,
         },
       });
 

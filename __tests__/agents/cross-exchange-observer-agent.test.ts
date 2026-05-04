@@ -98,7 +98,7 @@ describe('CrossExchangeObserverAgent', () => {
     }
     expect(stablecoinPrisma.crossExchangeArbBot.create).toHaveBeenCalled();
     const firstCall = stablecoinPrisma.crossExchangeArbBot.create.mock.calls[0][0];
-    expect(firstCall.data.enabled).toBe(false);
+    expect(firstCall.data.enabled).toBe(true);
   });
 
   it('7번째 이후 사이클 — 동일 streak에서 중복 생성 없음 (cap 동작)', async () => {
