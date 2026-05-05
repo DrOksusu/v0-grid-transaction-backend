@@ -157,6 +157,10 @@ model MakerTakerSimBot {
   minSpreadKrw Int       @default(12)  // (bestAsk - bestBid) >= 이 값일 때만 placement
   lastResumeAt DateTime?               // enabled false→true 전환 시각 (canary T_start)
 
+  // 크로스 거래소 지원 — 각 레그를 다른 거래소에서 실행 가능
+  makerExchange String @default("upbit")  // makerCoin 거래소: "upbit" | "bithumb"
+  takerExchange String @default("upbit")  // takerCoin 거래소: "upbit" | "bithumb"
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

@@ -6,6 +6,11 @@ import {
   onStablecoinOrderbookUpdate,
   type OrderbookTop,
 } from '../services/upbit-price-manager';
+import {
+  subscribeBithumbStablecoinOrderbooks,
+  unsubscribeBithumbStablecoinOrderbooks,
+  getBithumbStablecoinOrderbook,
+} from '../services/bithumb-stablecoin-ws-manager';
 import { stablecoinPrisma as prisma } from '../config/database';
 import mainPrisma from '../config/database';
 import {
@@ -16,50 +21,50 @@ import {
 import {
   processLiveBot as runLiveExecutor,
   decideLegOrder,
-  type OrderClient,
+  type NormalizedBook,
   type PendingTradeInput,
   type LiveBotInput,
   type LiveExecutorResult,
 } from '../services/maker-taker-live-executor';
+import { UpbitLeg, BithumbLeg } from '../services/exchange-leg';
 import { tradingLock } from '../services/stablecoin-trading-lock';
 import { checkMakerPlacementBalance } from '../services/maker-taker-balance-precheck';
 import { shouldAutoPauseForMinBalance } from '../services/maker-taker-min-balance-guard';
 import { UpbitService } from '../services/upbit.service';
 import { BalanceCache } from '../services/upbit-balance-cache';
+import { BithumbClient } from '../services/exchange/bithumb-client';
 import { decrypt } from '../utils/encryption';
 import { isSpreadProfitable } from '../services/maker-taker-spread-gate';
 
-/**
- * Maker-Taker 시뮬레이터 (실거래 없이 DB 가상 기록)
- *
- * 설계서 §3~§4 참조.
- *   - 호가 업데이트마다 활성 봇별로 evaluate
- *   - pending 주문 없음 → 방향 결정(decideLegOrder) 후 새 가상 주문 생성 (PENDING)
- *   - pending 주문 있음 → shouldFill() 판정 → FILLED / EXPIRED
- *   - FILLED 시 taker leg 시뮬레이션 + P&L 저장
- */
+/** Upbit OrderbookTop → NormalizedBook */
+function normalizeUpbit(book: OrderbookTop): NormalizedBook {
+  return { bid: book.bid.price, ask: book.ask.price };
+}
+
 export class MakerTakerSimulatorAgent extends BaseAgent {
   private unsubscribe: (() => void) | null = null;
   private evaluateInFlight = false;
-  private clients = new Map<number, { upbit: UpbitService; cache: BalanceCache }>();
+  private upbitClients = new Map<number, { upbit: UpbitService; cache: BalanceCache }>();
+  private bithumbClients = new Map<number, BithumbClient>();
 
   constructor() {
     super({
       id: 'maker-taker-sim',
       name: 'MakerTakerSimulatorAgent',
-      description: 'Upbit 스테이블 maker-taker 시뮬레이터 (M3 전 관찰)',
+      description: 'Maker-Taker 시뮬레이터 (크로스 거래소 지원)',
       cycleIntervalMs: 0,
     });
   }
 
   protected async onStart(): Promise<void> {
     subscribeStablecoinOrderbooks();
+    subscribeBithumbStablecoinOrderbooks();
     this.unsubscribe = onStablecoinOrderbookUpdate(() => {
       this.evaluate().catch((err: Error) => {
         console.error('[MakerTakerSimulatorAgent] evaluate unhandled:', err.message);
       });
     });
-    console.log('[MakerTakerSimulatorAgent] 시뮬레이션 시작');
+    console.log('[MakerTakerSimulatorAgent] 시작 (Upbit + Bithumb WS)');
   }
 
   protected async onStop(): Promise<void> {
@@ -68,12 +73,14 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       this.unsubscribe = null;
     }
     unsubscribeStablecoinOrderbooks();
-    this.clients.clear();
+    unsubscribeBithumbStablecoinOrderbooks();
+    this.upbitClients.clear();
+    this.bithumbClients.clear();
     console.log('[MakerTakerSimulatorAgent] 정지');
   }
 
   protected async onCycle(): Promise<void> {
-    // 이벤트 드리븐 - 사이클 루프 미사용
+    // 이벤트 드리븐 — 사이클 루프 미사용
   }
 
   private async evaluate(): Promise<void> {
@@ -81,16 +88,16 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     this.evaluateInFlight = true;
 
     try {
-      const bots = await prisma.makerTakerSimBot.findMany({
+      const bots = await (prisma.makerTakerSimBot as any).findMany({
         where: { enabled: true, killSwitch: false },
       });
       if (bots.length === 0) return;
 
-      const books = getAllStablecoinOrderbooks();
+      const upbitBooks = getAllStablecoinOrderbooks();
 
       for (const bot of bots) {
         try {
-          await this.processBot(bot, books);
+          await this.processBot(bot, upbitBooks);
         } catch (err: any) {
           console.error(
             `[MakerTakerSimulatorAgent] bot ${bot.id} processBot 실패:`,
@@ -108,18 +115,21 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   }
 
   private async processBot(
-    bot: Awaited<ReturnType<typeof prisma.makerTakerSimBot.findMany>>[number],
-    books: ReadonlyMap<string, OrderbookTop>,
+    bot: any,
+    upbitBooks: ReadonlyMap<string, OrderbookTop>,
   ): Promise<void> {
     if (bot.live === true) {
-      await this.handleLiveBot(bot, books);
+      await this.handleLiveBot(bot, upbitBooks);
       return;
     }
 
-    const makerBook = books.get(`KRW-${bot.makerCoin}`);
-    const takerBook = books.get(`KRW-${bot.takerCoin}`);
+    // 시뮬 모드: 업비트 호가로 판정 (크로스 거래소 시뮬은 추후 개선)
+    const makerBook = upbitBooks.get(`KRW-${bot.makerCoin}`);
+    const takerBook = upbitBooks.get(`KRW-${bot.takerCoin}`);
     if (!makerBook || !takerBook) return;
 
+    const makerNorm = normalizeUpbit(makerBook);
+    const takerNorm = normalizeUpbit(takerBook);
     const now = new Date();
 
     const pending = await (prisma.makerTakerSimTrade as any).findFirst({
@@ -128,14 +138,13 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     });
 
     if (!pending) {
-      // 방향 결정
-      const direction = decideLegOrder(makerBook, takerBook);
+      const direction = decideLegOrder(makerNorm, takerNorm);
 
       if (direction === 'MAKER_BUY_FIRST') {
         const gate = isSpreadProfitable(makerBook, bot.minSpreadKrw);
         if (!gate.ok) return;
 
-        const makerOrderPrice = makerBook.bid.price + bot.bidOffsetKrw;
+        const makerOrderPrice = makerNorm.bid + bot.bidOffsetKrw;
         await (prisma.makerTakerSimTrade as any).create({
           data: {
             botId: bot.id,
@@ -145,22 +154,18 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             quantity: bot.quantity,
             status: 'PENDING',
             legOrder: 'MAKER_BUY_FIRST',
-            notes: `생성[MAKER_BUY_FIRST]: makerBid=${makerBook.bid.price}, offset=${bot.bidOffsetKrw}, spread=${gate.spreadKrw}`,
+            notes: `생성[MAKER_BUY_FIRST]: makerBid=${makerNorm.bid}, offset=${bot.bidOffsetKrw}, spread=${gate.spreadKrw}`,
           },
         });
       } else {
-        // TAKER_SELL_FIRST: makerCoin.bid > takerCoin.bid
-        const crossSpread = makerBook.bid.price - takerBook.bid.price;
+        const crossSpread = makerNorm.bid - takerNorm.bid;
         if (crossSpread < bot.minSpreadKrw) return;
 
-        // 시뮬: IOC 매도 makerCoin at makerBook.bid
-        const takerFirstPrice = makerBook.bid.price;
+        const takerFirstPrice = makerNorm.bid;
         const qty = Number(bot.quantity);
         const takerFirstCostKrw = takerFirstPrice * qty;
         const takerFirstFeeKrw = (takerFirstCostKrw * bot.takerFeeBps) / 10000;
-
-        // takerCoin maker BID 주문가
-        const makerOrderPrice = takerBook.bid.price + bot.bidOffsetKrw;
+        const makerOrderPrice = takerNorm.bid + bot.bidOffsetKrw;
 
         await (prisma.makerTakerSimTrade as any).create({
           data: {
@@ -173,17 +178,15 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             legOrder: 'TAKER_SELL_FIRST',
             takerFirstCostKrw,
             takerFirstFeeKrw,
-            notes: `생성[TAKER_SELL_FIRST]: makerBid=${makerBook.bid.price}, takerBid=${takerBook.bid.price}, crossSpread=${crossSpread}`,
+            notes: `생성[TAKER_SELL_FIRST]: makerBid=${makerNorm.bid}, takerBid=${takerNorm.bid}, crossSpread=${crossSpread}`,
           },
         });
       }
       return;
     }
 
-    // pending 주문 있음 → 체결 판정
+    // pending 주문 → 체결 판정
     const legOrder: string = pending.legOrder ?? 'MAKER_BUY_FIRST';
-
-    // 체결 판정 시 사용할 호가북: TAKER_SELL_FIRST는 takerBook 기준
     const bookForFill = legOrder === 'TAKER_SELL_FIRST' ? takerBook : makerBook;
     const decision = shouldFill(
       {
@@ -208,9 +211,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       return;
     }
 
-    // decision === 'fill'
     if (legOrder === 'TAKER_SELL_FIRST') {
-      // takerCoin maker BID 체결 → P&L 계산
       const qty = Number(bot.quantity);
       const takerFirstCostKrw = Number(pending.takerFirstCostKrw ?? 0);
       const takerFirstFeeKrw = Number(pending.takerFirstFeeKrw ?? 0);
@@ -219,9 +220,10 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       const feeKrw = takerFirstFeeKrw + makerFee;
       const grossProfitKrw = takerFirstCostKrw - makerFilledKrw;
       const netProfitKrw = grossProfitKrw - feeKrw;
-      const realizedSpreadBps = makerFilledKrw > 0
-        ? Math.floor(((takerFirstCostKrw - makerFilledKrw) / makerFilledKrw) * 10000)
-        : 0;
+      const realizedSpreadBps =
+        makerFilledKrw > 0
+          ? Math.floor(((takerFirstCostKrw - makerFilledKrw) / makerFilledKrw) * 10000)
+          : 0;
 
       await (prisma.makerTakerSimTrade as any).update({
         where: { id: pending.id },
@@ -243,7 +245,6 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       return;
     }
 
-    // MAKER_BUY_FIRST: 기존 taker leg 시뮬
     const takerResult = simulateTakerLeg({
       makerFilledPrice: pending.makerOrderPrice,
       takerOrderbook: takerBook,
@@ -287,13 +288,37 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   }
 
   /**
-   * live=true 봇 처리. maker-taker-live-executor에 위임 + DB write 적용.
+   * live=true 봇 처리. 크로스 거래소 지원.
    */
   private async handleLiveBot(
-    bot: Awaited<ReturnType<typeof prisma.makerTakerSimBot.findMany>>[number],
-    books: ReadonlyMap<string, OrderbookTop>,
+    bot: any,
+    upbitBooks: ReadonlyMap<string, OrderbookTop>,
   ): Promise<void> {
     if (bot.killSwitch) return;
+
+    const makerExchange: string = bot.makerExchange ?? 'upbit';
+    const takerExchange: string = bot.takerExchange ?? 'upbit';
+
+    // 거래소별 호가 조회 및 정규화
+    const makerBookRaw =
+      makerExchange === 'bithumb'
+        ? getBithumbStablecoinOrderbook(bot.makerCoin)
+        : upbitBooks.get(`KRW-${bot.makerCoin}`);
+    const takerBookRaw =
+      takerExchange === 'bithumb'
+        ? getBithumbStablecoinOrderbook(bot.takerCoin)
+        : upbitBooks.get(`KRW-${bot.takerCoin}`);
+
+    if (!makerBookRaw || !takerBookRaw) return;
+
+    const makerBook: NormalizedBook =
+      makerExchange === 'bithumb'
+        ? { bid: (makerBookRaw as any).bid, ask: (makerBookRaw as any).ask }
+        : normalizeUpbit(makerBookRaw as OrderbookTop);
+    const takerBook: NormalizedBook =
+      takerExchange === 'bithumb'
+        ? { bid: (takerBookRaw as any).bid, ask: (takerBookRaw as any).ask }
+        : normalizeUpbit(takerBookRaw as OrderbookTop);
 
     const pending = await (prisma.makerTakerSimTrade as any).findFirst({
       where: { botId: bot.id, status: 'PENDING', live: true },
@@ -309,50 +334,77 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           createdAt: pending.createdAt,
           notes: pending.notes,
           legOrder: pending.legOrder ?? 'MAKER_BUY_FIRST',
-          takerFirstCostKrw: pending.takerFirstCostKrw != null ? Number(pending.takerFirstCostKrw) : null,
-          takerFirstFeeKrw: pending.takerFirstFeeKrw != null ? Number(pending.takerFirstFeeKrw) : null,
+          takerFirstCostKrw:
+            pending.takerFirstCostKrw != null ? Number(pending.takerFirstCostKrw) : null,
+          takerFirstFeeKrw:
+            pending.takerFirstFeeKrw != null ? Number(pending.takerFirstFeeKrw) : null,
         }
       : null;
 
-    let upbitClient;
-    try {
-      upbitClient = await this.getClientFor(bot.userId);
-    } catch (err: any) {
-      console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} credential missing:`, err.message);
-      return;
-    }
+    // 거래소 클라이언트 확보
+    let upbitClient: { upbit: UpbitService; cache: BalanceCache } | null = null;
+    let bithumbClient: BithumbClient | null = null;
 
-    let preCheckOk = true;
-    if (pending === null) {
-      const makerBook = books.get(`KRW-${bot.makerCoin}`);
-      const takerBook = books.get(`KRW-${bot.takerCoin}`);
-      if (!makerBook || !takerBook) return;
+    const needsUpbit = makerExchange === 'upbit' || takerExchange === 'upbit';
+    const needsBithumb = makerExchange === 'bithumb' || takerExchange === 'bithumb';
 
-      let balances: Record<string, number>;
+    if (needsUpbit) {
       try {
-        balances = await upbitClient.cache.get();
+        upbitClient = await this.getUpbitClientFor(bot.userId);
       } catch (err: any) {
-        console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} balance fetch 실패:`, err.message);
+        console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} Upbit credential:`, err.message);
         return;
       }
+    }
 
+    if (needsBithumb) {
+      try {
+        bithumbClient = await this.getBithumbClientFor(bot.userId);
+      } catch (err: any) {
+        console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb credential:`, err.message);
+        return;
+      }
+    }
+
+    // ExchangeLeg 생성
+    const makerLeg =
+      makerExchange === 'bithumb'
+        ? new BithumbLeg(bithumbClient!)
+        : new UpbitLeg(upbitClient!.upbit);
+    const takerLeg =
+      takerExchange === 'bithumb'
+        ? new BithumbLeg(bithumbClient!)
+        : new UpbitLeg(upbitClient!.upbit);
+
+    // 잔고 사전 체크 (pending 없을 때만)
+    let preCheckOk = true;
+    if (pending === null) {
       const direction = decideLegOrder(makerBook, takerBook);
 
-      if (direction === 'MAKER_BUY_FIRST') {
-        // (a) minTakerBalance 자동 일시정지
+      if (direction === 'MAKER_BUY_FIRST' && upbitClient && makerExchange === 'upbit') {
+        let balances: Record<string, number>;
+        try {
+          balances = await upbitClient.cache.get();
+        } catch (err: any) {
+          console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} balance fetch 실패:`, err.message);
+          return;
+        }
+
         const guard = shouldAutoPauseForMinBalance({
           takerCoin: bot.takerCoin,
           takerBalance: balances[bot.takerCoin] ?? 0,
           minTakerBalance: bot.minTakerBalance,
         });
         if (guard.autoPause) {
-          await prisma.makerTakerSimBot.update({ where: { id: bot.id }, data: { enabled: false } });
+          await (prisma.makerTakerSimBot as any).update({
+            where: { id: bot.id },
+            data: { enabled: false },
+          });
           console.warn(`[MakerTakerSimulatorAgent] bot ${bot.id} 자동 일시정지: ${guard.reason}`);
           return;
         }
 
-        // (b) 사전 잔고 체크
-        const makerOrderPrice = makerBook.bid.price + bot.bidOffsetKrw;
+        const makerOrderPrice = makerBook.bid + bot.bidOffsetKrw;
         const precheck = checkMakerPlacementBalance({
           takerCoin: bot.takerCoin,
           quantity: Number(bot.quantity),
@@ -365,49 +417,47 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           preCheckOk = false;
         }
 
-        // (c) 수익성 게이팅
         if (preCheckOk) {
-          const gate = isSpreadProfitable(makerBook, bot.minSpreadKrw);
-          if (!gate.ok) {
-            console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} spread gate: ${gate.reason}`);
+          const crossSpread = makerBook.ask - makerBook.bid;
+          if (bot.minSpreadKrw > 0 && crossSpread < bot.minSpreadKrw) {
+            console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} spread gate: ${crossSpread} < ${bot.minSpreadKrw}`);
             preCheckOk = false;
           }
         }
-      } else {
-        // TAKER_SELL_FIRST: makerCoin 잔고 체크 (매도해야 하므로)
+      } else if (direction === 'TAKER_SELL_FIRST' && upbitClient && makerExchange === 'upbit') {
+        let balances: Record<string, number>;
+        try {
+          balances = await upbitClient.cache.get();
+        } catch (err: any) {
+          console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} balance fetch 실패:`, err.message);
+          return;
+        }
+
         const makerCoinBalance = balances[bot.makerCoin] ?? 0;
         if (makerCoinBalance < Number(bot.quantity)) {
           console.log(
-            `[MakerTakerSimulatorAgent] bot ${bot.id} TAKER_SELL_FIRST pre-check 실패: makerCoin 잔고 부족 (${makerCoinBalance} < ${bot.quantity})`,
+            `[MakerTakerSimulatorAgent] bot ${bot.id} TAKER_SELL_FIRST pre-check: makerCoin 잔고 부족 (${makerCoinBalance} < ${bot.quantity})`,
           );
           preCheckOk = false;
         }
 
-        // 수익성 게이팅: cross spread
         if (preCheckOk) {
-          const crossSpread = makerBook.bid.price - takerBook.bid.price;
+          const crossSpread = makerBook.bid - takerBook.bid;
           if (crossSpread < bot.minSpreadKrw) {
-            console.log(
-              `[MakerTakerSimulatorAgent] bot ${bot.id} TAKER_SELL_FIRST spread gate: crossSpread ${crossSpread} < ${bot.minSpreadKrw}`,
-            );
+            console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} TAKER_SELL_FIRST spread gate: ${crossSpread} < ${bot.minSpreadKrw}`);
             preCheckOk = false;
           }
         }
       }
     }
 
-    const client: OrderClient = {
-      placeLimit: (m, s, p) => upbitClient.upbit.placeLimitOrder(m, s, p),
-      placeBestIoc: (m, s, p) => upbitClient.upbit.placeBestIoc(m, s, p),
-      getOrder: (uuid) => upbitClient.upbit.getOrder(uuid),
-      cancelOrder: (uuid) => upbitClient.upbit.cancelOrder(uuid),
-    };
-
     const liveBot: LiveBotInput = {
       id: bot.id,
       userId: bot.userId,
       makerCoin: bot.makerCoin,
       takerCoin: bot.takerCoin,
+      makerExchange,
+      takerExchange,
       bidOffsetKrw: bot.bidOffsetKrw,
       quantity: Number(bot.quantity),
       maxPendingMs: bot.maxPendingMs,
@@ -418,22 +468,26 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     const result = await runLiveExecutor({
       bot: liveBot,
       pending: pendingInput,
-      books,
-      client,
+      makerBook,
+      takerBook,
+      makerLeg,
+      takerLeg,
       isLocked: () => tradingLock.isLocked(),
       preCheckOk,
     });
 
-    if (result.kind === 'placed' || result.kind === 'filled' || result.kind === 'partial_hold') {
+    if (
+      (result.kind === 'placed' || result.kind === 'filled' || result.kind === 'partial_hold') &&
+      upbitClient
+    ) {
       upbitClient.cache.invalidate();
     }
 
     await this.persistLiveResult(bot, pending, result);
   }
 
-  /** LiveExecutorResult를 DB row에 반영 */
   private async persistLiveResult(
-    bot: Awaited<ReturnType<typeof prisma.makerTakerSimBot.findMany>>[number],
+    bot: any,
     pending: any,
     result: LiveExecutorResult,
   ): Promise<void> {
@@ -469,7 +523,9 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           where: { id: result.pendingId },
           data: {
             status: 'EXPIRED',
-            notes: (pending?.notes ?? '') + ` | LIVE expired (cancelled at ${new Date().toISOString()})`,
+            notes:
+              (pending?.notes ?? '') +
+              ` | LIVE expired (cancelled at ${new Date().toISOString()})`,
           },
         });
         return;
@@ -518,10 +574,10 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     }
   }
 
-  private async getClientFor(
+  private async getUpbitClientFor(
     userId: number,
   ): Promise<{ upbit: UpbitService; cache: BalanceCache }> {
-    const existing = this.clients.get(userId);
+    const existing = this.upbitClients.get(userId);
     if (existing) return existing;
 
     const credential = await mainPrisma.credential.findFirst({
@@ -538,7 +594,24 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     });
 
     const client = { upbit, cache };
-    this.clients.set(userId, client);
+    this.upbitClients.set(userId, client);
+    return client;
+  }
+
+  private async getBithumbClientFor(userId: number): Promise<BithumbClient> {
+    const existing = this.bithumbClients.get(userId);
+    if (existing) return existing;
+
+    const credential = await mainPrisma.credential.findFirst({
+      where: { userId, exchange: 'bithumb' },
+    });
+    if (!credential) throw new Error(`Bithumb credential not found for userId=${userId}`);
+
+    const client = new BithumbClient({
+      accessKey: decrypt(credential.apiKey),
+      secretKey: decrypt(credential.secretKey),
+    });
+    this.bithumbClients.set(userId, client);
     return client;
   }
 }

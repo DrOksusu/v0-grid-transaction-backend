@@ -86,7 +86,7 @@ router.post(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.userId!;
-      const { makerCoin, takerCoin, qty, makerFeeBps, takerFeeBps, minSpreadKrw, bidOffsetKrw, minTakerBalance } = req.body;
+      const { makerCoin, takerCoin, qty, makerFeeBps, takerFeeBps, minSpreadKrw, bidOffsetKrw, minTakerBalance, makerExchange, takerExchange } = req.body;
 
       if (!makerCoin || !takerCoin) {
         res.status(400).json({ success: false, error: 'makerCoin, takerCoin 필수' });
@@ -101,7 +101,7 @@ router.post(
         return;
       }
 
-      const bot = await stablecoinPrisma.makerTakerSimBot.create({
+      const bot = await (stablecoinPrisma.makerTakerSimBot as any).create({
         data: {
           userId,
           makerCoin,
@@ -112,6 +112,8 @@ router.post(
           minSpreadKrw: minSpreadKrw ?? 0,
           bidOffsetKrw: bidOffsetKrw ?? 0,
           minTakerBalance: minTakerBalance ?? null,
+          makerExchange: makerExchange ?? 'upbit',
+          takerExchange: takerExchange ?? 'upbit',
           enabled: true,
           killSwitch: false,
           live: false,
@@ -133,7 +135,7 @@ router.patch(
     try {
       const userId = req.userId!;
       const id = parseInt(req.params.id, 10);
-      const { enabled, killSwitch, minSpreadKrw, live, bidOffsetKrw } = req.body;
+      const { enabled, killSwitch, minSpreadKrw, live, bidOffsetKrw, makerExchange, takerExchange } = req.body;
 
       const existing = await stablecoinPrisma.makerTakerSimBot.findFirst({ where: { id, userId } });
       if (!existing) {
@@ -147,8 +149,10 @@ router.patch(
       if (minSpreadKrw !== undefined) patch.minSpreadKrw = Number(minSpreadKrw);
       if (live !== undefined) patch.live = Boolean(live);
       if (bidOffsetKrw !== undefined) patch.bidOffsetKrw = Number(bidOffsetKrw);
+      if (makerExchange !== undefined) patch.makerExchange = String(makerExchange);
+      if (takerExchange !== undefined) patch.takerExchange = String(takerExchange);
 
-      const bot = await stablecoinPrisma.makerTakerSimBot.update({ where: { id }, data: patch });
+      const bot = await (stablecoinPrisma.makerTakerSimBot as any).update({ where: { id }, data: patch });
       res.json({ success: true, data: bot });
     } catch (err) {
       next(err);

@@ -1,55 +1,31 @@
 /**
- * Maker-Taker Live Executor (PR C 메인 모듈, PR E2에서 spec § 2 정합 재구현)
+ * Maker-Taker Live Executor
  *
- * 한 봇에 대한 한 사이클을 처리하는 순수 함수 (DB I/O 없음 — 호출자가 담당).
+ * 한 봇에 대한 한 사이클을 처리하는 순수 함수 (DB I/O 없음).
+ * ExchangeLeg 추상 인터페이스를 통해 거래소에 무관하게 동작.
  *
- * 동작 개요 (spec § 2 "전략 핵심"):
- *  - CASE A (PENDING 트레이드 없음): legOrder 결정 후 분기
- *      - MAKER_BUY_FIRST: makerCoin 매수 maker limit bid (기존 방식)
- *      - TAKER_SELL_FIRST: makerCoin IOC 매도 → takerCoin maker limit bid (PR I 신규)
- *  - CASE B (PENDING 존재): 주문 상태 폴링 후 분기 (pending.legOrder 기준)
- *      - MAKER_BUY_FIRST: makerCoin bid 체결 → takerCoin IOC ask 매도
- *      - TAKER_SELL_FIRST: takerCoin bid 체결 → P&L 정산 (추가 실행 없음)
- *
- * legOrder 결정 (decideLegOrder):
- *  - takerCoin.bid > makerCoin.bid → MAKER_BUY_FIRST (makerCoin이 더 저렴)
- *  - makerCoin.bid > takerCoin.bid → TAKER_SELL_FIRST (makerCoin이 더 비쌈)
- *
- * Fallback 정책: Option A (no fallback).
+ * 동작 개요:
+ *  - CASE A (PENDING 없음): legOrder 결정 후 분기
+ *      - MAKER_BUY_FIRST: makerCoin maker BID (makerLeg)
+ *      - TAKER_SELL_FIRST: makerCoin IOC 매도 (makerLeg) → takerCoin maker BID (takerLeg)
+ *  - CASE B (PENDING 존재): 주문 폴링 후 분기
+ *      - MAKER_BUY_FIRST: makerCoin BID 체결 → takerCoin IOC 매도 (takerLeg)
+ *      - TAKER_SELL_FIRST: takerCoin BID 체결 → P&L 정산
  */
 
-import type { OrderbookTop } from './upbit-price-manager';
+import type { ExchangeLeg } from './exchange-leg';
 
-/** Upbit 주문 응답 — executor가 읽는 필드만 추림. */
-export interface UpbitOrderResp {
-  uuid: string;
-  state?: string;
-  executed_volume?: string;
-  paid_fee?: string;
-  trades?: Array<{ funds: string; price: string; volume: string }>;
-}
+/** 거래소 중립 호가 스냅샷 */
+export type NormalizedBook = { bid: number; ask: number };
 
-export interface OrderClient {
-  placeLimit(
-    market: string,
-    side: 'bid' | 'ask',
-    params: { price?: string; volume?: string; postOnly?: boolean },
-  ): Promise<UpbitOrderResp>;
-  placeBestIoc(
-    market: string,
-    side: 'bid' | 'ask',
-    params: { price?: string; volume?: string },
-  ): Promise<UpbitOrderResp>;
-  getOrder(uuid: string): Promise<UpbitOrderResp>;
-  cancelOrder(uuid: string): Promise<unknown>;
-}
-
-/** 봇 입력 (DB 모델의 일부) */
+/** 봇 입력 */
 export type LiveBotInput = {
   id: number;
   userId: number;
   makerCoin: string;
   takerCoin: string;
+  makerExchange: string;
+  takerExchange: string;
   bidOffsetKrw: number;
   quantity: number;
   maxPendingMs: number;
@@ -98,88 +74,59 @@ export type LiveExecutorResult =
 export type ProcessLiveInput = {
   bot: LiveBotInput;
   pending: PendingTradeInput | null;
-  books: ReadonlyMap<string, OrderbookTop>;
-  client: OrderClient;
+  makerBook: NormalizedBook;
+  takerBook: NormalizedBook;
+  makerLeg: ExchangeLeg;
+  takerLeg: ExchangeLeg;
   isLocked: () => boolean;
   preCheckOk: boolean;
 };
 
 /** makerBook vs takerBook bid 비교로 최적 레그 순서 결정 */
 export function decideLegOrder(
-  makerBook: OrderbookTop,
-  takerBook: OrderbookTop,
+  makerBook: NormalizedBook,
+  takerBook: NormalizedBook,
 ): 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST' {
-  // makerCoin.bid > takerCoin.bid → makerCoin이 비쌈 → makerCoin을 먼저 IOC 매도
-  return makerBook.bid.price > takerBook.bid.price ? 'TAKER_SELL_FIRST' : 'MAKER_BUY_FIRST';
+  return makerBook.bid > takerBook.bid ? 'TAKER_SELL_FIRST' : 'MAKER_BUY_FIRST';
 }
 
-/** trades 배열의 funds 합산 */
-function sumFunds(trades: UpbitOrderResp['trades']): number {
-  return (trades || []).reduce((s, t) => s + parseFloat(t.funds), 0);
-}
-
-export async function processLiveBot(
-  input: ProcessLiveInput,
-): Promise<LiveExecutorResult> {
-  const { bot, pending, books, client, isLocked, preCheckOk } = input;
-
-  const makerMarket = `KRW-${bot.makerCoin}`;
-  const takerMarket = `KRW-${bot.takerCoin}`;
-  const makerBook = books.get(makerMarket);
-  const takerBook = books.get(takerMarket);
+export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecutorResult> {
+  const { bot, pending, makerBook, takerBook, makerLeg, takerLeg, isLocked, preCheckOk } = input;
 
   // ===== CASE A: PENDING 없음 =====
   if (pending === null) {
     if (isLocked()) return { kind: 'noop' };
     if (!preCheckOk) return { kind: 'noop' };
-    if (!makerBook || !takerBook) return { kind: 'noop' };
 
     const direction = decideLegOrder(makerBook, takerBook);
 
     if (direction === 'MAKER_BUY_FIRST') {
-      // 기존: makerCoin maker BID
-      const makerOrderPrice = makerBook.bid.price + bot.bidOffsetKrw;
-      const resp = await client.placeLimit(makerMarket, 'bid', {
-        price: String(makerOrderPrice),
-        volume: String(bot.quantity),
-        postOnly: true,
-      });
-      if (!resp.uuid) return { kind: 'noop' };
-      return { kind: 'placed', makerOrderUuid: resp.uuid, makerOrderPrice, legOrder: 'MAKER_BUY_FIRST' };
+      const makerOrderPrice = makerBook.bid + bot.bidOffsetKrw;
+      const orderId = await makerLeg.placeMakerBid(bot.makerCoin, makerOrderPrice, bot.quantity);
+      if (!orderId) return { kind: 'noop' };
+      return { kind: 'placed', makerOrderUuid: orderId, makerOrderPrice, legOrder: 'MAKER_BUY_FIRST' };
     }
 
     // TAKER_SELL_FIRST: makerCoin IOC 매도 → takerCoin maker BID
-    const sellResp = await client.placeBestIoc(makerMarket, 'ask', {
-      volume: String(bot.quantity),
-    });
-    const filledSellQty = parseFloat(sellResp.executed_volume || '0');
-    if (filledSellQty === 0) return { kind: 'noop' };
+    const sellResult = await makerLeg.sellIoc(bot.makerCoin, bot.quantity);
+    if (!sellResult) return { kind: 'noop' };
 
-    const takerFirstCostKrw = sumFunds(sellResp.trades);
-    const takerFirstFeeKrw = parseFloat(sellResp.paid_fee || '0');
-
-    // makerCoin 매도 성공 → takerCoin maker BID
-    const takerOrderPrice = takerBook.bid.price + bot.bidOffsetKrw;
-    const bidResp = await client.placeLimit(takerMarket, 'bid', {
-      price: String(takerOrderPrice),
-      volume: String(bot.quantity),
-      postOnly: true,
-    });
-    if (!bidResp.uuid) {
-      // 매도는 완료됐으나 매수 주문 실패 — KRW 잔고 증가, 수동 처리 필요
+    const takerOrderPrice = takerBook.bid + bot.bidOffsetKrw;
+    const orderId = await takerLeg.placeMakerBid(bot.takerCoin, takerOrderPrice, bot.quantity);
+    if (!orderId) {
       console.error(
-        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: makerCoin 매도 후 takerCoin BID 실패 (uuid 없음)`,
+        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: makerCoin 매도 후 takerCoin BID 실패`,
       );
       return { kind: 'noop' };
     }
 
     return {
       kind: 'placed',
-      makerOrderUuid: bidResp.uuid,
+      makerOrderUuid: orderId,
       makerOrderPrice: takerOrderPrice,
       legOrder: 'TAKER_SELL_FIRST',
-      takerFirstCostKrw,
-      takerFirstFeeKrw,
+      takerFirstCostKrw: sellResult.grossKrw,
+      takerFirstFeeKrw: sellResult.feeKrw,
     };
   }
 
@@ -188,33 +135,35 @@ export async function processLiveBot(
     return { kind: 'waiting', pendingId: pending.id };
   }
 
-  const status = await client.getOrder(pending.makerOrderUuid);
-  const filledQty = parseFloat(status.executed_volume || '0');
   const elapsed = Date.now() - pending.createdAt.getTime();
 
-  // ----- TAKER_SELL_FIRST: takerCoin BID 체결 판정 -----
+  // TAKER_SELL_FIRST: pending 주문 = takerCoin BID on takerLeg
   if (pending.legOrder === 'TAKER_SELL_FIRST') {
-    if (filledQty > 0) {
-      const filledMakerKrw = sumFunds(status.trades); // takerCoin 매수에 지불한 KRW
-      const paidFeeMaker = parseFloat(status.paid_fee || '0');
+    const poll = await takerLeg.pollOrder(pending.makerOrderUuid);
 
-      if (filledMakerKrw === 0) {
-        return { kind: 'partial_hold', pendingId: pending.id, reason: 'takerCoin bid filled but trades funds = 0 (defensive)' };
+    if (poll.filled) {
+      if (poll.grossKrw === 0) {
+        return {
+          kind: 'partial_hold',
+          pendingId: pending.id,
+          reason: 'takerCoin bid filled but grossKrw = 0 (defensive)',
+        };
       }
 
       const takerFirstCostKrw = pending.takerFirstCostKrw ?? 0;
       const takerFirstFeeKrw = pending.takerFirstFeeKrw ?? 0;
-      const paidFeeKrw = takerFirstFeeKrw + paidFeeMaker;
-      const netProfitKrw = takerFirstCostKrw - filledMakerKrw - paidFeeKrw;
-      const realizedSpreadBps = filledMakerKrw > 0
-        ? Math.floor((takerFirstCostKrw / filledMakerKrw - 1) * 10000)
-        : 0;
+      const paidFeeKrw = takerFirstFeeKrw + poll.feeKrw;
+      const netProfitKrw = takerFirstCostKrw - poll.grossKrw - paidFeeKrw;
+      const realizedSpreadBps =
+        poll.grossKrw > 0
+          ? Math.floor((takerFirstCostKrw / poll.grossKrw - 1) * 10000)
+          : 0;
 
       return {
         kind: 'filled',
         pendingId: pending.id,
-        filledQty,
-        filledMakerKrw,
+        filledQty: poll.filledQty,
+        filledMakerKrw: poll.grossKrw,
         filledSellKrw: takerFirstCostKrw,
         paidFeeKrw,
         netProfitKrw,
@@ -223,53 +172,45 @@ export async function processLiveBot(
     }
 
     if (elapsed > bot.maxPendingMs) {
-      await client.cancelOrder(pending.makerOrderUuid);
+      await takerLeg.cancelOrder(pending.makerOrderUuid);
       return { kind: 'expired', pendingId: pending.id };
     }
 
     return { kind: 'waiting', pendingId: pending.id };
   }
 
-  // ----- MAKER_BUY_FIRST: makerCoin BID 체결 판정 (기존 로직) -----
-  if (filledQty > 0) {
-    const filledMakerKrw = sumFunds(status.trades);
-    const paidFeeMaker = parseFloat(status.paid_fee || '0');
+  // MAKER_BUY_FIRST: pending 주문 = makerCoin BID on makerLeg
+  const poll = await makerLeg.pollOrder(pending.makerOrderUuid);
 
-    if (filledMakerKrw === 0) {
-      return { kind: 'partial_hold', pendingId: pending.id, reason: 'maker filled but trades funds = 0 (defensive)' };
+  if (poll.filled) {
+    if (poll.grossKrw === 0) {
+      return {
+        kind: 'partial_hold',
+        pendingId: pending.id,
+        reason: 'maker filled but grossKrw = 0 (defensive)',
+      };
     }
 
-    const sellResp = await client.placeBestIoc(takerMarket, 'ask', { volume: String(filledQty) });
-    let filledSellQty = parseFloat(sellResp.executed_volume || '0');
-    let effectiveSellResp: UpbitOrderResp = sellResp;
-
-    // Leg-2 IOC false positive 방어 (PR D 사례)
-    if (filledSellQty === 0 && sellResp.uuid) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      const recheck = await client.getOrder(sellResp.uuid);
-      const recheckQty = parseFloat(recheck.executed_volume || '0');
-      if (recheckQty > 0) {
-        filledSellQty = recheckQty;
-        effectiveSellResp = recheck;
-      }
+    // takerCoin IOC 매도
+    const sellResult = await takerLeg.sellIoc(bot.takerCoin, poll.filledQty);
+    if (!sellResult) {
+      return {
+        kind: 'partial_hold',
+        pendingId: pending.id,
+        reason: 'taker sell IOC failed, holding makerCoin',
+      };
     }
 
-    if (filledSellQty === 0) {
-      return { kind: 'partial_hold', pendingId: pending.id, reason: 'taker(Y) sell failed after IOC + recheck, holding X' };
-    }
-
-    const filledSellKrw = sumFunds(effectiveSellResp.trades);
-    const paidFeeSell = parseFloat(effectiveSellResp.paid_fee || '0');
-    const paidFeeKrw = paidFeeMaker + paidFeeSell;
-    const netProfitKrw = filledSellKrw - filledMakerKrw - paidFeeKrw;
-    const realizedSpreadBps = Math.floor((filledSellKrw / filledMakerKrw - 1) * 10000);
+    const paidFeeKrw = poll.feeKrw + sellResult.feeKrw;
+    const netProfitKrw = sellResult.grossKrw - poll.grossKrw - paidFeeKrw;
+    const realizedSpreadBps = Math.floor((sellResult.grossKrw / poll.grossKrw - 1) * 10000);
 
     return {
       kind: 'filled',
       pendingId: pending.id,
-      filledQty,
-      filledMakerKrw,
-      filledSellKrw,
+      filledQty: poll.filledQty,
+      filledMakerKrw: poll.grossKrw,
+      filledSellKrw: sellResult.grossKrw,
       paidFeeKrw,
       netProfitKrw,
       realizedSpreadBps,
@@ -277,7 +218,7 @@ export async function processLiveBot(
   }
 
   if (elapsed > bot.maxPendingMs) {
-    await client.cancelOrder(pending.makerOrderUuid);
+    await makerLeg.cancelOrder(pending.makerOrderUuid);
     return { kind: 'expired', pendingId: pending.id };
   }
 
