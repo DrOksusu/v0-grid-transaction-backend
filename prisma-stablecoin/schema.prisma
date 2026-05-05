@@ -194,6 +194,11 @@ model MakerTakerSimTrade {
   netProfitKrw      Decimal? @db.Decimal(18, 4)
   realizedSpreadBps Int?
 
+  // 적응형 레그 순서 (PR I)
+  legOrder          String   @default("MAKER_BUY_FIRST") // MAKER_BUY_FIRST | TAKER_SELL_FIRST
+  takerFirstCostKrw Decimal? @db.Decimal(18, 4)          // TAKER_SELL_FIRST: makerCoin IOC 매도로 받은 KRW
+  takerFirstFeeKrw  Decimal? @db.Decimal(14, 4)          // TAKER_SELL_FIRST: IOC 매도 수수료
+
   status String
   notes  String? @db.Text
 

@@ -15,6 +15,7 @@ import {
 } from '../services/maker-taker-simulator.service';
 import {
   processLiveBot as runLiveExecutor,
+  decideLegOrder,
   type OrderClient,
   type PendingTradeInput,
   type LiveBotInput,
@@ -33,14 +34,13 @@ import { isSpreadProfitable } from '../services/maker-taker-spread-gate';
  *
  * 설계서 §3~§4 참조.
  *   - 호가 업데이트마다 활성 봇별로 evaluate
- *   - pending 주문 없음 → 새 가상 주문 생성 (PENDING)
+ *   - pending 주문 없음 → 방향 결정(decideLegOrder) 후 새 가상 주문 생성 (PENDING)
  *   - pending 주문 있음 → shouldFill() 판정 → FILLED / EXPIRED
  *   - FILLED 시 taker leg 시뮬레이션 + P&L 저장
  */
 export class MakerTakerSimulatorAgent extends BaseAgent {
   private unsubscribe: (() => void) | null = null;
   private evaluateInFlight = false;
-  // userId별 Upbit 클라이언트 + balance 캐시 (live=true 봇용, lazy init)
   private clients = new Map<number, { upbit: UpbitService; cache: BalanceCache }>();
 
   constructor() {
@@ -122,51 +122,83 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
 
     const now = new Date();
 
-    // 현재 PENDING trade 조회
-    const pending = await prisma.makerTakerSimTrade.findFirst({
+    const pending = await (prisma.makerTakerSimTrade as any).findFirst({
       where: { botId: bot.id, status: 'PENDING' },
       orderBy: { createdAt: 'desc' },
     });
 
     if (!pending) {
-      // PR H — 수익성 게이팅 (live/sim 정합성)
-      const gate = isSpreadProfitable(makerBook, bot.minSpreadKrw);
-      if (!gate.ok) {
-        // row 미생성 — 통계 단절 리스크는 spec §7 R1 참조
-        return;
-      }
+      // 방향 결정
+      const direction = decideLegOrder(makerBook, takerBook);
 
-      // 새 가상 주문 생성: makerCoin의 현재 best bid + bidOffsetKrw
-      const makerOrderPrice = makerBook.bid.price + bot.bidOffsetKrw;
-      await prisma.makerTakerSimTrade.create({
-        data: {
-          botId: bot.id,
-          makerCoin: bot.makerCoin,
-          takerCoin: bot.takerCoin,
-          makerOrderPrice,
-          quantity: bot.quantity,
-          status: 'PENDING',
-          notes: `생성: makerBid=${makerBook.bid.price}, offset=${bot.bidOffsetKrw}, spread=${gate.spreadKrw}`,
-        },
-      });
+      if (direction === 'MAKER_BUY_FIRST') {
+        const gate = isSpreadProfitable(makerBook, bot.minSpreadKrw);
+        if (!gate.ok) return;
+
+        const makerOrderPrice = makerBook.bid.price + bot.bidOffsetKrw;
+        await (prisma.makerTakerSimTrade as any).create({
+          data: {
+            botId: bot.id,
+            makerCoin: bot.makerCoin,
+            takerCoin: bot.takerCoin,
+            makerOrderPrice,
+            quantity: bot.quantity,
+            status: 'PENDING',
+            legOrder: 'MAKER_BUY_FIRST',
+            notes: `생성[MAKER_BUY_FIRST]: makerBid=${makerBook.bid.price}, offset=${bot.bidOffsetKrw}, spread=${gate.spreadKrw}`,
+          },
+        });
+      } else {
+        // TAKER_SELL_FIRST: makerCoin.bid > takerCoin.bid
+        const crossSpread = makerBook.bid.price - takerBook.bid.price;
+        if (crossSpread < bot.minSpreadKrw) return;
+
+        // 시뮬: IOC 매도 makerCoin at makerBook.bid
+        const takerFirstPrice = makerBook.bid.price;
+        const qty = Number(bot.quantity);
+        const takerFirstCostKrw = takerFirstPrice * qty;
+        const takerFirstFeeKrw = (takerFirstCostKrw * bot.takerFeeBps) / 10000;
+
+        // takerCoin maker BID 주문가
+        const makerOrderPrice = takerBook.bid.price + bot.bidOffsetKrw;
+
+        await (prisma.makerTakerSimTrade as any).create({
+          data: {
+            botId: bot.id,
+            makerCoin: bot.makerCoin,
+            takerCoin: bot.takerCoin,
+            makerOrderPrice,
+            quantity: bot.quantity,
+            status: 'PENDING',
+            legOrder: 'TAKER_SELL_FIRST',
+            takerFirstCostKrw,
+            takerFirstFeeKrw,
+            notes: `생성[TAKER_SELL_FIRST]: makerBid=${makerBook.bid.price}, takerBid=${takerBook.bid.price}, crossSpread=${crossSpread}`,
+          },
+        });
+      }
       return;
     }
 
     // pending 주문 있음 → 체결 판정
+    const legOrder: string = pending.legOrder ?? 'MAKER_BUY_FIRST';
+
+    // 체결 판정 시 사용할 호가북: TAKER_SELL_FIRST는 takerBook 기준
+    const bookForFill = legOrder === 'TAKER_SELL_FIRST' ? takerBook : makerBook;
     const decision = shouldFill(
       {
         makerOrderPrice: pending.makerOrderPrice,
         createdAt: pending.createdAt,
         maxPendingMs: bot.maxPendingMs,
       },
-      makerBook,
+      bookForFill,
       now,
     );
 
     if (decision === 'wait') return;
 
     if (decision === 'expire') {
-      await prisma.makerTakerSimTrade.update({
+      await (prisma.makerTakerSimTrade as any).update({
         where: { id: pending.id },
         data: {
           status: 'EXPIRED',
@@ -176,7 +208,42 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       return;
     }
 
-    // decision === 'fill' → taker leg 시뮬레이션
+    // decision === 'fill'
+    if (legOrder === 'TAKER_SELL_FIRST') {
+      // takerCoin maker BID 체결 → P&L 계산
+      const qty = Number(bot.quantity);
+      const takerFirstCostKrw = Number(pending.takerFirstCostKrw ?? 0);
+      const takerFirstFeeKrw = Number(pending.takerFirstFeeKrw ?? 0);
+      const makerFilledKrw = pending.makerOrderPrice * qty;
+      const makerFee = (makerFilledKrw * bot.makerFeeBps) / 10000;
+      const feeKrw = takerFirstFeeKrw + makerFee;
+      const grossProfitKrw = takerFirstCostKrw - makerFilledKrw;
+      const netProfitKrw = grossProfitKrw - feeKrw;
+      const realizedSpreadBps = makerFilledKrw > 0
+        ? Math.floor(((takerFirstCostKrw - makerFilledKrw) / makerFilledKrw) * 10000)
+        : 0;
+
+      await (prisma.makerTakerSimTrade as any).update({
+        where: { id: pending.id },
+        data: {
+          status: 'FILLED',
+          makerFilledAt: now,
+          makerFilledPrice: pending.makerOrderPrice,
+          takerExecutedAt: now,
+          takerMarketBid: Math.round(takerFirstCostKrw / Math.max(qty, 1e-9)),
+          grossProfitKrw,
+          feeKrw,
+          netProfitKrw,
+          realizedSpreadBps,
+          notes:
+            (pending.notes ?? '') +
+            ` | FILLED[TAKER_SELL_FIRST] takerSell=${takerFirstCostKrw} takerBuy=${makerFilledKrw} net=${netProfitKrw.toFixed(2)}`,
+        },
+      });
+      return;
+    }
+
+    // MAKER_BUY_FIRST: 기존 taker leg 시뮬
     const takerResult = simulateTakerLeg({
       makerFilledPrice: pending.makerOrderPrice,
       takerOrderbook: takerBook,
@@ -187,7 +254,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     });
 
     if (isAbort(takerResult)) {
-      await prisma.makerTakerSimTrade.update({
+      await (prisma.makerTakerSimTrade as any).update({
         where: { id: pending.id },
         data: {
           status: 'CANCELLED',
@@ -199,7 +266,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       return;
     }
 
-    await prisma.makerTakerSimTrade.update({
+    await (prisma.makerTakerSimTrade as any).update({
       where: { id: pending.id },
       data: {
         status: 'FILLED',
@@ -214,15 +281,13 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         realizedSpreadBps: takerResult.realizedSpreadBps,
         notes:
           (pending.notes ?? '') +
-          ` | FILLED takerBid=${takerResult.takerPrice} net=${takerResult.netProfitKrw.toFixed(2)}`,
+          ` | FILLED[MAKER_BUY_FIRST] takerBid=${takerResult.takerPrice} net=${takerResult.netProfitKrw.toFixed(2)}`,
       },
     });
   }
 
   /**
    * live=true 봇 처리. maker-taker-live-executor에 위임 + DB write 적용.
-   *
-   * 메서드명은 `handleLiveBot` — import한 executor 함수 `processLiveBot`(alias `runLiveExecutor`)와 구분.
    */
   private async handleLiveBot(
     bot: Awaited<ReturnType<typeof prisma.makerTakerSimBot.findMany>>[number],
@@ -230,8 +295,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   ): Promise<void> {
     if (bot.killSwitch) return;
 
-    // 1. PENDING 조회 (live=true 트레이드만)
-    const pending = await prisma.makerTakerSimTrade.findFirst({
+    const pending = await (prisma.makerTakerSimTrade as any).findFirst({
       where: { botId: bot.id, status: 'PENDING', live: true },
       orderBy: { createdAt: 'desc' },
     });
@@ -244,80 +308,90 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           makerOrderPrice: pending.makerOrderPrice,
           createdAt: pending.createdAt,
           notes: pending.notes,
+          legOrder: pending.legOrder ?? 'MAKER_BUY_FIRST',
+          takerFirstCostKrw: pending.takerFirstCostKrw != null ? Number(pending.takerFirstCostKrw) : null,
+          takerFirstFeeKrw: pending.takerFirstFeeKrw != null ? Number(pending.takerFirstFeeKrw) : null,
         }
       : null;
 
-    // 2. 클라이언트 (with credential cache)
     let upbitClient;
     try {
       upbitClient = await this.getClientFor(bot.userId);
     } catch (err: any) {
-      console.error(
-        `[MakerTakerSimulatorAgent] bot ${bot.id} credential missing:`,
-        err.message,
-      );
+      console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} credential missing:`, err.message);
       return;
     }
 
-    // 3. 잔고 가드 + pre-check (CASE A — pending null일 때만)
     let preCheckOk = true;
     if (pending === null) {
+      const makerBook = books.get(`KRW-${bot.makerCoin}`);
+      const takerBook = books.get(`KRW-${bot.takerCoin}`);
+      if (!makerBook || !takerBook) return;
+
       let balances: Record<string, number>;
       try {
         balances = await upbitClient.cache.get();
       } catch (err: any) {
-        console.error(
-          `[MakerTakerSimulatorAgent] bot ${bot.id} balance fetch 실패:`,
-          err.message,
-        );
+        console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} balance fetch 실패:`, err.message);
         return;
       }
 
-      // (a) minTakerBalance 자동 일시정지
-      const guard = shouldAutoPauseForMinBalance({
-        takerCoin: bot.takerCoin,
-        takerBalance: balances[bot.takerCoin] ?? 0,
-        minTakerBalance: bot.minTakerBalance,
-      });
-      if (guard.autoPause) {
-        await prisma.makerTakerSimBot.update({
-          where: { id: bot.id },
-          data: { enabled: false },
+      const direction = decideLegOrder(makerBook, takerBook);
+
+      if (direction === 'MAKER_BUY_FIRST') {
+        // (a) minTakerBalance 자동 일시정지
+        const guard = shouldAutoPauseForMinBalance({
+          takerCoin: bot.takerCoin,
+          takerBalance: balances[bot.takerCoin] ?? 0,
+          minTakerBalance: bot.minTakerBalance,
         });
-        console.warn(
-          `[MakerTakerSimulatorAgent] bot ${bot.id} 자동 일시정지 (enabled=false): ${guard.reason}`,
-        );
-        return;
-      }
+        if (guard.autoPause) {
+          await prisma.makerTakerSimBot.update({ where: { id: bot.id }, data: { enabled: false } });
+          console.warn(`[MakerTakerSimulatorAgent] bot ${bot.id} 자동 일시정지: ${guard.reason}`);
+          return;
+        }
 
-      // (b) 사전 잔고 체크 — maker placement 직전
-      const makerBook = books.get(`KRW-${bot.makerCoin}`);
-      if (!makerBook) {
-        return;
-      }
-      const makerOrderPrice = makerBook.bid.price + bot.bidOffsetKrw;
-      const precheck = checkMakerPlacementBalance({
-        takerCoin: bot.takerCoin,
-        quantity: Number(bot.quantity),
-        makerOrderPrice,
-        makerFeeBps: bot.makerFeeBps,
-        balances,
-      });
-      if (!precheck.ok) {
-        console.log(
-          `[MakerTakerSimulatorAgent] bot ${bot.id} pre-check 실패: ${precheck.reason}`,
-        );
-        preCheckOk = false;
-      }
+        // (b) 사전 잔고 체크
+        const makerOrderPrice = makerBook.bid.price + bot.bidOffsetKrw;
+        const precheck = checkMakerPlacementBalance({
+          takerCoin: bot.takerCoin,
+          quantity: Number(bot.quantity),
+          makerOrderPrice,
+          makerFeeBps: bot.makerFeeBps,
+          balances,
+        });
+        if (!precheck.ok) {
+          console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} pre-check 실패: ${precheck.reason}`);
+          preCheckOk = false;
+        }
 
-      // PR H — 수익성 게이팅 (precheck 통과 후에만 검사)
-      if (preCheckOk) {
-        const gate = isSpreadProfitable(makerBook, bot.minSpreadKrw);
-        if (!gate.ok) {
+        // (c) 수익성 게이팅
+        if (preCheckOk) {
+          const gate = isSpreadProfitable(makerBook, bot.minSpreadKrw);
+          if (!gate.ok) {
+            console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} spread gate: ${gate.reason}`);
+            preCheckOk = false;
+          }
+        }
+      } else {
+        // TAKER_SELL_FIRST: makerCoin 잔고 체크 (매도해야 하므로)
+        const makerCoinBalance = balances[bot.makerCoin] ?? 0;
+        if (makerCoinBalance < Number(bot.quantity)) {
           console.log(
-            `[MakerTakerSimulatorAgent] bot ${bot.id} spread gate: ${gate.reason}`,
+            `[MakerTakerSimulatorAgent] bot ${bot.id} TAKER_SELL_FIRST pre-check 실패: makerCoin 잔고 부족 (${makerCoinBalance} < ${bot.quantity})`,
           );
           preCheckOk = false;
+        }
+
+        // 수익성 게이팅: cross spread
+        if (preCheckOk) {
+          const crossSpread = makerBook.bid.price - takerBook.bid.price;
+          if (crossSpread < bot.minSpreadKrw) {
+            console.log(
+              `[MakerTakerSimulatorAgent] bot ${bot.id} TAKER_SELL_FIRST spread gate: crossSpread ${crossSpread} < ${bot.minSpreadKrw}`,
+            );
+            preCheckOk = false;
+          }
         }
       }
     }
@@ -338,7 +412,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       quantity: Number(bot.quantity),
       maxPendingMs: bot.maxPendingMs,
       killSwitch: bot.killSwitch,
-      minSpreadKrw: bot.minSpreadKrw, // PR H — agent 가 spread gate 결정 시 사용 (Prisma NOT NULL, Int @default(12))
+      minSpreadKrw: bot.minSpreadKrw,
     };
 
     const result = await runLiveExecutor({
@@ -350,39 +424,29 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       preCheckOk,
     });
 
-    // 거래 직후 잔고 캐시 invalidate (다음 evaluate에서 fresh)
-    if (
-      result.kind === 'placed' ||
-      result.kind === 'filled' ||
-      result.kind === 'partial_hold'
-    ) {
+    if (result.kind === 'placed' || result.kind === 'filled' || result.kind === 'partial_hold') {
       upbitClient.cache.invalidate();
     }
 
-    // 4. 결과별 DB write
     await this.persistLiveResult(bot, pending, result);
   }
 
-  /** LiveExecutorResult 7가지 kind를 DB row에 반영 */
+  /** LiveExecutorResult를 DB row에 반영 */
   private async persistLiveResult(
     bot: Awaited<ReturnType<typeof prisma.makerTakerSimBot.findMany>>[number],
-    pending: Awaited<ReturnType<typeof prisma.makerTakerSimTrade.findFirst>>,
+    pending: any,
     result: LiveExecutorResult,
   ): Promise<void> {
     switch (result.kind) {
       case 'noop':
-        // lock held / preCheck abort / no book / placeLimit rejected 케이스 — 운영 가시성 위해 로깅
-        console.log(
-          `[MakerTakerSimulatorAgent] bot ${bot.id} live noop (lock held / preCheck abort / no book / placeLimit rejected)`,
-        );
+        console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} live noop`);
         return;
 
       case 'waiting':
-        // 일반 polling — 로그 불필요 (스팸 방지)
         return;
 
       case 'placed':
-        await prisma.makerTakerSimTrade.create({
+        await (prisma.makerTakerSimTrade as any).create({
           data: {
             botId: bot.id,
             makerCoin: bot.makerCoin,
@@ -392,54 +456,53 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             status: 'PENDING',
             live: true,
             makerOrderUuid: result.makerOrderUuid,
-            notes: `LIVE order placed at ${result.makerOrderPrice}`,
+            legOrder: result.legOrder,
+            takerFirstCostKrw: result.takerFirstCostKrw ?? null,
+            takerFirstFeeKrw: result.takerFirstFeeKrw ?? null,
+            notes: `LIVE order placed [${result.legOrder}] at ${result.makerOrderPrice}`,
           },
         });
         return;
 
       case 'expired':
-        await prisma.makerTakerSimTrade.update({
+        await (prisma.makerTakerSimTrade as any).update({
           where: { id: result.pendingId },
           data: {
             status: 'EXPIRED',
-            notes:
-              (pending?.notes ?? '') +
-              ` | LIVE expired (cancelled at ${new Date().toISOString()})`,
+            notes: (pending?.notes ?? '') + ` | LIVE expired (cancelled at ${new Date().toISOString()})`,
           },
         });
         return;
 
       case 'filled': {
         const now = new Date();
-        // 모든 KRW 값은 raw float — DB Decimal 컬럼에 맞춰 round (Decimal은 자동 처리되지만 안전 위해)
         const grossProfitKrw = +(result.filledSellKrw - result.filledMakerKrw).toFixed(4);
         const feeKrw = +result.paidFeeKrw.toFixed(4);
         const netProfitKrw = +result.netProfitKrw.toFixed(4);
+        const legOrder: string = pending?.legOrder ?? 'MAKER_BUY_FIRST';
 
-        await prisma.makerTakerSimTrade.update({
+        await (prisma.makerTakerSimTrade as any).update({
           where: { id: result.pendingId },
           data: {
             status: 'FILLED',
             makerFilledAt: now,
             makerFilledPrice: pending?.makerOrderPrice ?? null,
             takerExecutedAt: now,
-            takerMarketBid: Math.round(
-              result.filledSellKrw / Math.max(result.filledQty, 1e-9),
-            ),
+            takerMarketBid: Math.round(result.filledSellKrw / Math.max(result.filledQty, 1e-9)),
             grossProfitKrw,
             feeKrw,
             netProfitKrw,
             realizedSpreadBps: result.realizedSpreadBps,
             notes:
               (pending?.notes ?? '') +
-              ` | LIVE FILLED maker=${result.filledMakerKrw} sell=${result.filledSellKrw} fees=${feeKrw} net=${netProfitKrw}`,
+              ` | LIVE FILLED[${legOrder}] sell=${result.filledSellKrw} buy=${result.filledMakerKrw} fees=${feeKrw} net=${netProfitKrw}`,
           },
         });
         return;
       }
 
       case 'partial_hold':
-        await prisma.makerTakerSimTrade.update({
+        await (prisma.makerTakerSimTrade as any).update({
           where: { id: result.pendingId },
           data: {
             status: 'PARTIAL_HOLD',
@@ -449,14 +512,12 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         return;
 
       default: {
-        // exhaustive check — 향후 새 kind 추가 시 컴파일 에러로 알림
         const _exhaustive: never = result;
         return _exhaustive;
       }
     }
   }
 
-  /** userId별 Upbit 클라이언트 + balance 캐시 lazy init (PR B 패턴) */
   private async getClientFor(
     userId: number,
   ): Promise<{ upbit: UpbitService; cache: BalanceCache }> {
@@ -466,9 +527,8 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     const credential = await mainPrisma.credential.findFirst({
       where: { userId, exchange: 'upbit' },
     });
-    if (!credential) {
-      throw new Error(`Upbit credential not found for userId=${userId}`);
-    }
+    if (!credential) throw new Error(`Upbit credential not found for userId=${userId}`);
+
     const accessKey = decrypt(credential.apiKey);
     const secretKey = decrypt(credential.secretKey);
     const upbit = new UpbitService({ accessKey, secretKey });
