@@ -3,6 +3,7 @@ import { authenticate } from '../middlewares/auth';
 import { requireAdmin } from '../middlewares/requireAdmin';
 import {
   getBot,
+  patchBot,
   getOrderbooks,
   getOpportunityStats,
   getRecentOpportunities,
@@ -34,6 +35,7 @@ router.use(authenticate);
 router.use(requireAdmin);
 
 router.get('/bot', getBot);
+router.patch('/bot', patchBot);
 router.get('/orderbooks', getOrderbooks);
 router.get('/opportunities/stats', getOpportunityStats);
 router.get('/opportunities/recent', getRecentOpportunities);

@@ -131,6 +131,59 @@ export const getSimOverview = async (_req: AuthRequest, res: Response, next: Nex
 };
 
 /**
+ * PATCH /api/admin/stablecoin/bot
+ * Body: Partial<{ entryThresholdBps, tradeSizeKrw, maxDailyTrades, dailyLossLimitKrw }>
+ * 봇 설정값(임계값/거래당/일 한도/손실 한도) 부분 업데이트.
+ */
+export const patchBot = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const body = req.body ?? {};
+    const patch: Record<string, number> = {};
+
+    if (body.entryThresholdBps !== undefined) {
+      if (!Number.isInteger(body.entryThresholdBps) || body.entryThresholdBps <= 0) {
+        throw new AppError('Invalid body: entryThresholdBps must be positive integer', 400);
+      }
+      patch.entryThresholdBps = body.entryThresholdBps;
+    }
+    if (body.tradeSizeKrw !== undefined) {
+      if (!Number.isInteger(body.tradeSizeKrw) || body.tradeSizeKrw <= 0) {
+        throw new AppError('Invalid body: tradeSizeKrw must be positive integer', 400);
+      }
+      patch.tradeSizeKrw = body.tradeSizeKrw;
+    }
+    if (body.maxDailyTrades !== undefined) {
+      if (!Number.isInteger(body.maxDailyTrades) || body.maxDailyTrades <= 0) {
+        throw new AppError('Invalid body: maxDailyTrades must be positive integer', 400);
+      }
+      patch.maxDailyTrades = body.maxDailyTrades;
+    }
+    if (body.dailyLossLimitKrw !== undefined) {
+      if (!Number.isInteger(body.dailyLossLimitKrw) || body.dailyLossLimitKrw <= 0) {
+        throw new AppError('Invalid body: dailyLossLimitKrw must be positive integer', 400);
+      }
+      patch.dailyLossLimitKrw = body.dailyLossLimitKrw;
+    }
+
+    if (Object.keys(patch).length === 0) {
+      throw new AppError('No valid fields to update', 400);
+    }
+
+    const updated = await arbService.updateBotConfig(userId, patch);
+    res.json({
+      ...updated,
+      totalProfitUsd: updated.totalProfitUsd.toString(),
+      perCoinMinUsd: updated.perCoinMinUsd.toString(),
+      perCoinMaxUsd: updated.perCoinMaxUsd.toString(),
+    });
+  } catch (error: any) {
+    if (error.code === 'P2025') return next(new AppError('Bot not found', 404));
+    next(error);
+  }
+};
+
+/**
  * POST /api/admin/stablecoin/bot/live
  * Body: { live: boolean, confirm?: 'I_UNDERSTAND_LIVE_TRADING' }
  *
