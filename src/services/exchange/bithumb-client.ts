@@ -209,11 +209,25 @@ export class BithumbClient implements ExchangeClient {
    */
   async getOrder(orderId: string): Promise<PlacedOrder> {
     const d = await this.apiGet<any>('/v1/order', { uuid: orderId });
+    const filledQty = parseFloat(d?.executed_volume ?? '0');
+
+    // Bithumb avg_price 필드는 종종 "0"으로 오므로 trades 배열로 가중평균 계산
+    let avgFillPrice = parseFloat(d?.avg_price ?? '0');
+    if (avgFillPrice === 0 && Array.isArray(d?.trades) && d.trades.length > 0) {
+      const totalFunds = d.trades.reduce(
+        (s: number, t: any) => s + parseFloat(t.funds ?? '0'), 0,
+      );
+      const totalVol = d.trades.reduce(
+        (s: number, t: any) => s + parseFloat(t.volume ?? '0'), 0,
+      );
+      avgFillPrice = totalVol > 0 ? totalFunds / totalVol : 0;
+    }
+
     return {
       orderId,
       status: this.mapStatus((d?.state ?? '').toLowerCase()),
-      filledQty: parseFloat(d?.executed_volume ?? '0'),
-      avgFillPrice: parseFloat(d?.avg_price ?? '0'),
+      filledQty,
+      avgFillPrice,
       totalFeeKrw: parseFloat(d?.paid_fee ?? '0'),
     };
   }
