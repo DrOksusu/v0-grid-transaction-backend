@@ -46,10 +46,12 @@ const LISTING_KEYWORDS = ['신규 거래지원'];
 // 티커로 오인할 수 있는 제외 단어
 const TICKER_EXCLUDES = new Set(['KRW', 'BTC', 'USDT', 'ETH', 'BNB', 'USDC']);
 
-// 공지 직후(announced), +2h, +4h 스냅샷 스케줄 (ms 단위)
+// 공지 직후(announced), +1h, +2h, +4h, +6h 스냅샷 스케줄 (ms 단위)
 const SNAPSHOT_SCHEDULE = [
+  { type: '+1h', delayMs: 1 * 60 * 60 * 1000 },
   { type: '+2h', delayMs: 2 * 60 * 60 * 1000 },
   { type: '+4h', delayMs: 4 * 60 * 60 * 1000 },
+  { type: '+6h', delayMs: 6 * 60 * 60 * 1000 },
 ];
 
 class UpbitListingMonitorService {
@@ -280,8 +282,8 @@ class UpbitListingMonitorService {
     for (const schedule of SNAPSHOT_SCHEDULE) {
       const timer = setTimeout(async () => {
         await this.captureSnapshots(announcementId, ticker, schedule.type);
-        // +4h 완료 시 status → complete
-        if (schedule.type === '+4h') {
+        // +6h 완료 시 status → complete
+        if (schedule.type === '+6h') {
           await (prisma as any).upbitListingAnnouncement.update({
             where: { id: announcementId },
             data: { status: 'complete' },
