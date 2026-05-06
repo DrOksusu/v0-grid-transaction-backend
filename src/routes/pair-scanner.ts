@@ -86,7 +86,7 @@ router.post(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.userId!;
-      const { makerCoin, takerCoin, qty, makerFeeBps, takerFeeBps, minSpreadKrw, bidOffsetKrw, minTakerBalance, makerExchange, takerExchange } = req.body;
+      const { makerCoin, takerCoin, qty, makerFeeBps, takerFeeBps, minSpreadKrw, bidOffsetKrw, minTakerBalance, makerExchange, takerExchange, live } = req.body;
 
       if (!makerCoin || !takerCoin) {
         res.status(400).json({ success: false, error: 'makerCoin, takerCoin 필수' });
@@ -116,7 +116,7 @@ router.post(
           takerExchange: takerExchange ?? 'upbit',
           enabled: true,
           killSwitch: false,
-          live: false,
+          live: live ?? false,
         },
       });
       res.json({ success: true, data: bot });
