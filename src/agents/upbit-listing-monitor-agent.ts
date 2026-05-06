@@ -1,5 +1,6 @@
 import { BaseAgent } from './base-agent';
 import { upbitListingMonitorService } from '../services/upbit-listing-monitor.service';
+import { listingAutoSellerService } from '../services/listing-auto-seller.service';
 
 export class UpbitListingMonitorAgent extends BaseAgent {
   constructor() {
@@ -18,6 +19,8 @@ export class UpbitListingMonitorAgent extends BaseAgent {
 
   protected async onCycle(): Promise<void> {
     await upbitListingMonitorService.pollAnnouncements();
+    // 매수 체결 주문에 대한 자동매도 조건 점검
+    await listingAutoSellerService.checkAndSell();
   }
 
   protected async onStop(): Promise<void> {

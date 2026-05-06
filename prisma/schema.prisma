@@ -582,35 +582,49 @@ model UpbitListingAnnouncement {
 
 // 신규상장 자동매수 설정 (싱글톤 — id=1 고정)
 model ListingAutoTradeConfig {
-  id         Int      @id @default(autoincrement())
-  enabled    Boolean  @default(false)
-  amountKrw  Int      @default(100000)
-  useBinance Boolean  @default(true)
-  useBithumb Boolean  @default(true)
-  useMexc    Boolean  @default(false)
-  updatedAt  DateTime @updatedAt
+  id              Int      @id @default(autoincrement())
+  enabled         Boolean  @default(false)
+  amountKrw       Int      @default(100000)
+  useBinance      Boolean  @default(true)
+  useBithumb      Boolean  @default(true)
+  useMexc         Boolean  @default(false)
+  autoSellEnabled Boolean  @default(true)
+  takeProfitPct   Float    @default(20)   // +20% 목표 수익
+  stopLossPct     Float    @default(10)   // -10% 손절
+  maxHoldMinutes  Int      @default(30)   // 30분 시간 컷
+  updatedAt       DateTime @updatedAt
 
   @@map("listing_auto_trade_config")
 }
 
 // 신규상장 자동매수 주문 기록
 model ListingAutoOrder {
-  id             Int      @id @default(autoincrement())
+  id             Int       @id @default(autoincrement())
   announcementId Int
-  exchange       String   // binance | bithumb
+  exchange       String    // binance | bithumb | mexc
   ticker         String
   amountKrw      Int
-  amountUsdt     Float?   // Binance 주문 시 환산된 USDT 금액
+  amountUsdt     Float?    // Binance/MEXC 주문 시 환산된 USDT 금액
   orderId        String?
-  status         String   @default("pending") // pending | filled | failed | skipped
+  status         String    @default("pending") // pending | filled | failed | skipped
   filledQty      Float?
-  filledPrice    Float?
-  errorMsg       String?  @db.Text
-  createdAt      DateTime @default(now())
+  filledPrice    Float?    // 매수 평균가 (Binance/MEXC: USDT, Bithumb: KRW)
+  errorMsg       String?   @db.Text
+  createdAt      DateTime  @default(now())
+  // ── 자동매도 관련 필드 ─────────────────────────────
+  sellReason     String?   // take_profit | stop_loss | time_cut
+  sellStatus     String?   // pending | filled | failed
+  sellOrderId    String?
+  sellFilledQty  Float?
+  sellAvgPrice   Float?    // 매도 평균가 (Binance/MEXC: USDT, Bithumb: KRW)
+  profitPct      Float?    // 실현 수익률 %
+  soldAt         DateTime?
+  sellErrorMsg   String?   @db.Text
   announcement   UpbitListingAnnouncement @relation(fields: [announcementId], references: [id])
 
   @@unique([announcementId, exchange])
   @@index([status])
+  @@index([sellStatus])
   @@index([createdAt])
   @@map("listing_auto_orders")
 }

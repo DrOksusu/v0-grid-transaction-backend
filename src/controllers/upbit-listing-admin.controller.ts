@@ -127,13 +127,19 @@ export const getAutoTradeConfig = async (req: AuthRequest, res: Response, next: 
 
 /**
  * PUT /api/admin/upbit-listings/auto-trade/config
- * 자동매수 설정 변경
- * Body: { enabled?, amountKrw?, useBinance?, useBithumb? }
+ * 자동매수/매도 설정 변경
+ * Body: { enabled?, amountKrw?, useBinance?, useBithumb?, useMexc?, autoSellEnabled?, takeProfitPct?, stopLossPct?, maxHoldMinutes? }
  */
 export const updateAutoTradeConfig = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { enabled, amountKrw, useBinance, useBithumb, useMexc } = req.body;
-    const config = await listingAutoTraderService.updateConfig({ enabled, amountKrw, useBinance, useBithumb, useMexc });
+    const {
+      enabled, amountKrw, useBinance, useBithumb, useMexc,
+      autoSellEnabled, takeProfitPct, stopLossPct, maxHoldMinutes,
+    } = req.body;
+    const config = await listingAutoTraderService.updateConfig({
+      enabled, amountKrw, useBinance, useBithumb, useMexc,
+      autoSellEnabled, takeProfitPct, stopLossPct, maxHoldMinutes,
+    });
     return successResponse(res, config);
   } catch (error) {
     next(error);

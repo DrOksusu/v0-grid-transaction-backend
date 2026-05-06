@@ -16,6 +16,10 @@ interface AutoTradeConfig {
   useBinance: boolean;
   useBithumb: boolean;
   useMexc: boolean;
+  autoSellEnabled: boolean;
+  takeProfitPct: number;
+  stopLossPct: number;
+  maxHoldMinutes: number;
 }
 
 interface OrderResult {
@@ -139,7 +143,18 @@ class ListingAutoTraderService {
   async getConfig(): Promise<AutoTradeConfig> {
     const row = await (prisma as any).listingAutoTradeConfig.findUnique({ where: { id: 1 } });
     if (!row) {
-      return { enabled: false, amountKrw: 100000, useBinance: true, useBithumb: true, useMexc: false };
+      // DB에 설정이 없으면 기본값 반환
+      return {
+        enabled: false,
+        amountKrw: 100000,
+        useBinance: true,
+        useBithumb: true,
+        useMexc: false,
+        autoSellEnabled: true,
+        takeProfitPct: 20,
+        stopLossPct: 10,
+        maxHoldMinutes: 30,
+      };
     }
     return {
       enabled: row.enabled,
@@ -147,6 +162,10 @@ class ListingAutoTraderService {
       useBinance: row.useBinance,
       useBithumb: row.useBithumb,
       useMexc: row.useMexc ?? false,
+      autoSellEnabled: row.autoSellEnabled ?? true,
+      takeProfitPct: row.takeProfitPct ?? 20,
+      stopLossPct: row.stopLossPct ?? 10,
+      maxHoldMinutes: row.maxHoldMinutes ?? 30,
     };
   }
 
@@ -159,6 +178,10 @@ class ListingAutoTraderService {
         useBinance: data.useBinance ?? true,
         useBithumb: data.useBithumb ?? true,
         useMexc: data.useMexc ?? false,
+        autoSellEnabled: data.autoSellEnabled ?? true,
+        takeProfitPct: data.takeProfitPct ?? 20,
+        stopLossPct: data.stopLossPct ?? 10,
+        maxHoldMinutes: data.maxHoldMinutes ?? 30,
       },
       update: data,
     });
@@ -168,6 +191,10 @@ class ListingAutoTraderService {
       useBinance: row.useBinance,
       useBithumb: row.useBithumb,
       useMexc: row.useMexc ?? false,
+      autoSellEnabled: row.autoSellEnabled ?? true,
+      takeProfitPct: row.takeProfitPct ?? 20,
+      stopLossPct: row.stopLossPct ?? 10,
+      maxHoldMinutes: row.maxHoldMinutes ?? 30,
     };
   }
 
@@ -295,15 +322,41 @@ class ListingAutoTraderService {
       // qty=1, krwPerUnit=amountKrw/1.02 → price = amountKrw
       const placed = await client.placeMarketOrder('buy', ticker, 1, amountKrw / 1.02);
 
+      // 빗썸 시장가 매수 직후 현재가 조회 → 매수 평균가 근사값으로 사용
+      const currentKrwPrice = await this.fetchBithumbCurrentPrice(ticker);
+      // 매수 수량 추정: amountKrw / currentPrice (수수료 없이 단순 계산, 근사값)
+      const estimatedQty = currentKrwPrice && currentKrwPrice > 0
+        ? (amountKrw / 1.02) / currentKrwPrice
+        : null;
+
       await (prisma as any).listingAutoOrder.update({
         where: { id: dbRow.id },
-        data: { orderId: placed.orderId, status: 'filled' },
+        data: {
+          orderId: placed.orderId,
+          status: 'filled',
+          filledPrice: currentKrwPrice ?? undefined,
+          filledQty: estimatedQty ?? undefined,
+        },
       });
       return { exchange, status: 'filled', orderId: placed.orderId, amountKrw };
     } catch (err: any) {
       const msg = String(err?.message ?? err);
       await this.updateOrderFailed(dbRow.id, msg);
       return { exchange, status: 'failed', amountKrw, errorMsg: msg };
+    }
+  }
+
+  // 빗썸 현재가 조회 (Public API)
+  private async fetchBithumbCurrentPrice(ticker: string): Promise<number | null> {
+    try {
+      const res = await axios.get(
+        `https://api.bithumb.com/public/ticker/${ticker.toUpperCase()}_KRW`,
+        { timeout: 3000 },
+      );
+      if (res.data?.status !== '0000') return null;
+      return parseFloat(res.data.data.closing_price);
+    } catch {
+      return null;
     }
   }
 
