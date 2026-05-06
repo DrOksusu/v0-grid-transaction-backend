@@ -9,6 +9,7 @@ import { stablecoinPrisma } from '../config/database';
 import mainPrisma from '../config/database';
 import { reconcileCrossExchangeBot } from '../services/cross-exchange-reconciliation.service';
 import { fetchBithumbOrderbooks } from '../services/bithumb-price-manager';
+import { getAllBithumbStablecoinOrderbooks } from '../services/bithumb-stablecoin-ws-manager';
 
 /**
  * GET /api/admin/stablecoin/bot
@@ -807,6 +808,7 @@ export const verifyCrossExchangeReconciliation = async (
 /**
  * GET /api/admin/stablecoin/bithumb-orderbooks
  * 빗썸 5종 스테이블코인 실시간 호가.
+ * WS 캐시 우선 → 없는 심볼만 REST fallback
  */
 export const getBithumbOrderbooks = async (
   _req: AuthRequest,
@@ -815,11 +817,28 @@ export const getBithumbOrderbooks = async (
 ) => {
   try {
     const coins = ['USDT', 'USDC', 'USDS', 'USD1', 'USDE'];
-    const books = await fetchBithumbOrderbooks(coins);
     const result: Record<string, { bid: number | null; ask: number | null; timestamp: number }> = {};
-    books.forEach((v, k) => {
-      result[k] = { bid: v.bid, ask: v.ask, timestamp: v.timestamp };
-    });
+
+    // WS 캐시 우선 조회
+    const wsBooks = getAllBithumbStablecoinOrderbooks();
+    const missingCoins: string[] = [];
+    for (const coin of coins) {
+      const ws = wsBooks.get(coin);
+      if (ws) {
+        result[coin] = { bid: ws.bid, ask: ws.ask, timestamp: ws.timestamp };
+      } else {
+        missingCoins.push(coin);
+      }
+    }
+
+    // WS에 없는 심볼만 REST fallback
+    if (missingCoins.length > 0) {
+      const restBooks = await fetchBithumbOrderbooks(missingCoins);
+      restBooks.forEach((v, k) => {
+        result[k] = { bid: v.bid, ask: v.ask, timestamp: v.timestamp };
+      });
+    }
+
     res.json({ books: result, fetchedAt: Date.now() });
   } catch (e) {
     next(e);
