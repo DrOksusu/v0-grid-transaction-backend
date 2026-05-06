@@ -26,6 +26,7 @@ import {
   listBithumbArbTrades,
   getBithumbOrderbooks,
   getCrossExchangeLatest,
+  listCrossExchangeTrades,
 } from '../controllers/stablecoin-admin.controller';
 
 const router = Router();
@@ -57,6 +58,7 @@ router.post('/cross-exchange-bots', createCrossExchangeBot);
 router.patch('/cross-exchange-bots/:id', patchCrossExchangeBot);
 router.delete('/cross-exchange-bots/:id', deleteCrossExchangeBot);
 router.post('/cross-exchange-bots/:id/verify-reconciliation', verifyCrossExchangeReconciliation);
+router.get('/cross-exchange-trades', listCrossExchangeTrades);
 
 // ArbAutoConfig (빗썸 단일 차익거래 글로벌 설정)
 router.get('/arb-auto-config', getArbAutoConfig);

@@ -825,6 +825,57 @@ export const getBithumbOrderbooks = async (
 };
 
 /**
+ * GET /api/admin/stablecoin/cross-exchange-trades
+ * CrossExchangeArbTrade 내역 최신순. limit(max 500), botId 필터 지원.
+ */
+export const listCrossExchangeTrades = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const limit = Math.min(parseInt((req.query.limit as string) || '100', 10), 500);
+    const botId = req.query.botId ? parseInt(req.query.botId as string, 10) : undefined;
+
+    const trades = await stablecoinPrisma.crossExchangeArbTrade.findMany({
+      where: botId ? { botId } : undefined,
+      orderBy: { createdAt: 'desc' },
+      take: Number.isFinite(limit) ? limit : 100,
+      include: { bot: { select: { coin: true, buyCoin: true, sellCoin: true } } },
+    });
+
+    const serialized = trades.map((t) => ({
+      id: t.id.toString(),
+      botId: t.botId,
+      coin: t.bot.coin,
+      buyCoin: t.bot.buyCoin ?? t.bot.coin,
+      sellCoin: t.bot.sellCoin ?? t.bot.coin,
+      direction: t.direction,
+      spreadBpsAtPlacement: t.spreadBpsAtPlacement,
+      legAExchange: t.legAExchange,
+      legACoin: t.legACoin ?? t.bot.coin,
+      legAFilledQty: t.legAFilledQty != null ? Number(t.legAFilledQty) : null,
+      legAAvgPrice: t.legAAvgPrice != null ? Number(t.legAAvgPrice) : null,
+      legAFeeKrw: t.legAFeeKrw != null ? Number(t.legAFeeKrw) : null,
+      legBExchange: t.legBExchange,
+      legBCoin: t.legBCoin ?? t.bot.coin,
+      legBFilledQty: t.legBFilledQty != null ? Number(t.legBFilledQty) : null,
+      legBAvgPrice: t.legBAvgPrice != null ? Number(t.legBAvgPrice) : null,
+      legBFeeKrw: t.legBFeeKrw != null ? Number(t.legBFeeKrw) : null,
+      profitKrw: t.profitKrw != null ? Number(t.profitKrw) : null,
+      status: t.status,
+      failureReason: t.failureReason ?? null,
+      createdAt: t.createdAt.toISOString(),
+      completedAt: t.completedAt?.toISOString() ?? null,
+    }));
+
+    res.json({ trades: serialized });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/**
  * GET /api/admin/stablecoin/cross-exchange-latest
  * 업비트↔빗썸 크로스 스프레드 최신 스냅샷 (5코인).
  */
