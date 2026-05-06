@@ -117,9 +117,51 @@ export class CrossExchangeArbAgent extends BaseAgent {
       });
       if (bots.length === 0) return;
 
+      // 이번 사이클에 필요한 코인 목록 수집 — 거래소별 중복 제거
+      const upbitCoins = new Set<string>();
+      const bithumbCoins = new Set<string>();
+      for (const bot of bots) {
+        const buyCoin = bot.buyCoin ?? bot.coin;
+        const sellCoin = bot.sellCoin ?? bot.coin;
+        if (bot.targetDirection === 'UB') {
+          upbitCoins.add(buyCoin);
+          bithumbCoins.add(sellCoin);
+        } else {
+          bithumbCoins.add(buyCoin);
+          upbitCoins.add(sellCoin);
+        }
+      }
+
+      // 호가 + 잔고를 사이클당 1회씩만 병렬 조회
+      const [upbitBookMap, bithumbBookMap, upbitBalances, bithumbBalances] =
+        await Promise.all([
+          Promise.all(
+            [...upbitCoins].map(async (coin) => {
+              const book = await this.upbit!.getOrderbookTop(coin);
+              return [coin, book] as const;
+            }),
+          ).then((entries) => new Map(entries)),
+          Promise.all(
+            [...bithumbCoins].map(async (coin) => {
+              const book = await this.bithumb!.getOrderbookTop(coin);
+              return [coin, book] as const;
+            }),
+          ).then((entries) => new Map(entries)),
+          this.upbit.getBalances().catch((err: any) => {
+            console.error('[CrossExchangeArb] Upbit 잔고 조회 실패:', err.message);
+            return null;
+          }),
+          this.bithumb.getBalances().catch((err: any) => {
+            console.error('[CrossExchangeArb] Bithumb 잔고 조회 실패:', err.message);
+            return null;
+          }),
+        ]);
+
+      if (!upbitBalances || !bithumbBalances) return;
+
       for (const bot of bots) {
         try {
-          await this.processBot(bot);
+          await this.processBot(bot, upbitBookMap, bithumbBookMap, upbitBalances, bithumbBalances);
         } catch (err: any) {
           this.metrics.errors++;
           this.metrics.lastError = err.message;
@@ -136,6 +178,10 @@ export class CrossExchangeArbAgent extends BaseAgent {
 
   private async processBot(
     bot: Awaited<ReturnType<typeof stablecoinPrisma.crossExchangeArbBot.findMany>>[number],
+    upbitBookMap: Map<string, Awaited<ReturnType<ExchangeClient['getOrderbookTop']>>>,
+    bithumbBookMap: Map<string, Awaited<ReturnType<ExchangeClient['getOrderbookTop']>>>,
+    upbitBalances: Record<string, BalanceEntry>,
+    bithumbBalances: Record<string, BalanceEntry>,
   ): Promise<void> {
     // emergency blocklist: DB write 실패 / killSwitch 실패 fallback. process 재시작 전까지 차단.
     if (this.emergencyBlocked.has(bot.id)) return;
@@ -149,17 +195,12 @@ export class CrossExchangeArbAgent extends BaseAgent {
     const direction = bot.targetDirection as 'UB' | 'BU';
     const isUB = direction === 'UB';
 
-    // 양 거래소 호가 동시 조회 — 방향별로 각 거래소에서 해당 코인 가격 조회
-    // UB: Upbit에서 buyCoin 매수, Bithumb에서 sellCoin 매도
-    // BU: Bithumb에서 buyCoin 매수, Upbit에서 sellCoin 매도
-    const [buyExchangeBook, sellExchangeBook] = await Promise.all([
-      isUB ? upbit.getOrderbookTop(buyCoin) : bithumb.getOrderbookTop(buyCoin),
-      isUB ? bithumb.getOrderbookTop(sellCoin) : upbit.getOrderbookTop(sellCoin),
-    ]);
+    // 캐시된 호가 맵에서 조회 — UB: upbit=buyCoin, bithumb=sellCoin / BU: 반대
+    const buyExchangeBook = isUB ? upbitBookMap.get(buyCoin) : bithumbBookMap.get(buyCoin);
+    const sellExchangeBook = isUB ? bithumbBookMap.get(sellCoin) : upbitBookMap.get(sellCoin);
     if (!buyExchangeBook || !sellExchangeBook) return;
 
     // OrderbookSnapshot: upbit* = 업비트 측 가격, bithumb* = 빗썸 측 가격
-    // 이종 코인 시 upbit*은 buyCoin(UB) 또는 sellCoin(BU) 가격임 — isSpreadProfitable 계산에는 영향 없음
     const upbitBook = isUB ? buyExchangeBook : sellExchangeBook;
     const bithumbBook = isUB ? sellExchangeBook : buyExchangeBook;
     const snapshot: OrderbookSnapshot = {
@@ -173,19 +214,6 @@ export class CrossExchangeArbAgent extends BaseAgent {
     const spreadProbe = isSpreadProfitable(snapshot, direction, 0);
     if (!spreadProbe.ok) return;
     const spreadBps = spreadProbe.spreadBps;
-
-    // 잔고 동시 조회
-    let upbitBalances: Record<string, BalanceEntry>;
-    let bithumbBalances: Record<string, BalanceEntry>;
-    try {
-      [upbitBalances, bithumbBalances] = await Promise.all([
-        upbit.getBalances(),
-        bithumb.getBalances(),
-      ]);
-    } catch (err: any) {
-      console.error(`[CrossExchangeArb] bot ${bot.id} 잔고 조회 실패:`, err.message);
-      return;
-    }
 
     // 일일 카운트 + 손실 집계 (KST 자정 기준)
     // todayCount 는 모든 row (FILLED + LEG_A_FAILED + LEG_B_FAILED) — 실패 누적도 dailyCountLimit 에 카운트
