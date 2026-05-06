@@ -511,6 +511,8 @@ function serializeCrossExchangeBot(bot: any) {
     dailyCountLimit: bot.dailyCountLimit,
     dailyLossLimitKrw: bot.dailyLossLimitKrw,
     lastResumeAt: bot.lastResumeAt?.toISOString() ?? null,
+    lastSkipReason: bot.lastSkipReason ?? null,
+    lastSkipAt: bot.lastSkipAt?.toISOString() ?? null,
     createdAt: bot.createdAt.toISOString(),
     updatedAt: bot.updatedAt.toISOString(),
   };

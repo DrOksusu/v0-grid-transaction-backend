@@ -63,6 +63,11 @@ export class CrossExchangeArbAgent extends BaseAgent {
   private cycleInFlight = false;
   /** DB write 실패 / killSwitch 적용 실패 시 즉시 차단할 봇 ID 집합. process 재시작 시 초기화. */
   private emergencyBlocked: Set<number> = new Set();
+  /**
+   * 스킵 이유 캐시: 같은 이유가 30초 이내에 반복되면 DB write 생략.
+   * 과도한 write 방지 (5초 사이클 × 봇 수 만큼 반복될 수 있음).
+   */
+  private skipCache = new Map<number, { reason: string; writtenAt: number }>();
 
   constructor() {
     super({
@@ -71,6 +76,28 @@ export class CrossExchangeArbAgent extends BaseAgent {
       description: 'Upbit-Bithumb 크로스-거래소 차익거래 (5초 cycle, Stage 1 canary)',
       cycleIntervalMs: CYCLE_INTERVAL_MS,
     });
+  }
+
+  /**
+   * 스킵 이유를 DB에 저장한다.
+   * 같은 이유가 30초 이내에 반복되면 DB write를 생략하여 과도한 write를 방지한다.
+   * DB 쓰기 실패는 무시 — 주요 거래 로직에 영향을 주지 않아야 함.
+   */
+  private async persistSkip(botId: number, reason: string): Promise<void> {
+    const cached = this.skipCache.get(botId);
+    const now = Date.now();
+    // 이유가 같고 30초 이내면 DB 업데이트 스킵
+    if (cached && cached.reason === reason && now - cached.writtenAt < 30_000) return;
+    this.skipCache.set(botId, { reason, writtenAt: now });
+    try {
+      await stablecoinPrisma.crossExchangeArbBot.update({
+        where: { id: botId },
+        data: { lastSkipReason: reason, lastSkipAt: new Date() },
+      });
+    } catch (err: any) {
+      // DB 쓰기 실패는 무시 (주요 로직에 영향 없음)
+      console.error(`[CrossExchangeArb] persistSkip bot ${botId} 실패:`, err.message);
+    }
   }
 
   protected async onStart(): Promise<void> {
@@ -198,7 +225,13 @@ export class CrossExchangeArbAgent extends BaseAgent {
     // 캐시된 호가 맵에서 조회 — UB: upbit=buyCoin, bithumb=sellCoin / BU: 반대
     const buyExchangeBook = isUB ? upbitBookMap.get(buyCoin) : bithumbBookMap.get(buyCoin);
     const sellExchangeBook = isUB ? bithumbBookMap.get(sellCoin) : upbitBookMap.get(sellCoin);
-    if (!buyExchangeBook || !sellExchangeBook) return;
+    if (!buyExchangeBook || !sellExchangeBook) {
+      const nullReason = !buyExchangeBook
+        ? `orderbook null: buy exchange (${isUB ? 'upbit' : 'bithumb'} ${buyCoin})`
+        : `orderbook null: sell exchange (${isUB ? 'bithumb' : 'upbit'} ${sellCoin})`;
+      void this.persistSkip(bot.id, nullReason);
+      return;
+    }
 
     // OrderbookSnapshot: upbit* = 업비트 측 가격, bithumb* = 빗썸 측 가격
     const upbitBook = isUB ? buyExchangeBook : sellExchangeBook;
@@ -212,7 +245,10 @@ export class CrossExchangeArbAgent extends BaseAgent {
 
     // 호가 유효성 + 실제 spread 측정 (minSpreadBps=0 으로 호출 → ok=false 면 호가 자체가 invalid)
     const spreadProbe = isSpreadProfitable(snapshot, direction, 0);
-    if (!spreadProbe.ok) return;
+    if (!spreadProbe.ok) {
+      void this.persistSkip(bot.id, spreadProbe.reason ?? 'spread gate failed');
+      return;
+    }
     const spreadBps = spreadProbe.spreadBps;
 
     // 일일 카운트 + 손실 집계 (KST 자정 기준)
@@ -270,6 +306,7 @@ export class CrossExchangeArbAgent extends BaseAgent {
       console.log(
         `[CrossExchangeArb] bot ${bot.id} skip: ${precheck.abortReason}`,
       );
+      void this.persistSkip(bot.id, precheck.abortReason ?? 'precheck failed');
       return;
     }
 
