@@ -518,12 +518,11 @@ function serializeCrossExchangeBot(bot: any) {
 
 /**
  * GET /api/admin/stablecoin/cross-exchange-bots
- * 사용자의 cross-exchange 봇 목록.
+ * Admin 전용 — 모든 유저의 봇 목록 반환.
  */
-export const listCrossExchangeBots = async (req: AuthRequest, res: Response, next: NextFunction) => {
+export const listCrossExchangeBots = async (_req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const userId = req.userId!;
-    const bots = await stablecoinPrisma.crossExchangeArbBot.findMany({ where: { userId } });
+    const bots = await stablecoinPrisma.crossExchangeArbBot.findMany({ orderBy: { id: 'asc' } });
     res.json({ bots: bots.map(serializeCrossExchangeBot) });
   } catch (err) {
     next(err);
@@ -570,15 +569,13 @@ export const createCrossExchangeBot = async (req: AuthRequest, res: Response, ne
 
 /**
  * PATCH /api/admin/stablecoin/cross-exchange-bots/:id
- * 부분 업데이트. enabled false→true 전환 시 lastResumeAt 자동 갱신.
- * userId 미일치 시 404.
+ * Admin 전용 — 모든 봇 수정 가능. enabled false→true 전환 시 lastResumeAt 자동 갱신.
  */
 export const patchCrossExchangeBot = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const userId = req.userId!;
     const id = parseInt(req.params.id, 10);
     const body = req.body;
-    const existing = await stablecoinPrisma.crossExchangeArbBot.findFirst({ where: { id, userId } });
+    const existing = await stablecoinPrisma.crossExchangeArbBot.findFirst({ where: { id } });
     if (!existing) throw new AppError('Bot not found', 404);
 
     const patch: any = {};
@@ -608,13 +605,12 @@ export const patchCrossExchangeBot = async (req: AuthRequest, res: Response, nex
 
 /**
  * DELETE /api/admin/stablecoin/cross-exchange-bots/:id
- * userId scope — 다른 유저 봇은 영향 없음.
+ * Admin 전용 — 모든 봇 삭제 가능.
  */
 export const deleteCrossExchangeBot = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const userId = req.userId!;
     const id = parseInt(req.params.id, 10);
-    await stablecoinPrisma.crossExchangeArbBot.deleteMany({ where: { id, userId } });
+    await stablecoinPrisma.crossExchangeArbBot.delete({ where: { id } });
     res.json({ success: true });
   } catch (err) {
     next(err);
@@ -787,9 +783,8 @@ export const verifyCrossExchangeReconciliation = async (
   next: NextFunction,
 ) => {
   try {
-    const userId = req.userId!;
     const id = parseInt(req.params.id, 10);
-    const bot = await stablecoinPrisma.crossExchangeArbBot.findFirst({ where: { id, userId } });
+    const bot = await stablecoinPrisma.crossExchangeArbBot.findFirst({ where: { id } });
     if (!bot) throw new AppError('Bot not found', 404);
 
     const report = await reconcileCrossExchangeBot(
