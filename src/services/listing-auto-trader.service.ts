@@ -322,20 +322,34 @@ class ListingAutoTraderService {
       // qty=1, krwPerUnit=amountKrw/1.02 → price = amountKrw
       const placed = await client.placeMarketOrder('buy', ticker, 1, amountKrw / 1.02);
 
-      // 빗썸 시장가 매수 직후 현재가 조회 → 매수 평균가 근사값으로 사용
-      const currentKrwPrice = await this.fetchBithumbCurrentPrice(ticker);
-      // 매수 수량 추정: amountKrw / currentPrice (수수료 없이 단순 계산, 근사값)
-      const estimatedQty = currentKrwPrice && currentKrwPrice > 0
-        ? (amountKrw / 1.02) / currentKrwPrice
-        : null;
+      // 빗썸 시장가 매수는 즉시 체결량을 반환하지 않으므로 getOrder()로 폴링
+      let filledQty: number | null = null;
+      let filledPrice: number | null = null;
+      for (let i = 0; i < 4; i++) {
+        if (i > 0) await new Promise<void>(r => setTimeout(r, 1500));
+        try {
+          const detail = await client.getOrder(placed.orderId);
+          if (detail.filledQty > 0) {
+            filledQty = detail.filledQty;
+            filledPrice = detail.avgFillPrice > 0 ? detail.avgFillPrice : null;
+            break;
+          }
+        } catch {}
+      }
+      // 폴링 실패 시 현재가로 수량 추정 (폴백)
+      if (filledQty === null) {
+        const currentKrwPrice = await this.fetchBithumbCurrentPrice(ticker);
+        filledQty = currentKrwPrice && currentKrwPrice > 0 ? (amountKrw / 1.02) / currentKrwPrice : null;
+        filledPrice = currentKrwPrice ?? null;
+      }
 
       await (prisma as any).listingAutoOrder.update({
         where: { id: dbRow.id },
         data: {
           orderId: placed.orderId,
           status: 'filled',
-          filledPrice: currentKrwPrice ?? undefined,
-          filledQty: estimatedQty ?? undefined,
+          filledPrice: filledPrice ?? undefined,
+          filledQty: filledQty ?? undefined,
         },
       });
       return { exchange, status: 'filled', orderId: placed.orderId, amountKrw };
@@ -391,7 +405,12 @@ class ListingAutoTraderService {
       });
 
       const orderId = String(data.orderId ?? '');
-      const filledQty = parseFloat(data.executedQty ?? '0');
+
+      // MEXC quoteOrderQty 매수는 즉시 응답에서 executedQty=0을 반환하므로 폴링으로 실제 체결량 확인
+      let filledQty = parseFloat(data.executedQty ?? '0');
+      if (filledQty <= 0 && orderId) {
+        filledQty = await this.pollMexcFilledQty(cred.apiKey, cred.secretKey, `${ticker}USDT`, orderId);
+      }
       const filledPrice = filledQty > 0 ? usdtAmount / filledQty : 0;
 
       await (prisma as any).listingAutoOrder.update({
@@ -404,6 +423,19 @@ class ListingAutoTraderService {
       await this.updateOrderFailed(dbRow.id, msg);
       return { exchange, status: 'failed', amountKrw, errorMsg: msg };
     }
+  }
+
+  // MEXC 주문 체결량 폴링 (quoteOrderQty 매수 후 executedQty=0 대응)
+  private async pollMexcFilledQty(apiKey: string, secretKey: string, symbol: string, orderId: string, maxRetries = 4): Promise<number> {
+    for (let i = 0; i < maxRetries; i++) {
+      if (i > 0) await new Promise<void>(r => setTimeout(r, 1500));
+      try {
+        const data = await signedGet(MEXC.baseUrl, MEXC.apiKeyHeader, apiKey, secretKey, '/api/v3/order', { symbol, orderId });
+        const qty = parseFloat(data.executedQty ?? '0');
+        if (qty > 0) return qty;
+      } catch {}
+    }
+    return 0;
   }
 
   // ── Private: 헬퍼 ────────────────────────────────────────────────────────
