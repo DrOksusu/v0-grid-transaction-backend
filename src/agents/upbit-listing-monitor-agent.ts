@@ -18,7 +18,11 @@ export class UpbitListingMonitorAgent extends BaseAgent {
   }
 
   protected async onCycle(): Promise<void> {
-    await upbitListingMonitorService.pollAnnouncements();
+    // 공지 API + 마켓 목록 diff를 병렬로 감지 (API 차단 시 마켓 목록이 백업)
+    await Promise.all([
+      upbitListingMonitorService.pollAnnouncements(),
+      upbitListingMonitorService.checkNewUpbitMarkets(),
+    ]);
     // 매수 체결 주문에 대한 자동매도 조건 점검
     await listingAutoSellerService.checkAndSell();
   }

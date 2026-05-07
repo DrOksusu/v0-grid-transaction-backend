@@ -88,7 +88,12 @@ class UpbitListingMonitorService {
         'https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&per_page=10&category=%EA%B1%B0%EB%9E%98',
         {
           timeout: 8000,
-          headers: { accept: 'application/json', referer: 'https://www.upbit.com/' },
+          headers: {
+            accept: 'application/json, text/plain, */*',
+            'accept-language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            referer: 'https://www.upbit.com/',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          },
         },
       );
       const raw: any[] = res.data?.data?.notices ?? [];
@@ -98,7 +103,10 @@ class UpbitListingMonitorService {
         url: `https://www.upbit.com/service_center/notice?id=${n.id}`,
         created_at: n.listed_at,
       }));
-    } catch {
+    } catch (err: any) {
+      if (err?.response?.status) {
+        console.warn(`[ListingMonitor] 공지 API ${err.response.status} — 마켓 목록 감지로 폴백`);
+      }
       return;
     }
 
