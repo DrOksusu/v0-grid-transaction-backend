@@ -398,7 +398,16 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     if (pending === null) {
       const direction = decideLegOrder(makerBook, takerBook);
 
-      if (direction === 'MAKER_BUY_FIRST' && upbitClient && makerExchange === 'upbit') {
+      // 스프레드 게이트: 거래소 조합에 무관하게 항상 먼저 체크
+      const gate = isCrossSpreadProfitable(makerBook.bid, takerBook.bid, direction, bot.minSpreadBps);
+      if (!gate.ok) {
+        console.log(
+          `[MakerTakerSimulatorAgent] bot ${bot.id} spread gate fail: ${gate.spreadBps}bp < ${bot.minSpreadBps}bp (${makerExchange}→${takerExchange} ${bot.makerCoin}/${bot.takerCoin})`,
+        );
+        preCheckOk = false;
+      }
+
+      if (preCheckOk && direction === 'MAKER_BUY_FIRST' && upbitClient && makerExchange === 'upbit') {
         let balances: Record<string, number>;
         try {
           balances = await upbitClient.cache.get();
@@ -433,15 +442,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} pre-check 실패: ${precheck.reason}`);
           preCheckOk = false;
         }
-
-        if (preCheckOk) {
-          const gate = isCrossSpreadProfitable(makerBook.bid, takerBook.bid, 'MAKER_BUY_FIRST', bot.minSpreadBps);
-          if (!gate.ok) {
-            console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} spread gate: ${gate.spreadBps}bp < ${bot.minSpreadBps}bp`);
-            preCheckOk = false;
-          }
-        }
-      } else if (direction === 'TAKER_SELL_FIRST' && upbitClient && makerExchange === 'upbit') {
+      } else if (preCheckOk && direction === 'TAKER_SELL_FIRST' && upbitClient && makerExchange === 'upbit') {
         let balances: Record<string, number>;
         try {
           balances = await upbitClient.cache.get();
@@ -457,39 +458,18 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           );
           preCheckOk = false;
         }
-
-        if (preCheckOk) {
-          const gate = isCrossSpreadProfitable(makerBook.bid, takerBook.bid, 'TAKER_SELL_FIRST', bot.minSpreadBps);
-          if (!gate.ok) {
-            console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} TAKER_SELL_FIRST spread gate: ${gate.spreadBps}bp < ${bot.minSpreadBps}bp`);
-            preCheckOk = false;
-          }
-        }
-      } else if (needsBithumb && !needsUpbit && bithumbClient) {
-        // Bithumb 전용 봇: 스프레드 게이트 (bp 기준)
-        if (preCheckOk) {
-          const gate = isCrossSpreadProfitable(makerBook.bid, takerBook.bid, direction, bot.minSpreadBps);
-          if (!gate.ok) {
-            console.log(
-              `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb spread gate: ${gate.spreadBps}bp < ${bot.minSpreadBps}bp (${bot.makerCoin}↔${bot.takerCoin})`,
-            );
-            preCheckOk = false;
-          }
-        }
-
-        // Bithumb 전용 봇 잔고 사전 체크
+      } else if (preCheckOk && needsBithumb && bithumbClient) {
+        // Bithumb 관련 봇 (단독 또는 크로스 거래소) 잔고 사전 체크
         let bithumbAvail: Record<string, number> = {};
-        if (preCheckOk) {
-          try {
-            bithumbAvail = await this.getBithumbAvailableBalances(bot.userId, bithumbClient);
-          } catch (err: any) {
-            console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb 잔고 fetch 실패:`, err.message);
-            preCheckOk = false;
-          }
+        try {
+          bithumbAvail = await this.getBithumbAvailableBalances(bot.userId, bithumbClient);
+        } catch (err: any) {
+          console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb 잔고 fetch 실패:`, err.message);
+          preCheckOk = false;
         }
 
         if (preCheckOk) {
-          if (direction === 'TAKER_SELL_FIRST') {
+          if (direction === 'TAKER_SELL_FIRST' && makerExchange === 'bithumb') {
             const available = bithumbAvail[bot.makerCoin] ?? 0;
             if (available < Number(bot.quantity)) {
               console.log(
@@ -497,8 +477,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
               );
               preCheckOk = false;
             }
-          } else {
-            // MAKER_BUY_FIRST: CASE A에서 KRW로 makerCoin 매수
+          } else if (direction === 'MAKER_BUY_FIRST' && makerExchange === 'bithumb') {
             const krwAvail = bithumbAvail['KRW'] ?? 0;
             const requiredKrw = makerBook.ask * Number(bot.quantity) * 1.01;
             if (krwAvail < requiredKrw) {
@@ -507,10 +486,11 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
               );
               preCheckOk = false;
             }
-            // CASE B에서 takerCoin IOC 매도가 필요하므로 takerCoin도 사전 확인
             if (preCheckOk) {
-              const takerCoinAvail = bithumbAvail[bot.takerCoin] ?? 0;
-              if (takerCoinAvail < Number(bot.quantity)) {
+              // takerCoin IOC 매도 사전 확인 (거래소별)
+              const takerCoinAvail =
+                takerExchange === 'bithumb' ? (bithumbAvail[bot.takerCoin] ?? 0) : 0;
+              if (takerExchange === 'bithumb' && takerCoinAvail < Number(bot.quantity)) {
                 console.log(
                   `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb MAKER_BUY_FIRST takerCoin 잔고 부족: ${bot.takerCoin} available=${takerCoinAvail.toFixed(4)} < quantity=${bot.quantity}`,
                 );

@@ -214,6 +214,44 @@ router.get(
   },
 );
 
+// GET /api/pair-scanner/all-trades?limit=100&status=&botId=&startDate=&endDate=
+router.get(
+  '/all-trades',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.userId!;
+      const limit = Math.min(Number(req.query.limit ?? 200), 500);
+      const { status, botId, startDate, endDate } = req.query as Record<string, string>;
+
+      const where: Record<string, unknown> = { bot: { userId } };
+      if (status) where.status = status;
+      if (botId) where.botId = parseInt(botId, 10);
+      if (startDate || endDate) {
+        where.createdAt = {
+          ...(startDate ? { gte: new Date(startDate) } : {}),
+          ...(endDate ? { lte: new Date(endDate) } : {}),
+        };
+      }
+
+      const trades = await stablecoinPrisma.makerTakerSimTrade.findMany({
+        where,
+        include: {
+          bot: {
+            select: { makerCoin: true, takerCoin: true, makerExchange: true, takerExchange: true },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+      });
+      res.json({ success: true, data: trades });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // GET /api/pair-scanner/bots/:id/trades
 router.get(
   '/bots/:id/trades',
