@@ -184,6 +184,36 @@ router.delete(
   },
 );
 
+// GET /api/pair-scanner/pending-trades — 전체 미체결(PENDING/PARTIAL_HOLD) 거래 조회
+router.get(
+  '/pending-trades',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.userId!;
+      const trades = await stablecoinPrisma.makerTakerSimTrade.findMany({
+        where: {
+          status: { in: ['PENDING', 'PARTIAL_HOLD'] },
+          bot: { userId },
+        },
+        include: {
+          bot: {
+            select: {
+              makerExchange: true,
+              takerExchange: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+      res.json({ success: true, data: trades });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // GET /api/pair-scanner/bots/:id/trades
 router.get(
   '/bots/:id/trades',
