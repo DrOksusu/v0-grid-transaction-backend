@@ -208,12 +208,22 @@ class ListingAutoSellerService {
     if (!cred) throw new Error('MEXC 인증정보 없음');
     if (!qty || qty <= 0) throw new Error('매도 수량 없음');
 
+    // 실제 잔고 확인: Float 정밀도 손실 보정 + MEXC 수수료 base 차감 대응
+    const actualBalance = await this.getMexcCoinBalance(cred.apiKey, cred.secretKey, ticker);
+    let sellQty = qty;
+    if (actualBalance !== null && actualBalance > 0) {
+      sellQty = Math.min(qty, actualBalance);
+    }
+    // MEXC LOT_SIZE 필터 통과를 위해 8자리 반올림 (float→string 정밀도 오류 방지)
+    const qtyStr = parseFloat(sellQty.toFixed(8)).toString();
+    if (parseFloat(qtyStr) <= 0) throw new Error('매도 수량 없음 (실제 잔고 0)');
+
     const timestamp = Date.now().toString();
     const params: Record<string, string> = {
       symbol: `${ticker}USDT`,
       side: 'SELL',
       type: 'MARKET',
-      quantity: qty.toString(),
+      quantity: qtyStr,
       timestamp,
     };
     const signature = hmacSign(cred.secretKey, params);
@@ -292,6 +302,45 @@ class ListingAutoSellerService {
       // 현재가 조회 실패는 무시하고 null 반환
     }
     return null;
+  }
+
+  // ── MEXC 코인 잔고 조회 ───────────────────────────────────────────────────
+
+  private async getMexcCoinBalance(apiKey: string, secretKey: string, coin: string): Promise<number | null> {
+    try {
+      const timestamp = Date.now().toString();
+      const params = { timestamp };
+      const signature = crypto.createHmac('sha256', secretKey).update(new URLSearchParams(params).toString()).digest('hex');
+      const qs = new URLSearchParams({ ...params, signature }).toString();
+
+      const data = await new Promise<any>((resolve, reject) => {
+        const req = https.request(
+          {
+            hostname: 'api.mexc.com',
+            path: `/api/v3/account?${qs}`,
+            method: 'GET',
+            headers: { 'X-MEXC-APIKEY': apiKey },
+            timeout: 8000,
+          },
+          (res) => {
+            let body = '';
+            res.on('data', (c: string) => (body += c));
+            res.on('end', () => {
+              try { resolve(JSON.parse(body)); } catch { reject(new Error('MEXC account 파싱 실패')); }
+            });
+          },
+        );
+        req.on('error', reject);
+        req.on('timeout', () => { req.destroy(); reject(new Error('MEXC account timeout')); });
+        req.end();
+      });
+
+      const balances: Array<{ asset: string; free: string }> = data.balances ?? [];
+      const found = balances.find((b) => b.asset.toUpperCase() === coin.toUpperCase());
+      return found ? parseFloat(found.free) : 0;
+    } catch {
+      return null;
+    }
   }
 
   // ── 인증정보 헬퍼 ─────────────────────────────────────────────────────────
