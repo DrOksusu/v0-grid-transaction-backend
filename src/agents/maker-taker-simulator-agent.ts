@@ -420,7 +420,8 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         }
 
         if (preCheckOk) {
-          const crossSpread = makerBook.ask - makerBook.bid;
+          // cross-exchange spread: takerBook.bid - makerBook.bid (MAKER_BUY_FIRST)
+          const crossSpread = takerBook.bid - makerBook.bid;
           if (bot.minSpreadKrw > 0 && crossSpread < bot.minSpreadKrw) {
             console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} spread gate: ${crossSpread} < ${bot.minSpreadKrw}`);
             preCheckOk = false;
