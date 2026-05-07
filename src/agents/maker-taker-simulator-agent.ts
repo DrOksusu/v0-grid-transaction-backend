@@ -41,6 +41,30 @@ function normalizeUpbit(book: OrderbookTop): NormalizedBook {
   return { bid: book.bid.price, ask: book.ask.price };
 }
 
+const STALE_BOOK_MS = 5_000;
+const MAX_STABLECOIN_PRICE_DIFF_RATIO = 0.10; // 두 스테이블코인 가격이 10% 이상 차이나면 데이터 이상
+
+/** 호가 신선도 + 가격 이상 감지 — 이상 시 true 반환 */
+function isBookDataSuspect(
+  makerBid: number,
+  takerBid: number,
+  makerTs: number,
+  takerTs: number,
+  botId: number,
+): boolean {
+  const now = Date.now();
+  if (now - makerTs > STALE_BOOK_MS || now - takerTs > STALE_BOOK_MS) {
+    console.warn(`[MakerTakerSim] bot#${botId} 호가 오래됨 maker=${now - makerTs}ms taker=${now - takerTs}ms — skip`);
+    return true;
+  }
+  const diffRatio = Math.abs(makerBid - takerBid) / makerBid;
+  if (diffRatio > MAX_STABLECOIN_PRICE_DIFF_RATIO) {
+    console.warn(`[MakerTakerSim] bot#${botId} 가격 이상: maker=${makerBid} taker=${takerBid} diff=${(diffRatio * 100).toFixed(1)}% — skip`);
+    return true;
+  }
+  return false;
+}
+
 export class MakerTakerSimulatorAgent extends BaseAgent {
   private unsubscribe: (() => void) | null = null;
   private evaluateInFlight = false;
@@ -132,6 +156,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
 
     const makerNorm = normalizeUpbit(makerBook);
     const takerNorm = normalizeUpbit(takerBook);
+    if (isBookDataSuspect(makerNorm.bid, takerNorm.bid, makerBook.timestamp, takerBook.timestamp, bot.id)) return;
     const now = new Date();
 
     const pending = await (prisma.makerTakerSimTrade as any).findFirst({
@@ -321,6 +346,13 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       takerExchange === 'bithumb'
         ? { bid: (takerBookRaw as any).bid, ask: (takerBookRaw as any).ask }
         : normalizeUpbit(takerBookRaw as OrderbookTop);
+
+    if (isBookDataSuspect(
+      makerBook.bid, takerBook.bid,
+      (makerBookRaw as any).timestamp,
+      (takerBookRaw as any).timestamp,
+      bot.id,
+    )) return;
 
     const pending = await (prisma.makerTakerSimTrade as any).findFirst({
       where: { botId: bot.id, status: 'PENDING', live: true },
