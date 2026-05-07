@@ -27,6 +27,9 @@ export interface ExchangeLeg {
     feeKrw: number;
   }>;
 
+  /** 지정가 ASK(매도) 주문. TAKER_PENDING 단계에서 사용. null = 주문 실패 */
+  placeMakerAsk(symbol: string, price: number, quantity: number): Promise<string | null>;
+
   /** 주문 취소 */
   cancelOrder(orderId: string): Promise<void>;
 }
@@ -92,6 +95,15 @@ export class UpbitLeg implements ExchangeLeg {
     return { filled: filledQty > 0 && grossKrw > 0, filledQty, grossKrw, feeKrw };
   }
 
+  async placeMakerAsk(symbol: string, price: number, quantity: number): Promise<string | null> {
+    const resp = await this.upbit.placeLimitOrder(`KRW-${symbol}`, 'ask', {
+      price: String(price),
+      volume: String(quantity),
+      postOnly: false,
+    });
+    return resp.uuid || null;
+  }
+
   async cancelOrder(orderId: string): Promise<void> {
     await this.upbit.cancelOrder(orderId);
   }
@@ -140,6 +152,11 @@ export class BithumbLeg implements ExchangeLeg {
       grossKrw: order.avgFillPrice * order.filledQty,
       feeKrw: order.totalFeeKrw,
     };
+  }
+
+  async placeMakerAsk(symbol: string, price: number, quantity: number): Promise<string | null> {
+    const resp = await this.client.sellLimit(`KRW-${symbol}`, price, quantity);
+    return resp?.uuid ?? null;
   }
 
   async cancelOrder(orderId: string): Promise<void> {

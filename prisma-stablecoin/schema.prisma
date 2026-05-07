@@ -192,6 +192,7 @@ model MakerTakerSimTrade {
 
   live           Boolean @default(false) // 실거래 trade 표시
   makerOrderUuid String? @db.VarChar(64) // live 주문의 Upbit uuid (status polling/cancel용)
+  takerOrderUuid String? @db.VarChar(64) // TAKER_PENDING: taker 지정가 매도 주문 UUID
 
   grossProfitKrw    Decimal? @db.Decimal(18, 4)
   feeKrw            Decimal? @db.Decimal(14, 4)
