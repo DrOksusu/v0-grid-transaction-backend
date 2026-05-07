@@ -9,7 +9,10 @@ import { stablecoinPrisma } from '../config/database';
 import mainPrisma from '../config/database';
 import { reconcileCrossExchangeBot } from '../services/cross-exchange-reconciliation.service';
 import { fetchBithumbOrderbooks } from '../services/bithumb-price-manager';
-import { getAllBithumbStablecoinOrderbooks } from '../services/bithumb-stablecoin-ws-manager';
+import { getAllBithumbStablecoinOrderbooks, getBithumbStablecoinOrderbook } from '../services/bithumb-stablecoin-ws-manager';
+import { BithumbClient } from '../services/exchange/bithumb-client';
+import { UpbitService } from '../services/upbit.service';
+import { decrypt } from '../utils/encryption';
 
 /**
  * GET /api/admin/stablecoin/bot
@@ -891,6 +894,235 @@ export const listCrossExchangeTrades = async (
     }));
 
     res.json({ trades: serialized });
+  } catch (e) {
+    next(e);
+  }
+};
+
+// ── 잔고 캐시 (rate limit 방지) ────────────────────────────────────────────────
+const _balanceCache = new Map<
+  string,
+  {
+    data: {
+      bithumbBalances: Record<string, { available: number; locked: number }>;
+      upbitBalances: Record<string, { available: number; locked: number }>;
+    };
+    at: number;
+  }
+>();
+const BALANCE_CACHE_TTL = 12_000; // 12초
+
+/**
+ * GET /api/admin/stablecoin/balance-requirements
+ * 라이브 봇들의 필요 잔고 vs 현재 잔고를 반환.
+ * 관리자가 insufficient_funds 에러 원인을 한눈에 파악하기 위한 API.
+ */
+export const getBalanceRequirements = async (
+  _req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    // 1. 라이브 봇 조회
+    const liveBots = await stablecoinPrisma.makerTakerSimBot.findMany({
+      where: { live: true, enabled: true, killSwitch: false },
+      select: {
+        id: true,
+        userId: true,
+        makerCoin: true,
+        takerCoin: true,
+        makerExchange: true,
+        takerExchange: true,
+        quantity: true,
+      },
+    });
+
+    // 2. 잔고 조회 (캐시 적용)
+    const userIds = [...new Set(liveBots.map((b) => b.userId))];
+    const cacheKey = [...userIds].sort().join(',');
+    const now = Date.now();
+
+    let bithumbBalances: Record<string, { available: number; locked: number }> = {};
+    let upbitBalances: Record<string, { available: number; locked: number }> = {};
+
+    const cached = _balanceCache.get(cacheKey);
+    if (cached && now - cached.at < BALANCE_CACHE_TTL) {
+      bithumbBalances = cached.data.bithumbBalances;
+      upbitBalances = cached.data.upbitBalances;
+    } else {
+      // 각 userId별 크레덴셜로 잔고 조회 후 합산
+      for (const userId of userIds) {
+        // Bithumb 잔고 조회
+        try {
+          const bithumbCred = await mainPrisma.credential.findFirst({
+            where: { userId, exchange: 'bithumb' },
+          });
+          if (bithumbCred) {
+            const accessKey = decrypt(bithumbCred.apiKey);
+            const secretKey = decrypt(bithumbCred.secretKey);
+            const client = new BithumbClient({ accessKey, secretKey });
+            const balances = await client.getBalances();
+            for (const [coin, entry] of Object.entries(balances)) {
+              if (!bithumbBalances[coin]) {
+                bithumbBalances[coin] = { available: 0, locked: 0 };
+              }
+              bithumbBalances[coin].available += entry.available;
+              bithumbBalances[coin].locked += entry.locked;
+            }
+          }
+        } catch {
+          // 크레덴셜 없거나 조회 실패 시 빈 객체 유지
+        }
+
+        // Upbit 잔고 조회
+        try {
+          const upbitCred = await mainPrisma.credential.findFirst({
+            where: { userId, exchange: 'upbit' },
+          });
+          if (upbitCred) {
+            const accessKey = decrypt(upbitCred.apiKey);
+            const secretKey = decrypt(upbitCred.secretKey);
+            const upbit = new UpbitService({ accessKey, secretKey });
+            const accounts: Array<{ currency: string; balance: string; locked: string }> =
+              await upbit.getAccounts();
+            for (const acc of accounts) {
+              const coin = acc.currency.toUpperCase();
+              if (!upbitBalances[coin]) {
+                upbitBalances[coin] = { available: 0, locked: 0 };
+              }
+              upbitBalances[coin].available += parseFloat(acc.balance ?? '0');
+              upbitBalances[coin].locked += parseFloat(acc.locked ?? '0');
+            }
+          }
+        } catch {
+          // 크레덴셜 없거나 조회 실패 시 빈 객체 유지
+        }
+      }
+
+      _balanceCache.set(cacheKey, {
+        data: { bithumbBalances, upbitBalances },
+        at: now,
+      });
+    }
+
+    // 3. 거래소별 perCoinRequired / krwRequired 집계
+    const bithumbPerCoin: Record<string, { qty: number; botIds: number[] }> = {};
+    const upbitPerCoin: Record<string, { qty: number; botIds: number[] }> = {};
+    const bithumbKrwBotIds: number[] = [];
+    const upbitKrwBotIds: number[] = [];
+    let bithumbKrwTotal = 0;
+    let upbitKrwTotal = 0;
+
+    // 4. 봇별 status 계산 결과 수집
+    const botStatuses: Array<{
+      id: number;
+      makerCoin: string;
+      takerCoin: string;
+      makerExchange: string;
+      takerExchange: string;
+      quantity: number;
+      makerCoinAvail: number;
+      krwAvail: number;
+      status: 'ok' | 'insufficient_coin' | 'insufficient_krw' | 'insufficient_both';
+    }> = [];
+
+    for (const bot of liveBots) {
+      const qty = Number(bot.quantity);
+      const makerExchange = bot.makerExchange ?? 'upbit';
+
+      // KRW 요건 계산 (현재 WS 가격 사용)
+      let askPrice: number;
+      if (makerExchange === 'bithumb') {
+        const ob = getBithumbStablecoinOrderbook(bot.makerCoin);
+        askPrice = ob?.ask ?? 1500;
+      } else {
+        const upbitBooks = getAllStablecoinOrderbooks();
+        const upbitOb = upbitBooks.get(`KRW-${bot.makerCoin}`);
+        askPrice = upbitOb?.ask?.price ?? 1500;
+      }
+      const krwRequired = Math.ceil(qty * askPrice * 1.01);
+
+      // perCoinRequired 집계
+      if (makerExchange === 'bithumb') {
+        if (!bithumbPerCoin[bot.makerCoin]) {
+          bithumbPerCoin[bot.makerCoin] = { qty: 0, botIds: [] };
+        }
+        bithumbPerCoin[bot.makerCoin].qty += qty;
+        bithumbPerCoin[bot.makerCoin].botIds.push(bot.id);
+
+        bithumbKrwTotal += krwRequired;
+        bithumbKrwBotIds.push(bot.id);
+      } else {
+        if (!upbitPerCoin[bot.makerCoin]) {
+          upbitPerCoin[bot.makerCoin] = { qty: 0, botIds: [] };
+        }
+        upbitPerCoin[bot.makerCoin].qty += qty;
+        upbitPerCoin[bot.makerCoin].botIds.push(bot.id);
+
+        upbitKrwTotal += krwRequired;
+        upbitKrwBotIds.push(bot.id);
+      }
+
+      // 봇별 status 계산
+      const makerCoinAvail =
+        makerExchange === 'bithumb'
+          ? (bithumbBalances[bot.makerCoin]?.available ?? 0)
+          : (upbitBalances[bot.makerCoin]?.available ?? 0);
+      const krwAvail =
+        makerExchange === 'bithumb'
+          ? (bithumbBalances['KRW']?.available ?? 0)
+          : (upbitBalances['KRW']?.available ?? 0);
+
+      const insufficientCoin = makerCoinAvail < qty;
+      const insufficientKrw = krwAvail < krwRequired;
+
+      let status: 'ok' | 'insufficient_coin' | 'insufficient_krw' | 'insufficient_both';
+      if (insufficientCoin && insufficientKrw) {
+        status = 'insufficient_both';
+      } else if (insufficientCoin) {
+        status = 'insufficient_coin';
+      } else if (insufficientKrw) {
+        status = 'insufficient_krw';
+      } else {
+        status = 'ok';
+      }
+
+      botStatuses.push({
+        id: bot.id,
+        makerCoin: bot.makerCoin,
+        takerCoin: bot.takerCoin,
+        makerExchange,
+        takerExchange: bot.takerExchange ?? 'upbit',
+        quantity: qty,
+        makerCoinAvail,
+        krwAvail,
+        status,
+      });
+    }
+
+    // 5. 응답 구성
+    res.json({
+      exchanges: {
+        bithumb: {
+          balances: bithumbBalances,
+          perCoinRequired: bithumbPerCoin,
+          krwRequired: {
+            total: bithumbKrwTotal,
+            botIds: [...new Set(bithumbKrwBotIds)],
+          },
+        },
+        upbit: {
+          balances: upbitBalances,
+          perCoinRequired: upbitPerCoin,
+          krwRequired: {
+            total: upbitKrwTotal,
+            botIds: [...new Set(upbitKrwBotIds)],
+          },
+        },
+      },
+      bots: botStatuses,
+      updatedAt: Date.now(),
+    });
   } catch (e) {
     next(e);
   }

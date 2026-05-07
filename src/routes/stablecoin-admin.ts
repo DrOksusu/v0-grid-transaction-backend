@@ -27,6 +27,7 @@ import {
   getBithumbOrderbooks,
   getCrossExchangeLatest,
   listCrossExchangeTrades,
+  getBalanceRequirements,
 } from '../controllers/stablecoin-admin.controller';
 
 const router = Router();
@@ -68,5 +69,8 @@ router.get('/bithumb-arb-trades', listBithumbArbTrades);
 // 대시보드 보조 — 빗썸 호가 + 크로스 스프레드 최신
 router.get('/bithumb-orderbooks', getBithumbOrderbooks);
 router.get('/cross-exchange-latest', getCrossExchangeLatest);
+
+// 잔고 요건 — 라이브 봇별 필요 잔고 vs 현재 잔고
+router.get('/balance-requirements', getBalanceRequirements);
 
 export default router;
