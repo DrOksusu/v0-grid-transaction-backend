@@ -451,14 +451,28 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           }
         }
       } else if (needsBithumb && !needsUpbit && bithumbClient) {
+        // Bithumb 전용 봇: 스프레드 게이트 (cross-coin 가격 차이)
+        if (preCheckOk) {
+          const spreadKrw = direction === 'MAKER_BUY_FIRST'
+            ? takerBook.bid - makerBook.bid   // takerCoin이 더 비쌀 때만 MAKER_BUY_FIRST
+            : makerBook.bid - takerBook.bid;  // makerCoin이 더 비쌀 때만 TAKER_SELL_FIRST
+          if (spreadKrw < bot.minSpreadKrw) {
+            console.log(
+              `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb spread gate: ${spreadKrw.toFixed(2)} < ${bot.minSpreadKrw} (${bot.makerCoin}↔${bot.takerCoin})`,
+            );
+            preCheckOk = false;
+          }
+        }
+
         // Bithumb 전용 봇 잔고 사전 체크
-        let bithumbAvail: Record<string, number>;
-        try {
-          bithumbAvail = await this.getBithumbAvailableBalances(bot.userId, bithumbClient);
-        } catch (err: any) {
-          console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb 잔고 fetch 실패:`, err.message);
-          preCheckOk = false;
-          bithumbAvail = {};
+        let bithumbAvail: Record<string, number> = {};
+        if (preCheckOk) {
+          try {
+            bithumbAvail = await this.getBithumbAvailableBalances(bot.userId, bithumbClient);
+          } catch (err: any) {
+            console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb 잔고 fetch 실패:`, err.message);
+            preCheckOk = false;
+          }
         }
 
         if (preCheckOk) {
