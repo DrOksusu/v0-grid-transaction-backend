@@ -471,6 +471,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
               preCheckOk = false;
             }
           } else {
+            // MAKER_BUY_FIRST: CASE A에서 KRW로 makerCoin 매수
             const krwAvail = bithumbAvail['KRW'] ?? 0;
             const requiredKrw = makerBook.ask * Number(bot.quantity) * 1.01;
             if (krwAvail < requiredKrw) {
@@ -478,6 +479,16 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
                 `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb MAKER_BUY_FIRST KRW 부족: available=${krwAvail.toFixed(0)} < required=${requiredKrw.toFixed(0)}`,
               );
               preCheckOk = false;
+            }
+            // CASE B에서 takerCoin IOC 매도가 필요하므로 takerCoin도 사전 확인
+            if (preCheckOk) {
+              const takerCoinAvail = bithumbAvail[bot.takerCoin] ?? 0;
+              if (takerCoinAvail < Number(bot.quantity)) {
+                console.log(
+                  `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb MAKER_BUY_FIRST takerCoin 잔고 부족: ${bot.takerCoin} available=${takerCoinAvail.toFixed(4)} < quantity=${bot.quantity}`,
+                );
+                preCheckOk = false;
+              }
             }
           }
         }
