@@ -46,6 +46,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   private evaluateInFlight = false;
   private upbitClients = new Map<number, { upbit: UpbitService; cache: BalanceCache }>();
   private bithumbClients = new Map<number, BithumbClient>();
+  private bithumbBalanceCaches = new Map<number, { data: Record<string, number>; at: number }>();
 
   constructor() {
     super({
@@ -76,6 +77,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     unsubscribeBithumbStablecoinOrderbooks();
     this.upbitClients.clear();
     this.bithumbClients.clear();
+    this.bithumbBalanceCaches.clear();
     console.log('[MakerTakerSimulatorAgent] 정지');
   }
 
@@ -448,6 +450,37 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             preCheckOk = false;
           }
         }
+      } else if (needsBithumb && !needsUpbit && bithumbClient) {
+        // Bithumb 전용 봇 잔고 사전 체크
+        let bithumbAvail: Record<string, number>;
+        try {
+          bithumbAvail = await this.getBithumbAvailableBalances(bot.userId, bithumbClient);
+        } catch (err: any) {
+          console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb 잔고 fetch 실패:`, err.message);
+          preCheckOk = false;
+          bithumbAvail = {};
+        }
+
+        if (preCheckOk) {
+          if (direction === 'TAKER_SELL_FIRST') {
+            const available = bithumbAvail[bot.makerCoin] ?? 0;
+            if (available < Number(bot.quantity)) {
+              console.log(
+                `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb TAKER_SELL_FIRST 잔고 부족: ${bot.makerCoin} available=${available.toFixed(4)} < quantity=${bot.quantity}`,
+              );
+              preCheckOk = false;
+            }
+          } else {
+            const krwAvail = bithumbAvail['KRW'] ?? 0;
+            const requiredKrw = makerBook.ask * Number(bot.quantity) * 1.01;
+            if (krwAvail < requiredKrw) {
+              console.log(
+                `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb MAKER_BUY_FIRST KRW 부족: available=${krwAvail.toFixed(0)} < required=${requiredKrw.toFixed(0)}`,
+              );
+              preCheckOk = false;
+            }
+          }
+        }
       }
     }
 
@@ -481,6 +514,10 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       upbitClient
     ) {
       upbitClient.cache.invalidate();
+    }
+
+    if (result.kind === 'placed' || result.kind === 'filled' || result.kind === 'partial_hold') {
+      this.bithumbBalanceCaches.delete(bot.userId);
     }
 
     await this.persistLiveResult(bot, pending, result);
@@ -613,5 +650,20 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     });
     this.bithumbClients.set(userId, client);
     return client;
+  }
+
+  private async getBithumbAvailableBalances(
+    userId: number,
+    client: BithumbClient,
+  ): Promise<Record<string, number>> {
+    const TTL_MS = 5_000;
+    const cached = this.bithumbBalanceCaches.get(userId);
+    if (cached && Date.now() - cached.at < TTL_MS) return cached.data;
+
+    const full = await client.getBalances();
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(full)) out[k] = v.available;
+    this.bithumbBalanceCaches.set(userId, { data: out, at: Date.now() });
+    return out;
   }
 }
