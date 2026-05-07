@@ -34,7 +34,7 @@ import { UpbitService } from '../services/upbit.service';
 import { BalanceCache } from '../services/upbit-balance-cache';
 import { BithumbClient } from '../services/exchange/bithumb-client';
 import { decrypt } from '../utils/encryption';
-import { isSpreadProfitable } from '../services/maker-taker-spread-gate';
+import { isMakerBookSpreadProfitable, isCrossSpreadProfitable, calcCrossSpreadBps } from '../services/maker-taker-spread-gate';
 
 /** Upbit OrderbookTop → NormalizedBook */
 function normalizeUpbit(book: OrderbookTop): NormalizedBook {
@@ -143,7 +143,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       const direction = decideLegOrder(makerNorm, takerNorm);
 
       if (direction === 'MAKER_BUY_FIRST') {
-        const gate = isSpreadProfitable(makerBook, bot.minSpreadKrw);
+        const gate = isCrossSpreadProfitable(makerNorm.bid, takerNorm.bid, 'MAKER_BUY_FIRST', bot.minSpreadBps);
         if (!gate.ok) return;
 
         const makerOrderPrice = makerNorm.bid + bot.bidOffsetKrw;
@@ -156,12 +156,12 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             quantity: bot.quantity,
             status: 'PENDING',
             legOrder: 'MAKER_BUY_FIRST',
-            notes: `생성[MAKER_BUY_FIRST]: makerBid=${makerNorm.bid}, offset=${bot.bidOffsetKrw}, spread=${gate.spreadKrw}`,
+            notes: `생성[MAKER_BUY_FIRST]: makerBid=${makerNorm.bid}, offset=${bot.bidOffsetKrw}, spread=${gate.spreadBps}bp`,
           },
         });
       } else {
-        const crossSpread = makerNorm.bid - takerNorm.bid;
-        if (crossSpread < bot.minSpreadKrw) return;
+        const gate = isCrossSpreadProfitable(makerNorm.bid, takerNorm.bid, 'TAKER_SELL_FIRST', bot.minSpreadBps);
+        if (!gate.ok) return;
 
         const takerFirstPrice = makerNorm.bid;
         const qty = Number(bot.quantity);
@@ -180,7 +180,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             legOrder: 'TAKER_SELL_FIRST',
             takerFirstCostKrw,
             takerFirstFeeKrw,
-            notes: `생성[TAKER_SELL_FIRST]: makerBid=${makerNorm.bid}, takerBid=${takerNorm.bid}, crossSpread=${crossSpread}`,
+            notes: `생성[TAKER_SELL_FIRST]: makerBid=${makerNorm.bid}, takerBid=${takerNorm.bid}, spread=${gate.spreadBps}bp`,
           },
         });
       }
@@ -420,10 +420,9 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         }
 
         if (preCheckOk) {
-          // cross-exchange spread: takerBook.bid - makerBook.bid (MAKER_BUY_FIRST)
-          const crossSpread = takerBook.bid - makerBook.bid;
-          if (bot.minSpreadKrw > 0 && crossSpread < bot.minSpreadKrw) {
-            console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} spread gate: ${crossSpread} < ${bot.minSpreadKrw}`);
+          const gate = isCrossSpreadProfitable(makerBook.bid, takerBook.bid, 'MAKER_BUY_FIRST', bot.minSpreadBps);
+          if (!gate.ok) {
+            console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} spread gate: ${gate.spreadBps}bp < ${bot.minSpreadBps}bp`);
             preCheckOk = false;
           }
         }
@@ -445,21 +444,19 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         }
 
         if (preCheckOk) {
-          const crossSpread = makerBook.bid - takerBook.bid;
-          if (crossSpread < bot.minSpreadKrw) {
-            console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} TAKER_SELL_FIRST spread gate: ${crossSpread} < ${bot.minSpreadKrw}`);
+          const gate = isCrossSpreadProfitable(makerBook.bid, takerBook.bid, 'TAKER_SELL_FIRST', bot.minSpreadBps);
+          if (!gate.ok) {
+            console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} TAKER_SELL_FIRST spread gate: ${gate.spreadBps}bp < ${bot.minSpreadBps}bp`);
             preCheckOk = false;
           }
         }
       } else if (needsBithumb && !needsUpbit && bithumbClient) {
-        // Bithumb 전용 봇: 스프레드 게이트 (cross-coin 가격 차이)
+        // Bithumb 전용 봇: 스프레드 게이트 (bp 기준)
         if (preCheckOk) {
-          const spreadKrw = direction === 'MAKER_BUY_FIRST'
-            ? takerBook.bid - makerBook.bid   // takerCoin이 더 비쌀 때만 MAKER_BUY_FIRST
-            : makerBook.bid - takerBook.bid;  // makerCoin이 더 비쌀 때만 TAKER_SELL_FIRST
-          if (spreadKrw < bot.minSpreadKrw) {
+          const gate = isCrossSpreadProfitable(makerBook.bid, takerBook.bid, direction, bot.minSpreadBps);
+          if (!gate.ok) {
             console.log(
-              `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb spread gate: ${spreadKrw.toFixed(2)} < ${bot.minSpreadKrw} (${bot.makerCoin}↔${bot.takerCoin})`,
+              `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb spread gate: ${gate.spreadBps}bp < ${bot.minSpreadBps}bp (${bot.makerCoin}↔${bot.takerCoin})`,
             );
             preCheckOk = false;
           }
@@ -521,7 +518,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       quantity: Number(bot.quantity),
       maxPendingMs: bot.maxPendingMs,
       killSwitch: bot.killSwitch,
-      minSpreadKrw: bot.minSpreadKrw,
+      minSpreadBps: bot.minSpreadBps,
     };
 
     const result = await runLiveExecutor({

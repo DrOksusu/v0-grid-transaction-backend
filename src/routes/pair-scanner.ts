@@ -86,7 +86,7 @@ router.post(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.userId!;
-      const { makerCoin, takerCoin, qty, makerFeeBps, takerFeeBps, minSpreadKrw, bidOffsetKrw, minTakerBalance, makerExchange, takerExchange, live } = req.body;
+      const { makerCoin, takerCoin, qty, makerFeeBps, takerFeeBps, minSpreadBps, bidOffsetKrw, minTakerBalance, makerExchange, takerExchange, live } = req.body;
 
       if (!makerCoin || !takerCoin) {
         res.status(400).json({ success: false, error: 'makerCoin, takerCoin 필수' });
@@ -109,7 +109,7 @@ router.post(
           quantity: qty ?? 10,
           makerFeeBps: makerFeeBps ?? 5,
           takerFeeBps: takerFeeBps ?? 5,
-          minSpreadKrw: minSpreadKrw ?? 0,
+          minSpreadBps: minSpreadBps ?? 20,
           bidOffsetKrw: bidOffsetKrw ?? 0,
           minTakerBalance: minTakerBalance ?? null,
           makerExchange: makerExchange ?? 'upbit',
@@ -135,7 +135,7 @@ router.patch(
     try {
       const userId = req.userId!;
       const id = parseInt(req.params.id, 10);
-      const { enabled, killSwitch, minSpreadKrw, live, bidOffsetKrw, makerExchange, takerExchange } = req.body;
+      const { enabled, killSwitch, minSpreadBps, live, bidOffsetKrw, makerExchange, takerExchange } = req.body;
 
       const existing = await stablecoinPrisma.makerTakerSimBot.findFirst({ where: { id, userId } });
       if (!existing) {
@@ -146,7 +146,7 @@ router.patch(
       const patch: Record<string, unknown> = {};
       if (enabled !== undefined) patch.enabled = Boolean(enabled);
       if (killSwitch !== undefined) patch.killSwitch = Boolean(killSwitch);
-      if (minSpreadKrw !== undefined) patch.minSpreadKrw = Number(minSpreadKrw);
+      if (minSpreadBps !== undefined) patch.minSpreadBps = Number(minSpreadBps);
       if (live !== undefined) patch.live = Boolean(live);
       if (bidOffsetKrw !== undefined) patch.bidOffsetKrw = Number(bidOffsetKrw);
       if (makerExchange !== undefined) patch.makerExchange = String(makerExchange);

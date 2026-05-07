@@ -269,7 +269,7 @@ export type CreateMakerBotInput = {
   minTakerBalance?: number | null;
   makerFeeBps?: number;
   takerFeeBps?: number;
-  minSpreadKrw?: number;
+  minSpreadBps?: number;
 };
 
 /**
@@ -290,8 +290,7 @@ export async function createMakerBot(input: CreateMakerBotInput) {
       minTakerBalance: input.minTakerBalance ?? null,
       makerFeeBps: input.makerFeeBps ?? 5,
       takerFeeBps: input.takerFeeBps ?? 5,
-      // minSpreadKrw 미지정 시 Prisma 스키마 기본값(12) 사용
-      ...(input.minSpreadKrw !== undefined && { minSpreadKrw: input.minSpreadKrw }),
+      ...(input.minSpreadBps !== undefined && { minSpreadBps: input.minSpreadBps }),
     },
   });
 }
@@ -307,7 +306,7 @@ export type PatchMakerBotInput = Partial<{
   minTakerBalance: number | null;
   makerFeeBps: number;
   takerFeeBps: number;
-  minSpreadKrw: number;
+  minSpreadBps: number;
   lastResumeAt: Date;
 }>;
 

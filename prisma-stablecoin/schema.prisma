@@ -154,7 +154,7 @@ model MakerTakerSimBot {
   takerFeeBps Int @default(5)
 
   // PR H — Canary Stage 3 사전 정비
-  minSpreadKrw Int       @default(12)  // (bestAsk - bestBid) >= 이 값일 때만 placement
+  minSpreadBps Int       @default(20)  // cross 스프레드(bp) >= 이 값일 때만 placement
   lastResumeAt DateTime?               // enabled false→true 전환 시각 (canary T_start)
 
   // 크로스 거래소 지원 — 각 레그를 다른 거래소에서 실행 가능

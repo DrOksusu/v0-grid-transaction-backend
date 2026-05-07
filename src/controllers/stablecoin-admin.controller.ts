@@ -284,13 +284,12 @@ export const postKillswitch = async (req: AuthRequest, res: Response, next: Next
 /**
  * MakerTakerSimBot의 quantity 필드(Decimal)를 string으로 직렬화.
  * Prisma Decimal은 JSON.stringify 시 빈 객체가 되므로 변환 필수.
- * minSpreadKrw, lastResumeAt 포함 (PR H — canary stage 3 검증 필드).
  */
 function serializeMakerBot(bot: any) {
   return {
     ...bot,
     quantity: bot.quantity?.toString() ?? null,
-    minSpreadKrw: bot.minSpreadKrw,
+    minSpreadBps: bot.minSpreadBps,
     lastResumeAt: bot.lastResumeAt?.toISOString() ?? null,
   };
 }
@@ -349,8 +348,8 @@ export const createMakerBot = async (req: AuthRequest, res: Response, next: Next
     if (body.takerFeeBps !== undefined && (!Number.isInteger(body.takerFeeBps) || body.takerFeeBps < 0)) {
       throw new AppError('Invalid body: takerFeeBps must be non-negative integer', 400);
     }
-    if (body.minSpreadKrw !== undefined && (!Number.isInteger(body.minSpreadKrw) || body.minSpreadKrw < 0)) {
-      throw new AppError('Invalid body: minSpreadKrw must be non-negative integer', 400);
+    if (body.minSpreadBps !== undefined && (!Number.isInteger(body.minSpreadBps) || body.minSpreadBps < 0)) {
+      throw new AppError('Invalid body: minSpreadBps must be non-negative integer', 400);
     }
 
     const bot = await arbService.createMakerBot({
@@ -364,7 +363,7 @@ export const createMakerBot = async (req: AuthRequest, res: Response, next: Next
       minTakerBalance: body.minTakerBalance,
       makerFeeBps: body.makerFeeBps,
       takerFeeBps: body.takerFeeBps,
-      minSpreadKrw: body.minSpreadKrw,
+      minSpreadBps: body.minSpreadBps,
     });
     res.json(serializeMakerBot(bot));
   } catch (error) {
@@ -427,9 +426,9 @@ export const patchMakerBot = async (req: AuthRequest, res: Response, next: NextF
       if (!Number.isInteger(body.takerFeeBps) || body.takerFeeBps < 0) throw new AppError('Invalid body: takerFeeBps must be non-negative integer', 400);
       patch.takerFeeBps = body.takerFeeBps;
     }
-    if (body.minSpreadKrw !== undefined) {
-      if (!Number.isInteger(body.minSpreadKrw) || body.minSpreadKrw < 0) throw new AppError('Invalid body: minSpreadKrw must be non-negative integer', 400);
-      patch.minSpreadKrw = body.minSpreadKrw;
+    if (body.minSpreadBps !== undefined) {
+      if (!Number.isInteger(body.minSpreadBps) || body.minSpreadBps < 0) throw new AppError('Invalid body: minSpreadBps must be non-negative integer', 400);
+      patch.minSpreadBps = body.minSpreadBps;
     }
 
     const bot = await arbService.patchMakerBot(id, userId, patch);

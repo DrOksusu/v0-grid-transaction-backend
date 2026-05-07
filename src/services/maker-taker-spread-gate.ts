@@ -1,51 +1,75 @@
 /**
- * 수익성 gating — makerCoin 호가의 (bestAsk - bestBid) 가 임계값 이상일 때만 maker 주문 허용.
- *
- * 근거: Canary Stage 2 (2026-04-30) 종료 시 spread=1 KRW (~6.7bps) < fees(10bps) 로 항상 손실.
- * 메모리 `project_canary_stage_2_complete_2026_04_30.md` § "수익성 미확보" 참조.
- *
- * 정책 결정은 호출자(agent)가 함 — live executor 는 spec § 2 정합 순수 함수 유지.
+ * 수익성 gating — cross 스프레드(bp 기준)가 임계값 이상일 때만 maker 주문 허용.
+ * bp = (higherBid / lowerBid - 1) * 10000
  */
 import type { OrderbookTop } from './upbit-price-manager';
+import type { NormalizedBook } from './maker-taker-live-executor';
 
-/** isSpreadProfitable 반환 타입 */
 export interface SpreadGateResult {
-  /** 수익성 gating 통과 여부 */
   ok: boolean;
-  /** 현재 스프레드 (KRW): bestAsk - bestBid */
-  spreadKrw: number;
-  /** ok=false 일 때 사유 문자열 */
+  spreadBps: number;
   reason?: string;
 }
 
 /**
- * 호가 스프레드가 최소 임계값 이상인지 검사하는 순수 함수.
+ * 크로스 스프레드를 bp로 계산해 minSpreadBps와 비교하는 순수 함수.
  *
- * @param makerBook  maker 코인의 최우선 호가 스냅샷 (업비트 OrderbookTop)
- * @param minSpreadKrw  최소 수익성 스프레드 (KRW). 0이면 게이팅 비활성.
- * @returns SpreadGateResult — ok=true 이면 주문 진행 가능
+ * @param makerBid  maker 코인 최우선 매수 호가
+ * @param takerBid  taker 코인 최우선 매수 호가
+ * @param direction 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST'
+ * @param minSpreadBps 최소 수익성 스프레드 (bp). 0이면 게이팅 비활성.
  */
-export function isSpreadProfitable(
-  makerBook: OrderbookTop,
-  minSpreadKrw: number,
+export function isCrossSpreadProfitable(
+  makerBid: number,
+  takerBid: number,
+  direction: 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST',
+  minSpreadBps: number,
 ): SpreadGateResult {
-  // 현재 스프레드 계산 (음수 가능: ask < bid 비정상 입력)
-  const spreadKrw = makerBook.ask.price - makerBook.bid.price;
+  const numerator   = direction === 'MAKER_BUY_FIRST' ? takerBid : makerBid;
+  const denominator = direction === 'MAKER_BUY_FIRST' ? makerBid : takerBid;
 
-  // minSpreadKrw === 0 → 게이팅 비활성, 항상 통과
-  if (minSpreadKrw === 0) {
-    return { ok: true, spreadKrw };
+  if (!denominator || denominator <= 0) {
+    return { ok: false, spreadBps: 0, reason: 'invalid orderbook (denominator=0)' };
   }
 
-  // 스프레드가 임계값 미달이면 수익성 없음으로 판단
-  if (spreadKrw < minSpreadKrw) {
+  const spreadBps = Math.floor((numerator / denominator - 1) * 10000);
+
+  if (minSpreadBps === 0) return { ok: true, spreadBps };
+
+  if (spreadBps < minSpreadBps) {
     return {
       ok: false,
-      spreadKrw,
-      reason: `spread ${spreadKrw} KRW < minSpreadKrw ${minSpreadKrw} (수익성 미달)`,
+      spreadBps,
+      reason: `spread ${spreadBps}bp < min ${minSpreadBps}bp`,
     };
   }
+  return { ok: true, spreadBps };
+}
 
-  // 스프레드 >= 임계값 → 통과
-  return { ok: true, spreadKrw };
+/** 단일 거래소 시뮬 경로 호환용 — makerBook ask/bid 스프레드 bp 계산 */
+export function isMakerBookSpreadProfitable(
+  makerBook: OrderbookTop,
+  minSpreadBps: number,
+): SpreadGateResult {
+  const bid = makerBook.bid.price;
+  const ask = makerBook.ask.price;
+  if (!bid || bid <= 0) return { ok: false, spreadBps: 0, reason: 'invalid makerBook' };
+  const spreadBps = Math.floor((ask / bid - 1) * 10000);
+  if (minSpreadBps === 0) return { ok: true, spreadBps };
+  if (spreadBps < minSpreadBps) {
+    return { ok: false, spreadBps, reason: `makerBook spread ${spreadBps}bp < min ${minSpreadBps}bp` };
+  }
+  return { ok: true, spreadBps };
+}
+
+/** NormalizedBook 기반 cross 스프레드 bp 계산 헬퍼 */
+export function calcCrossSpreadBps(
+  makerBook: NormalizedBook,
+  takerBook: NormalizedBook,
+  direction: 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST',
+): number {
+  const numerator   = direction === 'MAKER_BUY_FIRST' ? takerBook.bid : makerBook.bid;
+  const denominator = direction === 'MAKER_BUY_FIRST' ? makerBook.bid : takerBook.bid;
+  if (!denominator || denominator <= 0) return 0;
+  return Math.floor((numerator / denominator - 1) * 10000);
 }

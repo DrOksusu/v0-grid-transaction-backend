@@ -30,7 +30,7 @@ export type LiveBotInput = {
   quantity: number;
   maxPendingMs: number;
   killSwitch: boolean;
-  minSpreadKrw: number;
+  minSpreadBps: number;
 };
 
 /** 현재 PENDING 트레이드 스냅샷 */
