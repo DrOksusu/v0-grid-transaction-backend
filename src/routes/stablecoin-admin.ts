@@ -28,6 +28,7 @@ import {
   getCrossExchangeLatest,
   listCrossExchangeTrades,
   getBalanceRequirements,
+  listMakerTakerTrades,
 } from '../controllers/stablecoin-admin.controller';
 
 const router = Router();
@@ -72,5 +73,8 @@ router.get('/cross-exchange-latest', getCrossExchangeLatest);
 
 // 잔고 요건 — 라이브 봇별 필요 잔고 vs 현재 잔고
 router.get('/balance-requirements', getBalanceRequirements);
+
+// MakerTakerSim 거래 내역
+router.get('/maker-taker-trades', listMakerTakerTrades);
 
 export default router;

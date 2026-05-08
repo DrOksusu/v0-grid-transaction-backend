@@ -1173,3 +1173,59 @@ export const getCrossExchangeLatest = async (
     next(e);
   }
 };
+
+/**
+ * GET /api/admin/stablecoin/maker-taker-trades
+ * MakerTakerSim 거래 내역 조회.
+ * Query: limit (default 100, max 500), status (all | FILLED | PENDING | PARTIAL_HOLD | EXPIRED | CANCELLED | TAKER_PENDING | TAKER_EXPIRED | MAKER_EXPIRED), coin
+ */
+export const listMakerTakerTrades = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const limit = Math.min(parseInt((req.query.limit as string) || '100', 10), 500);
+    const statusFilter = (req.query.status as string) || 'all';
+    const coinFilter = (req.query.coin as string) || '';
+
+    const where: Record<string, unknown> = { live: true };
+    if (statusFilter !== 'all') where.status = statusFilter;
+    if (coinFilter) where.OR = [{ makerCoin: coinFilter }, { takerCoin: coinFilter }];
+
+    const trades = await stablecoinPrisma.makerTakerSimTrade.findMany({
+      where,
+      orderBy: { id: 'desc' },
+      take: Number.isFinite(limit) ? limit : 100,
+      include: {
+        bot: {
+          select: { makerExchange: true, takerExchange: true },
+        },
+      },
+    });
+
+    const serialized = trades.map((t) => ({
+      id: t.id.toString(),
+      botId: t.botId,
+      makerExchange: t.bot.makerExchange,
+      takerExchange: t.bot.takerExchange,
+      makerCoin: t.makerCoin,
+      takerCoin: t.takerCoin,
+      quantity: t.quantity.toString(),
+      legOrder: t.legOrder,
+      status: t.status,
+      makerOrderPrice: t.makerOrderPrice,
+      makerFilledAt: t.makerFilledAt?.toISOString() ?? null,
+      takerExecutedAt: t.takerExecutedAt?.toISOString() ?? null,
+      netProfitKrw: t.netProfitKrw ? Number(t.netProfitKrw) : null,
+      feeKrw: t.feeKrw ? Number(t.feeKrw) : null,
+      realizedSpreadBps: t.realizedSpreadBps ?? null,
+      notes: t.notes,
+      createdAt: t.createdAt.toISOString(),
+    }));
+
+    res.json({ trades: serialized });
+  } catch (e) {
+    next(e);
+  }
+};
