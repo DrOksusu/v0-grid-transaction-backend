@@ -922,9 +922,9 @@ export const getBalanceRequirements = async (
   next: NextFunction,
 ) => {
   try {
-    // 1. 라이브 봇 조회
+    // 1. 라이브 봇 조회 (enabled 여부 무관 — 잠시 비활성화된 봇도 잔고 현황 확인)
     const liveBots = await stablecoinPrisma.makerTakerSimBot.findMany({
-      where: { live: true, enabled: true, killSwitch: false },
+      where: { live: true },
       select: {
         id: true,
         userId: true,
@@ -933,6 +933,8 @@ export const getBalanceRequirements = async (
         makerExchange: true,
         takerExchange: true,
         quantity: true,
+        enabled: true,
+        killSwitch: true,
       },
     });
 
@@ -1023,6 +1025,8 @@ export const getBalanceRequirements = async (
       makerCoinAvail: number;
       krwAvail: number;
       status: 'ok' | 'insufficient_coin' | 'insufficient_krw' | 'insufficient_both';
+      enabled: boolean;
+      killSwitch: boolean;
     }> = [];
 
     for (const bot of liveBots) {
@@ -1041,25 +1045,27 @@ export const getBalanceRequirements = async (
       }
       const krwRequired = Math.ceil(qty * askPrice * 1.01);
 
-      // perCoinRequired 집계
-      if (makerExchange === 'bithumb') {
-        if (!bithumbPerCoin[bot.makerCoin]) {
-          bithumbPerCoin[bot.makerCoin] = { qty: 0, botIds: [] };
-        }
-        bithumbPerCoin[bot.makerCoin].qty += qty;
-        bithumbPerCoin[bot.makerCoin].botIds.push(bot.id);
+      // perCoinRequired 집계 (enabled=true & killSwitch=false 봇만 — 충전 필요 판단 기준)
+      if (bot.enabled && !bot.killSwitch) {
+        if (makerExchange === 'bithumb') {
+          if (!bithumbPerCoin[bot.makerCoin]) {
+            bithumbPerCoin[bot.makerCoin] = { qty: 0, botIds: [] };
+          }
+          bithumbPerCoin[bot.makerCoin].qty += qty;
+          bithumbPerCoin[bot.makerCoin].botIds.push(bot.id);
 
-        bithumbKrwTotal += krwRequired;
-        bithumbKrwBotIds.push(bot.id);
-      } else {
-        if (!upbitPerCoin[bot.makerCoin]) {
-          upbitPerCoin[bot.makerCoin] = { qty: 0, botIds: [] };
-        }
-        upbitPerCoin[bot.makerCoin].qty += qty;
-        upbitPerCoin[bot.makerCoin].botIds.push(bot.id);
+          bithumbKrwTotal += krwRequired;
+          bithumbKrwBotIds.push(bot.id);
+        } else {
+          if (!upbitPerCoin[bot.makerCoin]) {
+            upbitPerCoin[bot.makerCoin] = { qty: 0, botIds: [] };
+          }
+          upbitPerCoin[bot.makerCoin].qty += qty;
+          upbitPerCoin[bot.makerCoin].botIds.push(bot.id);
 
-        upbitKrwTotal += krwRequired;
-        upbitKrwBotIds.push(bot.id);
+          upbitKrwTotal += krwRequired;
+          upbitKrwBotIds.push(bot.id);
+        }
       }
 
       // 봇별 status 계산
@@ -1096,6 +1102,8 @@ export const getBalanceRequirements = async (
         makerCoinAvail,
         krwAvail,
         status,
+        enabled: bot.enabled,
+        killSwitch: bot.killSwitch,
       });
     }
 
