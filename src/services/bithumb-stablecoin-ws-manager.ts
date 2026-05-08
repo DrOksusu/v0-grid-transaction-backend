@@ -12,6 +12,7 @@
  */
 
 import WebSocket from 'ws';
+import axios from 'axios';
 
 const BITHUMB_WS_URL = 'wss://pubwss.bithumb.com/pub/ws';
 
@@ -109,6 +110,41 @@ function scheduleReconnect(): void {
   }, delay);
 }
 
+/** WS 연결 직후 REST 호가로 localBooks와 cache를 초기화 */
+async function initFromRest(): Promise<void> {
+  await Promise.all(
+    BITHUMB_STABLECOIN_SYMBOLS.map(async (symbol) => {
+      try {
+        const res = await axios.get(
+          `https://api.bithumb.com/public/orderbook/${symbol}_KRW?count=5`,
+          { timeout: 5000 },
+        );
+        const data = res.data?.data;
+        if (!data) return;
+        if (!localBooks.has(symbol)) {
+          localBooks.set(symbol, { bids: new Map(), asks: new Map(), lastUpdated: Date.now() });
+        }
+        const book = localBooks.get(symbol)!;
+        for (const row of (data.bids ?? [])) {
+          book.bids.set(String(row.price), parseFloat(row.quantity));
+        }
+        for (const row of (data.asks ?? [])) {
+          book.asks.set(String(row.price), parseFloat(row.quantity));
+        }
+        book.lastUpdated = Date.now();
+        const bid = bestBid(book.bids);
+        const ask = bestAsk(book.asks);
+        if (bid > 0 && ask > 0) {
+          cache.set(symbol, { symbol, bid, ask, timestamp: Date.now() });
+          console.log(`[BithumbStablecoinWs] REST 초기화: ${symbol} bid=${bid} ask=${ask}`);
+        }
+      } catch {
+        // 개별 코인 실패는 무시
+      }
+    }),
+  );
+}
+
 function connectInternal(): void {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
@@ -124,6 +160,9 @@ function connectInternal(): void {
     const symbols = BITHUMB_STABLECOIN_SYMBOLS.map(s => `${s}_KRW`);
     currentWs.send(JSON.stringify({ type: 'orderbookdepth', symbols }));
     console.log('[BithumbStablecoinWs] orderbookdepth 구독 시작:', symbols.join(', '));
+
+    // WS delta 방식이라 초기 스냅샷이 없음 → REST로 초기 호가 채우기
+    initFromRest().catch(e => console.warn('[BithumbStablecoinWs] REST 초기화 실패:', e.message));
   });
 
   currentWs.on('message', (data: Buffer) => {
