@@ -1205,12 +1205,11 @@ export const listMakerTakerTrades = async (
     });
 
     const serialized = trades.map((t) => {
-      // legOrder에 따라 매수가/매도가 결정
-      // MAKER_BUY_FIRST: maker가 먼저 매수(makerFilledPrice), taker가 나중에 매도(takerMarketBid)
-      // TAKER_SELL_FIRST: taker가 먼저 매도(makerFilledPrice 필드에 저장), maker가 나중에 매수(takerMarketBid)
-      const isMakerFirst = t.legOrder !== 'TAKER_SELL_FIRST';
-      const buyPriceKrw = isMakerFirst ? (t.makerFilledPrice ?? null) : (t.takerMarketBid ?? null);
-      const sellPriceKrw = isMakerFirst ? (t.takerMarketBid ?? null) : (t.makerFilledPrice ?? null);
+      // legOrder 무관하게 항상 동일한 매핑:
+      // makerFilledPrice = makerCoin 매수 단가 (maker BID 체결가 or TAKER_SELL_FIRST 후속 IOC BID 체결가)
+      // takerMarketBid  = takerCoin 매도 단가 (taker 시장가 ASK 체결가 or TAKER_SELL_FIRST 선행 ASK 체결가)
+      const buyPriceKrw = t.makerFilledPrice ?? null;
+      const sellPriceKrw = t.takerMarketBid ?? null;
 
       return {
         id: t.id.toString(),
