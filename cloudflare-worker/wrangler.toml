@@ -1,0 +1,5 @@
+name = "upbit-relay"
+main = "upbit-relay.js"
+compatibility_date = "2024-01-01"
+
+# 배포 후 URL: https://upbit-relay.<your-subdomain>.workers.dev

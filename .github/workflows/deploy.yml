@@ -127,6 +127,8 @@ jobs:
               -e "FRONTEND_URL=${{ secrets.FRONTEND_URL }}" \
               -e "ADMIN_EMAIL=${{ secrets.ADMIN_EMAIL }}" \
               -e "TWITTER_BEARER_TOKEN=${{ secrets.TWITTER_BEARER_TOKEN }}" \
+              -e "CF_WORKER_URL=${{ secrets.CF_WORKER_URL }}" \
+              -e "CF_WORKER_SECRET=${{ secrets.CF_WORKER_SECRET }}" \
               $ECR_REGISTRY/$IMAGE_NAME:latest
 
             echo "=== Step 5: 상태 확인 ==="

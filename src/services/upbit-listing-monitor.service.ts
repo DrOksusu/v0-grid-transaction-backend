@@ -113,20 +113,24 @@ class UpbitListingMonitorService {
   }
 
   // 업비트 공지 폴링 (에이전트 tick에서 호출) — 거래 카테고리 최신 10개
-  // FlareSolverr → 직접 요청 → 마켓 목록 감지 순으로 폴백
+  // CF Worker → FlareSolverr → 직접 요청 → 마켓 목록 감지 순으로 폴백
   async pollAnnouncements(): Promise<void> {
     let notices: UpbitNotice[] = [];
     try {
-      notices = await this.fetchNoticesViaFlare();
+      notices = await this.fetchNoticesViaCfWorker();
     } catch {
-      // FlareSolverr 미실행 또는 오류 → 직접 요청 폴백
       try {
-        notices = await this.fetchNoticesDirect();
-      } catch (err: any) {
-        if (err?.response?.status) {
-          console.warn(`[ListingMonitor] 공지 API ${err.response.status} — 마켓 목록 감지로 폴백`);
+        notices = await this.fetchNoticesViaFlare();
+      } catch {
+        // FlareSolverr 미실행 또는 오류 → 직접 요청 폴백
+        try {
+          notices = await this.fetchNoticesDirect();
+        } catch (err: any) {
+          if (err?.response?.status) {
+            console.warn(`[ListingMonitor] 공지 API ${err.response.status} — 마켓 목록 감지로 폴백`);
+          }
+          return;
         }
-        return;
       }
     }
 
@@ -283,6 +287,33 @@ class UpbitListingMonitorService {
   }
 
   // ── Private helpers ──
+
+  // Cloudflare Workers 릴레이를 통해 공지 API 호출 (1순위 우회)
+  // CF Workers는 Cloudflare 자체 IP로 실행 → AWS IP 차단 우회 가능
+  // 필요 env: CF_WORKER_URL, CF_WORKER_SECRET(선택)
+  private async fetchNoticesViaCfWorker(): Promise<UpbitNotice[]> {
+    const workerUrl = process.env.CF_WORKER_URL;
+    if (!workerUrl) throw new Error('CF_WORKER_URL not set');
+
+    const headers: Record<string, string> = { accept: 'application/json' };
+    if (process.env.CF_WORKER_SECRET) {
+      headers['X-Relay-Secret'] = process.env.CF_WORKER_SECRET;
+    }
+
+    const res = await axios.get(workerUrl, {
+      timeout: 10000,
+      headers,
+      params: { page: 1, per_page: 10, category: '거래' },
+    });
+
+    const raw: any[] = res.data?.data?.notices ?? [];
+    return raw.map((n: any) => ({
+      id: n.id,
+      title: n.title,
+      url: `https://www.upbit.com/service_center/notice?id=${n.id}`,
+      created_at: n.listed_at,
+    }));
+  }
 
   // FlareSolverr를 통해 공지 API 호출 (Cloudflare 우회)
   // grid-bot 컨테이너 기준: 호스트(172.17.0.1)에서 실행 중인 FlareSolverr에 접근
