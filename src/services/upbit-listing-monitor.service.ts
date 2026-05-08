@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { parse as parseHtml } from 'node-html-parser';
 import { Prisma } from '@prisma/client';
 import prisma from '../config/database';
 import { listingAutoTraderService } from './listing-auto-trader.service';
@@ -54,6 +55,9 @@ const SNAPSHOT_SCHEDULE = [
   { type: '+6h', delayMs: 6 * 60 * 60 * 1000 },
 ];
 
+// 텔레그램 noticeId 충돌 방지 오프셋 (Upbit 공지 ID는 수만 단위, TG 메시지 ID도 유사 → 10억 오프셋)
+const TG_NOTICE_ID_OFFSET = 1_000_000_000;
+
 class UpbitListingMonitorService {
   // 알림이 발생한 noticeId 캐시 (중복 방지, 재시작 후엔 DB로 복원)
   private seenNoticeIds: Set<number> = new Set();
@@ -61,6 +65,8 @@ class UpbitListingMonitorService {
   private upbitMarkets: Set<string> = new Set();
   // 스냅샷 스케줄 타이머 (announcementId → timer ids)
   private snapshotTimers: Map<number, ReturnType<typeof setTimeout>[]> = new Map();
+  // 텔레그램 채널 메시지 ID 캐시 (재시작 시 초기화 → 과거 메시지 재처리 방지)
+  private seenTelegramMsgIds: Set<number> = new Set();
 
   // 서비스 초기화 (에이전트 시작 시 호출)
   async initialize(): Promise<void> {
@@ -86,48 +92,61 @@ class UpbitListingMonitorService {
       console.log(`[ListingMonitor] 최초 초기화: ${this.upbitMarkets.size}개 마켓 DB 저장`);
     }
 
+    // 텔레그램 채널 현재 메시지 ID를 baseline으로 로드 (재시작 후 과거 메시지 재처리 방지)
+    await this.initTelegramBaseline();
+
     // 진행 중인 공지 (listed 미완료) 스케줄 복원
     await this.restorePendingSchedules();
   }
 
   // 업비트 공지 폴링 (에이전트 tick에서 호출) — 거래 카테고리 최신 10개
+  // FlareSolverr → 직접 요청 → 마켓 목록 감지 순으로 폴백
   async pollAnnouncements(): Promise<void> {
     let notices: UpbitNotice[] = [];
     try {
-      // Playwright로 확인한 실제 API: api-manager.upbit.com (category=거래 URL encode)
-      const res = await axios.get(
-        'https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&per_page=10&category=%EA%B1%B0%EB%9E%98',
-        {
-          timeout: 8000,
-          headers: {
-            accept: 'application/json, text/plain, */*',
-            'accept-language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-            referer: 'https://www.upbit.com/',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          },
-        },
-      );
-      const raw: any[] = res.data?.data?.notices ?? [];
-      notices = raw.map((n: any) => ({
-        id: n.id,
-        title: n.title,
-        url: `https://www.upbit.com/service_center/notice?id=${n.id}`,
-        created_at: n.listed_at,
-      }));
-    } catch (err: any) {
-      if (err?.response?.status) {
-        console.warn(`[ListingMonitor] 공지 API ${err.response.status} — 마켓 목록 감지로 폴백`);
+      notices = await this.fetchNoticesViaFlare();
+    } catch {
+      // FlareSolverr 미실행 또는 오류 → 직접 요청 폴백
+      try {
+        notices = await this.fetchNoticesDirect();
+      } catch (err: any) {
+        if (err?.response?.status) {
+          console.warn(`[ListingMonitor] 공지 API ${err.response.status} — 마켓 목록 감지로 폴백`);
+        }
+        return;
       }
-      return;
     }
 
     for (const notice of notices) {
       if (this.seenNoticeIds.has(notice.id)) continue;
       if (!this.isListingNotice(notice.title)) continue;
 
-      // 즉시 seenIds에 추가 → 5초 내 중복 폴링 방지
+      // 즉시 seenIds에 추가 → 중복 폴링 방지
       this.seenNoticeIds.add(notice.id);
       await this.handleNewListing(notice);
+    }
+  }
+
+  // 텔레그램 @upbitkr 채널 폴링 — t.me/s/upbitkr 공개 웹뷰 스크래핑
+  async pollTelegramChannel(): Promise<void> {
+    let messages: { id: number; text: string }[] = [];
+    try {
+      messages = await this.fetchTelegramMessages();
+    } catch (err: any) {
+      console.warn('[ListingMonitor] 텔레그램 채널 조회 실패:', err.message);
+      return;
+    }
+
+    for (const msg of messages) {
+      if (this.seenTelegramMsgIds.has(msg.id)) continue;
+      this.seenTelegramMsgIds.add(msg.id);
+
+      if (!this.isListingNotice(msg.text)) continue;
+      const ticker = this.parseTicker(msg.text);
+      if (!ticker) continue;
+
+      console.log(`[ListingMonitor] 텔레그램 상장 공지 감지: ${ticker} (msgId=${msg.id})`);
+      await this.handleTelegramListing(msg.id, msg.text, ticker);
     }
   }
 
@@ -141,11 +160,10 @@ class UpbitListingMonitorService {
 
   // 에이전트 getExtraInfo용 통계
   getStats(): Record<string, any> {
-    const pendingSymbols: string[] = [];
     return {
       seenNoticeCount: this.seenNoticeIds.size,
+      seenTelegramMsgCount: this.seenTelegramMsgIds.size,
       pendingAnnouncementCount: this.snapshotTimers.size,
-      pendingSymbols,
     };
   }
 
@@ -222,6 +240,55 @@ class UpbitListingMonitorService {
   }
 
   // ── Private helpers ──
+
+  // FlareSolverr를 통해 공지 API 호출 (Cloudflare 우회)
+  // grid-bot 컨테이너 기준: 호스트(172.17.0.1)에서 실행 중인 FlareSolverr에 접근
+  private async fetchNoticesViaFlare(): Promise<UpbitNotice[]> {
+    const FLARESOLVERR = process.env.FLARESOLVERR_URL ?? 'http://172.17.0.1:8191';
+    const target = 'https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&per_page=10&category=%EA%B1%B0%EB%9E%98';
+
+    const res = await axios.post(
+      `${FLARESOLVERR}/v1`,
+      { cmd: 'request.get', url: target, maxTimeout: 60000 },
+      { timeout: 70000 },
+    );
+
+    if (res.data?.status !== 'ok') {
+      throw new Error(`FlareSolverr status: ${res.data?.status ?? 'unknown'}`);
+    }
+
+    const body = JSON.parse(res.data.solution.response);
+    const raw: any[] = body?.data?.notices ?? [];
+    return raw.map((n: any) => ({
+      id: n.id,
+      title: n.title,
+      url: `https://www.upbit.com/service_center/notice?id=${n.id}`,
+      created_at: n.listed_at,
+    }));
+  }
+
+  // 직접 HTTP 요청 (FlareSolverr 없을 때 폴백)
+  private async fetchNoticesDirect(): Promise<UpbitNotice[]> {
+    const res = await axios.get(
+      'https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&per_page=10&category=%EA%B1%B0%EB%9E%98',
+      {
+        timeout: 8000,
+        headers: {
+          accept: 'application/json, text/plain, */*',
+          'accept-language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+          referer: 'https://www.upbit.com/',
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        },
+      },
+    );
+    const raw: any[] = res.data?.data?.notices ?? [];
+    return raw.map((n: any) => ({
+      id: n.id,
+      title: n.title,
+      url: `https://www.upbit.com/service_center/notice?id=${n.id}`,
+      created_at: n.listed_at,
+    }));
+  }
 
   private isListingNotice(title: string): boolean {
     return LISTING_KEYWORDS.some(kw => title.includes(kw));
@@ -430,6 +497,82 @@ class UpbitListingMonitorService {
     } catch {
       return { exchange: 'bithumb', price: null, volume24h: null };
     }
+  }
+
+  // 서버 시작 시 텔레그램 채널의 현재 메시지 ID를 기록 (과거 메시지 재처리 방지)
+  private async initTelegramBaseline(): Promise<void> {
+    try {
+      const messages = await this.fetchTelegramMessages();
+      for (const msg of messages) {
+        this.seenTelegramMsgIds.add(msg.id);
+      }
+      console.log(`[ListingMonitor] 텔레그램 baseline: ${this.seenTelegramMsgIds.size}개 메시지 ID 로드`);
+    } catch (err: any) {
+      console.warn('[ListingMonitor] 텔레그램 baseline 로드 실패 (무시):', err.message);
+    }
+  }
+
+  // t.me/s/upbitkr 공개 웹뷰에서 메시지 파싱 (인증 불필요)
+  private async fetchTelegramMessages(): Promise<{ id: number; text: string }[]> {
+    const res = await axios.get('https://t.me/s/upbitkr', {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept-Language': 'ko-KR,ko;q=0.9',
+      },
+    });
+
+    const root = parseHtml(res.data as string);
+    const result: { id: number; text: string }[] = [];
+
+    for (const el of root.querySelectorAll('.tgme_widget_message')) {
+      const postAttr = el.getAttribute('data-post') ?? '';
+      const idMatch = postAttr.match(/\/(\d+)$/);
+      if (!idMatch) continue;
+      const id = parseInt(idMatch[1], 10);
+
+      const textEl = el.querySelector('.tgme_widget_message_text');
+      const text = (textEl?.innerText ?? '').trim();
+      if (text) result.push({ id, text });
+    }
+
+    return result;
+  }
+
+  // 텔레그램 공지 → UpbitListingAnnouncement 생성 + 자동매수
+  private async handleTelegramListing(telegramMsgId: number, text: string, ticker: string): Promise<void> {
+    const syntheticNoticeId = TG_NOTICE_ID_OFFSET + telegramMsgId;
+
+    // 이미 DB에 동일 공지가 있으면 skip (공지 API/수동 등록으로 이미 처리된 경우)
+    const existing = await (prisma as any).upbitListingAnnouncement.findFirst({
+      where: { ticker, status: 'announced' },
+      orderBy: { announcedAt: 'desc' },
+    });
+    if (existing) {
+      console.log(`[ListingMonitor] 텔레그램 공지 중복 skip: ${ticker} (기존 id=${existing.id})`);
+      return;
+    }
+
+    const announcement = await (prisma as any).upbitListingAnnouncement.create({
+      data: {
+        noticeId: syntheticNoticeId,
+        title: `[텔레그램] ${text.slice(0, 200)}`,
+        ticker,
+        url: `https://t.me/upbitkr/${telegramMsgId}`,
+        status: 'announced',
+      },
+    });
+
+    this.seenNoticeIds.add(syntheticNoticeId);
+
+    await Promise.all([
+      listingAutoTraderService.executeBuy(announcement.id, ticker).catch((e: Error) =>
+        console.error('[ListingMonitor] 텔레그램 자동매수 오류:', e)
+      ),
+      this.captureSnapshots(announcement.id, ticker, 'announced'),
+    ]);
+
+    this.scheduleFollowUpSnapshots(announcement.id, ticker);
   }
 
   private async saveMarketsToDb(markets: string[]): Promise<void> {

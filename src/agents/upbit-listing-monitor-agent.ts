@@ -18,8 +18,10 @@ export class UpbitListingMonitorAgent extends BaseAgent {
   }
 
   protected async onCycle(): Promise<void> {
-    // 공지 API + 마켓 목록 diff를 병렬로 감지 (API 차단 시 마켓 목록이 백업)
+    // 텔레그램 채널 + 공지 API + 마켓 목록 diff 병렬 감지
+    // 우선순위: 텔레그램(수 시간 선행) > 공지 API(차단됨) > 마켓 diff(상장 후 감지)
     await Promise.all([
+      upbitListingMonitorService.pollTelegramChannel(),
       upbitListingMonitorService.pollAnnouncements(),
       upbitListingMonitorService.checkNewUpbitMarkets(),
     ]);
