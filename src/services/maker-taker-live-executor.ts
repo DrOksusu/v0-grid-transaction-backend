@@ -254,7 +254,11 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     // TAKER_PENDING 타임아웃은 maker 체결 시각 기준 (createdAt이 아님)
     const takerElapsed = Date.now() - (pending.makerFilledAt ?? pending.createdAt).getTime();
     if (takerElapsed > bot.maxPendingMs) {
-      await takerLeg.cancelOrder(pending.takerOrderUuid);
+      try {
+        await takerLeg.cancelOrder(pending.takerOrderUuid);
+      } catch {
+        // 취소 직전 체결됐거나 이미 취소된 주문일 수 있음 — taker_expired로 처리
+      }
       return { kind: 'taker_expired', pendingId: pending.id };
     }
 
