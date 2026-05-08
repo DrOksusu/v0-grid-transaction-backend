@@ -72,8 +72,19 @@ class UpbitListingMonitorService {
       this.seenNoticeIds.add(row.noticeId);
     }
 
-    // 업비트 마켓 목록 초기 로드
-    await this.refreshUpbitMarkets();
+    // 업비트 마켓 baseline: DB에서 로드 (서버 재시작 후에도 이전 상태 유지)
+    const knownMarkets = await (prisma as any).upbitKnownMarket.findMany({
+      select: { market: true },
+    });
+    if (knownMarkets.length > 0) {
+      this.upbitMarkets = new Set(knownMarkets.map((r: any) => r.market));
+      console.log(`[ListingMonitor] DB baseline 로드: ${this.upbitMarkets.size}개 마켓`);
+    } else {
+      // 최초 실행: live API로 초기화 후 DB에 저장
+      await this.refreshUpbitMarkets();
+      await this.saveMarketsToDb([...this.upbitMarkets]);
+      console.log(`[ListingMonitor] 최초 초기화: ${this.upbitMarkets.size}개 마켓 DB 저장`);
+    }
 
     // 진행 중인 공지 (listed 미완료) 스케줄 복원
     await this.restorePendingSchedules();
@@ -144,11 +155,18 @@ class UpbitListingMonitorService {
     await this.refreshUpbitMarkets();
 
     // 새로 추가된 마켓
+    const newMarkets: string[] = [];
     for (const market of this.upbitMarkets) {
       if (!prev.has(market)) {
+        newMarkets.push(market);
         const ticker = market.replace('KRW-', '');
         await this.handleUpbitListed(ticker);
       }
+    }
+
+    // 신규 마켓을 DB에 저장 → 재시작 후에도 baseline 유지
+    if (newMarkets.length > 0) {
+      await this.saveMarketsToDb(newMarkets);
     }
   }
 
@@ -412,6 +430,14 @@ class UpbitListingMonitorService {
     } catch {
       return { exchange: 'bithumb', price: null, volume24h: null };
     }
+  }
+
+  private async saveMarketsToDb(markets: string[]): Promise<void> {
+    if (markets.length === 0) return;
+    await (prisma as any).upbitKnownMarket.createMany({
+      data: markets.map((market: string) => ({ market })),
+      skipDuplicates: true,
+    });
   }
 
   private async refreshUpbitMarkets(): Promise<void> {

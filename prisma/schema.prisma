@@ -645,3 +645,12 @@ model ListingPriceSnapshot {
   @@index([exchange, snapshotType])
   @@map("listing_price_snapshots")
 }
+
+// 업비트 KRW 마켓 목록 영속화 — 서버 재시작 후에도 baseline 유지
+// initialize() 시 live API 대신 여기서 로드 → 재시작 전 상장 코인도 감지 가능
+model UpbitKnownMarket {
+  market   String   @id                // "KRW-PROS" 형식
+  addedAt  DateTime @default(now())
+
+  @@map("upbit_known_markets")
+}
