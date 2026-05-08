@@ -57,6 +57,10 @@ const SNAPSHOT_SCHEDULE = [
 
 // 텔레그램 noticeId 충돌 방지 오프셋 (Upbit 공지 ID는 수만 단위, TG 메시지 ID도 유사 → 10억 오프셋)
 const TG_NOTICE_ID_OFFSET = 1_000_000_000;
+// Twitter noticeId 오프셋: TG보다 더 큰 값으로 분리 (tweet ID는 snowflake 19자리 → BigInt 불필요, 해시 방식 사용)
+const TWITTER_NOTICE_ID_OFFSET = 2_000_000_000;
+// Twitter API 폴링 간격 (5분 — API 쿼터 절약)
+const TWITTER_POLL_INTERVAL_MS = 5 * 60 * 1000;
 
 class UpbitListingMonitorService {
   // 알림이 발생한 noticeId 캐시 (중복 방지, 재시작 후엔 DB로 복원)
@@ -65,8 +69,14 @@ class UpbitListingMonitorService {
   private upbitMarkets: Set<string> = new Set();
   // 스냅샷 스케줄 타이머 (announcementId → timer ids)
   private snapshotTimers: Map<number, ReturnType<typeof setTimeout>[]> = new Map();
-  // 텔레그램 채널 메시지 ID 캐시 (재시작 시 초기화 → 과거 메시지 재처리 방지)
+  // 텔레그램 채널 메시지 ID 캐시
   private seenTelegramMsgIds: Set<number> = new Set();
+  // 트위터 트윗 ID 캐시 (string - snowflake ID는 JS number 정밀도 초과)
+  private seenTweetIds: Set<string> = new Set();
+  // 트위터 유저 ID 캐시 (handle → id 룩업 1회)
+  private twitterUpbitUserId: string | null = null;
+  // 트위터 마지막 폴링 시각
+  private lastTwitterPollAt: number = 0;
 
   // 서비스 초기화 (에이전트 시작 시 호출)
   async initialize(): Promise<void> {
@@ -94,6 +104,9 @@ class UpbitListingMonitorService {
 
     // 텔레그램 채널 현재 메시지 ID를 baseline으로 로드 (재시작 후 과거 메시지 재처리 방지)
     await this.initTelegramBaseline();
+
+    // 트위터 현재 트윗 ID를 baseline으로 로드
+    await this.initTwitterBaseline();
 
     // 진행 중인 공지 (listed 미완료) 스케줄 복원
     await this.restorePendingSchedules();
@@ -150,6 +163,34 @@ class UpbitListingMonitorService {
     }
   }
 
+  // 트위터 @UPBITexchange 폴링 (5분 간격 — API 쿼터 절약)
+  // 필요 env: TWITTER_BEARER_TOKEN, TWITTER_UPBIT_HANDLE(기본값: UPBITexchange)
+  async pollTwitterListings(): Promise<void> {
+    if (!process.env.TWITTER_BEARER_TOKEN) return;
+    if (Date.now() - this.lastTwitterPollAt < TWITTER_POLL_INTERVAL_MS) return;
+    this.lastTwitterPollAt = Date.now();
+
+    let tweets: { id: string; text: string }[] = [];
+    try {
+      tweets = await this.fetchUpbitTweets();
+    } catch (err: any) {
+      console.warn('[ListingMonitor] 트위터 조회 실패:', err.message);
+      return;
+    }
+
+    for (const tweet of tweets) {
+      if (this.seenTweetIds.has(tweet.id)) continue;
+      this.seenTweetIds.add(tweet.id);
+
+      if (!this.isListingNotice(tweet.text)) continue;
+      const ticker = this.parseTicker(tweet.text);
+      if (!ticker) continue;
+
+      console.log(`[ListingMonitor] 트위터 상장 공지 감지: ${ticker} (tweetId=${tweet.id})`);
+      await this.handleTwitterListing(tweet.id, tweet.text, ticker);
+    }
+  }
+
   // 에이전트 onStop 시 예약된 타이머 모두 취소
   cancelPendingSnapshots(): void {
     for (const timers of this.snapshotTimers.values()) {
@@ -163,6 +204,8 @@ class UpbitListingMonitorService {
     return {
       seenNoticeCount: this.seenNoticeIds.size,
       seenTelegramMsgCount: this.seenTelegramMsgIds.size,
+      seenTweetCount: this.seenTweetIds.size,
+      twitterEnabled: !!process.env.TWITTER_BEARER_TOKEN,
       pendingAnnouncementCount: this.snapshotTimers.size,
     };
   }
@@ -510,6 +553,88 @@ class UpbitListingMonitorService {
     } catch (err: any) {
       console.warn('[ListingMonitor] 텔레그램 baseline 로드 실패 (무시):', err.message);
     }
+  }
+
+  // 트위터 baseline: 서버 시작 시 현재 트윗 ID 기록 (과거 트윗 재처리 방지)
+  private async initTwitterBaseline(): Promise<void> {
+    if (!process.env.TWITTER_BEARER_TOKEN) return;
+    try {
+      const tweets = await this.fetchUpbitTweets();
+      for (const t of tweets) this.seenTweetIds.add(t.id);
+      console.log(`[ListingMonitor] 트위터 baseline: ${this.seenTweetIds.size}개 트윗 ID 로드`);
+    } catch (err: any) {
+      console.warn('[ListingMonitor] 트위터 baseline 로드 실패 (무시):', err.message);
+    }
+  }
+
+  // Twitter API v2: Upbit 계정의 최신 트윗 10개 조회
+  private async fetchUpbitTweets(): Promise<{ id: string; text: string }[]> {
+    const handle = process.env.TWITTER_UPBIT_HANDLE ?? 'UPBITexchange';
+    const bearer = process.env.TWITTER_BEARER_TOKEN!;
+    const headers = { Authorization: `Bearer ${bearer}` };
+
+    // 1. 유저 ID 룩업 (1회 캐싱)
+    if (!this.twitterUpbitUserId) {
+      const userRes = await axios.get(
+        `https://api.twitter.com/2/users/by/username/${handle}`,
+        { headers, timeout: 10000 },
+      );
+      this.twitterUpbitUserId = userRes.data?.data?.id;
+      if (!this.twitterUpbitUserId) throw new Error(`Twitter 유저 ID 조회 실패: ${handle}`);
+    }
+
+    // 2. 최신 트윗 10개 조회 (retweet 제외)
+    const tweetsRes = await axios.get(
+      `https://api.twitter.com/2/users/${this.twitterUpbitUserId}/tweets`,
+      {
+        headers,
+        timeout: 10000,
+        params: {
+          max_results: 10,
+          exclude: 'retweets,replies',
+          'tweet.fields': 'id,text,created_at',
+        },
+      },
+    );
+
+    return (tweetsRes.data?.data ?? []).map((t: any) => ({ id: String(t.id), text: t.text }));
+  }
+
+  // 트위터 공지 → UpbitListingAnnouncement 생성 + 자동매수
+  private async handleTwitterListing(tweetId: string, text: string, ticker: string): Promise<void> {
+    // tweet ID(19자리 snowflake)를 Int에 맞게 해시: 뒤 9자리 + OFFSET
+    const syntheticNoticeId = TWITTER_NOTICE_ID_OFFSET + parseInt(tweetId.slice(-9), 10);
+
+    const existing = await (prisma as any).upbitListingAnnouncement.findFirst({
+      where: { ticker, status: 'announced' },
+      orderBy: { announcedAt: 'desc' },
+    });
+    if (existing) {
+      console.log(`[ListingMonitor] 트위터 공지 중복 skip: ${ticker} (기존 id=${existing.id})`);
+      return;
+    }
+
+    const handle = process.env.TWITTER_UPBIT_HANDLE ?? 'UPBITexchange';
+    const announcement = await (prisma as any).upbitListingAnnouncement.create({
+      data: {
+        noticeId: syntheticNoticeId,
+        title: `[트위터] ${text.slice(0, 200)}`,
+        ticker,
+        url: `https://twitter.com/${handle}/status/${tweetId}`,
+        status: 'announced',
+      },
+    });
+
+    this.seenNoticeIds.add(syntheticNoticeId);
+
+    await Promise.all([
+      listingAutoTraderService.executeBuy(announcement.id, ticker).catch((e: Error) =>
+        console.error('[ListingMonitor] 트위터 자동매수 오류:', e)
+      ),
+      this.captureSnapshots(announcement.id, ticker, 'announced'),
+    ]);
+
+    this.scheduleFollowUpSnapshots(announcement.id, ticker);
   }
 
   // t.me/s/upbitkr 공개 웹뷰에서 메시지 파싱 (인증 불필요)
