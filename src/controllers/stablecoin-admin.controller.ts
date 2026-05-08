@@ -6,7 +6,7 @@ import { AppError } from '../middlewares/errorHandler';
 import { reconcileBotAssets } from '../services/maker-taker-asset-reconciliation.service';
 import { stablecoinPrisma } from '../config/database';
 import mainPrisma from '../config/database';
-import { getBithumbStablecoinOrderbook } from '../services/bithumb-stablecoin-ws-manager';
+import { getBithumbStablecoinOrderbook, getAllBithumbStablecoinOrderbooks } from '../services/bithumb-stablecoin-ws-manager';
 import { BithumbClient } from '../services/exchange/bithumb-client';
 import { UpbitService } from '../services/upbit.service';
 import { decrypt } from '../utils/encryption';
@@ -522,6 +522,80 @@ export const listMakerTakerTrades = async (
     });
 
     res.json({ trades: serialized });
+  } catch (e) {
+    next(e);
+  }
+};
+
+// ===== 모니터링 탭 — 실시간 호가 =====
+
+/** GET /api/admin/stablecoin/orderbooks — 업비트 스테이블코인 5종 실시간 호가 */
+export const getOrderbooks = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const all = getAllStablecoinOrderbooks();
+    const coins = ['USDT', 'USDC', 'USD1', 'USDS', 'USDE'] as const;
+    const books: Record<string, any> = {};
+    for (const coin of coins) {
+      const top = all.get(`KRW-${coin}`);
+      if (top) {
+        books[coin] = { bid: top.bid.price, ask: top.ask.price, bidSize: top.bid.size, askSize: top.ask.size };
+      }
+    }
+    res.json({ updatedAt: new Date().toISOString(), books });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/** GET /api/admin/stablecoin/bithumb-orderbooks — 빗썸 스테이블코인 5종 실시간 호가 */
+export const getBithumbOrderbooks = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const all = getAllBithumbStablecoinOrderbooks();
+    const coins = ['USDT', 'USDC', 'USD1', 'USDS', 'USDE'] as const;
+    const books: Record<string, any> = {};
+    for (const coin of coins) {
+      const top = all.get(coin);
+      if (top) {
+        books[coin] = { bid: top.bid, ask: top.ask, timestamp: top.timestamp };
+      }
+    }
+    res.json({ books, fetchedAt: Date.now() });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/** GET /api/admin/stablecoin/cross-exchange-latest — 업비트↔빗썸 실시간 스프레드 */
+export const getCrossExchangeLatest = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const upbitAll = getAllStablecoinOrderbooks();
+    const bithumbAll = getAllBithumbStablecoinOrderbooks();
+    const coins = ['USDT', 'USDC', 'USD1', 'USDS', 'USDE'];
+    const snapshots = [];
+    for (const coin of coins) {
+      const ub = upbitAll.get(`KRW-${coin}`);
+      const bh = bithumbAll.get(coin);
+      if (!ub || !bh) continue;
+      const upbitBid = ub.bid.price;
+      const upbitAsk = ub.ask.price;
+      const bithumbBid = bh.bid;
+      const bithumbAsk = bh.ask;
+      const ubSpreadBps = bithumbBid > 0 ? Math.round(((upbitBid - bithumbAsk) / bithumbAsk) * 10000) : 0;
+      const buSpreadBps = upbitAsk > 0 ? Math.round(((bithumbBid - upbitAsk) / upbitAsk) * 10000) : 0;
+      snapshots.push({
+        id: coin,
+        market: coin,
+        upbitBid: String(upbitBid),
+        upbitAsk: String(upbitAsk),
+        bithumbBid: String(bithumbBid),
+        bithumbAsk: String(bithumbAsk),
+        ubSpreadBps: String(ubSpreadBps),
+        buSpreadBps: String(buSpreadBps),
+        maxSpreadBps: String(Math.max(ubSpreadBps, buSpreadBps)),
+        timestamp: new Date().toISOString(),
+      });
+    }
+    res.json({ snapshots, fetchedAt: Date.now() });
   } catch (e) {
     next(e);
   }
