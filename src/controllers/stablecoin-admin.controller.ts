@@ -1204,25 +1204,38 @@ export const listMakerTakerTrades = async (
       },
     });
 
-    const serialized = trades.map((t) => ({
-      id: t.id.toString(),
-      botId: t.botId,
-      makerExchange: t.bot.makerExchange,
-      takerExchange: t.bot.takerExchange,
-      makerCoin: t.makerCoin,
-      takerCoin: t.takerCoin,
-      quantity: t.quantity.toString(),
-      legOrder: t.legOrder,
-      status: t.status,
-      makerOrderPrice: t.makerOrderPrice,
-      makerFilledAt: t.makerFilledAt?.toISOString() ?? null,
-      takerExecutedAt: t.takerExecutedAt?.toISOString() ?? null,
-      netProfitKrw: t.netProfitKrw ? Number(t.netProfitKrw) : null,
-      feeKrw: t.feeKrw ? Number(t.feeKrw) : null,
-      realizedSpreadBps: t.realizedSpreadBps ?? null,
-      notes: t.notes,
-      createdAt: t.createdAt.toISOString(),
-    }));
+    const serialized = trades.map((t) => {
+      // legOrder에 따라 매수가/매도가 결정
+      // MAKER_BUY_FIRST: maker가 먼저 매수(makerFilledPrice), taker가 나중에 매도(takerMarketBid)
+      // TAKER_SELL_FIRST: taker가 먼저 매도(makerFilledPrice 필드에 저장), maker가 나중에 매수(takerMarketBid)
+      const isMakerFirst = t.legOrder !== 'TAKER_SELL_FIRST';
+      const buyPriceKrw = isMakerFirst ? (t.makerFilledPrice ?? null) : (t.takerMarketBid ?? null);
+      const sellPriceKrw = isMakerFirst ? (t.takerMarketBid ?? null) : (t.makerFilledPrice ?? null);
+
+      return {
+        id: t.id.toString(),
+        botId: t.botId,
+        makerExchange: t.bot.makerExchange,
+        takerExchange: t.bot.takerExchange,
+        makerCoin: t.makerCoin,
+        takerCoin: t.takerCoin,
+        quantity: t.quantity.toString(),
+        legOrder: t.legOrder,
+        status: t.status,
+        makerOrderPrice: t.makerOrderPrice,
+        makerFilledPrice: t.makerFilledPrice ?? null,
+        takerMarketBid: t.takerMarketBid ?? null,
+        buyPriceKrw,
+        sellPriceKrw,
+        makerFilledAt: t.makerFilledAt?.toISOString() ?? null,
+        takerExecutedAt: t.takerExecutedAt?.toISOString() ?? null,
+        netProfitKrw: t.netProfitKrw ? Number(t.netProfitKrw) : null,
+        feeKrw: t.feeKrw ? Number(t.feeKrw) : null,
+        realizedSpreadBps: t.realizedSpreadBps ?? null,
+        notes: t.notes,
+        createdAt: t.createdAt.toISOString(),
+      };
+    });
 
     res.json({ trades: serialized });
   } catch (e) {
