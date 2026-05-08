@@ -567,37 +567,27 @@ class UpbitListingMonitorService {
     }
   }
 
-  // Twitter API v2: Upbit 계정의 최신 트윗 10개 조회
+  // Twitter API v2 Recent Search: "신규 거래지원" 포함 트윗 검색
+  // 특정 계정 의존 없이 상장 공지 봇(@bwenews, @6551News 등) 전체를 커버
   private async fetchUpbitTweets(): Promise<{ id: string; text: string }[]> {
-    const handle = process.env.TWITTER_UPBIT_HANDLE ?? 'UPBITexchange';
     const bearer = process.env.TWITTER_BEARER_TOKEN!;
-    const headers = { Authorization: `Bearer ${bearer}` };
+    const query = process.env.TWITTER_SEARCH_QUERY
+      ?? '"신규 거래지원" Upbit -is:retweet';
 
-    // 1. 유저 ID 룩업 (1회 캐싱)
-    if (!this.twitterUpbitUserId) {
-      const userRes = await axios.get(
-        `https://api.twitter.com/2/users/by/username/${handle}`,
-        { headers, timeout: 10000 },
-      );
-      this.twitterUpbitUserId = userRes.data?.data?.id;
-      if (!this.twitterUpbitUserId) throw new Error(`Twitter 유저 ID 조회 실패: ${handle}`);
-    }
-
-    // 2. 최신 트윗 10개 조회 (retweet 제외)
-    const tweetsRes = await axios.get(
-      `https://api.twitter.com/2/users/${this.twitterUpbitUserId}/tweets`,
+    const res = await axios.get(
+      'https://api.twitter.com/2/tweets/search/recent',
       {
-        headers,
+        headers: { Authorization: `Bearer ${bearer}` },
         timeout: 10000,
         params: {
+          query,
           max_results: 10,
-          exclude: 'retweets,replies',
           'tweet.fields': 'id,text,created_at',
         },
       },
     );
 
-    return (tweetsRes.data?.data ?? []).map((t: any) => ({ id: String(t.id), text: t.text }));
+    return (res.data?.data ?? []).map((t: any) => ({ id: String(t.id), text: t.text }));
   }
 
   // 트위터 공지 → UpbitListingAnnouncement 생성 + 자동매수

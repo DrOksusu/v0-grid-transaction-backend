@@ -127,7 +127,6 @@ jobs:
               -e "FRONTEND_URL=${{ secrets.FRONTEND_URL }}" \
               -e "ADMIN_EMAIL=${{ secrets.ADMIN_EMAIL }}" \
               -e "TWITTER_BEARER_TOKEN=${{ secrets.TWITTER_BEARER_TOKEN }}" \
-              -e "TWITTER_UPBIT_HANDLE=${{ secrets.TWITTER_UPBIT_HANDLE }}" \
               $ECR_REGISTRY/$IMAGE_NAME:latest
 
             echo "=== Step 5: 상태 확인 ==="
