@@ -132,12 +132,13 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     const sellResult = await makerLeg.sellIoc(bot.makerCoin, bot.quantity);
     if (!sellResult) return { kind: 'noop' };
 
-    // IOC 매도 수익이 현재 호가 기준 기대값의 90% 미만이면 중단
-    // 부분체결(예: 6/10 units)이나 저가 체결 모두 차단 — takerCoin BID를 걸면 수량 불균형으로 대규모 손실 발생
-    const minIocKrw = makerBook.bid * bot.quantity * 0.9;
-    if (sellResult.grossKrw < minIocKrw) {
+    // 비정상 저가 체결만 abort — 부분체결(정상 단가)은 filledQty 기반 BID로 처리
+    // 예) 10 units @ 886 KRW → 단가=886 < 1472*0.9=1325 → abort
+    //     6 units @ 1472 KRW → 단가=1472 ≥ 1325 → 6 units BID로 처리
+    const avgIocPrice = sellResult.grossKrw / sellResult.filledQty;
+    if (avgIocPrice < makerBook.bid * 0.9) {
       console.error(
-        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: IOC 매도 grossKrw=${sellResult.grossKrw} < min=${minIocKrw.toFixed(0)} (makerBid=${makerBook.bid}, qty=${bot.quantity}, filledQty=${sellResult.filledQty}) — abort`,
+        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: IOC 체결 단가 ${avgIocPrice.toFixed(0)} < 기대값 ${(makerBook.bid * 0.9).toFixed(0)} (makerBid=${makerBook.bid}, filledQty=${sellResult.filledQty}) — abort`,
       );
       return { kind: 'noop' };
     }
@@ -182,16 +183,18 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
         };
       }
 
-      // 부분체결 감지: 기대 수량의 90% 미만이면 partial_hold
+      // 부분체결 감지: 실제 BID 수량(IOC filledQty) 대비 90% 미만이면 partial_hold
+      // takerFirstCostKrw ÷ makerOrderPrice ≈ IOC filledQty (수량 정합성 검증)
       // makerCoin은 이미 IOC 매도 완료 → takerCoin 불완전 체결은 스테이블 손실
-      if (poll.filledQty < bot.quantity * 0.9) {
+      const expectedBidQty = (pending.takerFirstCostKrw ?? 0) / Math.max(pending.makerOrderPrice, 1);
+      if (poll.filledQty < expectedBidQty * 0.9) {
         console.warn(
-          `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: partial fill ${poll.filledQty}/${bot.quantity} (${Math.round((poll.filledQty / bot.quantity) * 100)}%) — partial_hold`,
+          `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: partial fill ${poll.filledQty.toFixed(4)}/${expectedBidQty.toFixed(4)} (${Math.round((poll.filledQty / Math.max(expectedBidQty, 1e-9)) * 100)}%) — partial_hold`,
         );
         return {
           kind: 'partial_hold',
           pendingId: pending.id,
-          reason: `TAKER_SELL_FIRST partial fill: ${poll.filledQty}/${bot.quantity} qty`,
+          reason: `TAKER_SELL_FIRST partial fill: ${poll.filledQty.toFixed(4)}/${expectedBidQty.toFixed(4)} qty`,
         };
       }
 
