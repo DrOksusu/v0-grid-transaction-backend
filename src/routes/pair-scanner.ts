@@ -194,7 +194,7 @@ router.get(
       const userId = req.userId!;
       const trades = await stablecoinPrisma.makerTakerSimTrade.findMany({
         where: {
-          status: { in: ['PENDING', 'PARTIAL_HOLD'] },
+          status: { in: ['PENDING', 'TAKER_PENDING', 'PARTIAL_HOLD'] },
           bot: { userId },
         },
         include: {
