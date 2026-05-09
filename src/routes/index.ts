@@ -19,6 +19,7 @@ import stablecoinAdminRoutes from './stablecoin-admin';
 import pairScannerRoutes from './pair-scanner';
 import generalArbAdminRoutes from './general-arb-admin';
 import upbitListingAdminRoutes from './upbit-listing-admin';
+import cmeGapRoutes from './cme-gap';
 
 const router = Router();
 
@@ -50,5 +51,6 @@ router.use('/admin/stablecoin', stablecoinAdminRoutes);
 router.use('/pair-scanner', pairScannerRoutes);
 router.use('/admin/general-arb', generalArbAdminRoutes);
 router.use('/admin/upbit-listings', upbitListingAdminRoutes);
+router.use('/admin/cme-gap', cmeGapRoutes);
 
 export default router;

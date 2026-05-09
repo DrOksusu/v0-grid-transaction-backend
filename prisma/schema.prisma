@@ -646,6 +646,60 @@ model ListingPriceSnapshot {
   @@map("listing_price_snapshots")
 }
 
+// CME 갭 매매 봇 설정
+model CmeGapBot {
+  id          Int      @id @default(autoincrement())
+  name        String   @default("BTC CME 갭 봇")
+  quantity    Decimal  @db.Decimal(10, 6) // BTC 수량 (예: 0.01)
+  minGapPct   Decimal  @db.Decimal(5, 2)  // 최소 갭 크기 % (예: 0.3)
+  enabled     Boolean  @default(true)
+  live        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  gaps        CmeGap[]
+
+  @@map("cme_gap_bots")
+}
+
+// CME 갭 감지 이력 및 상태
+model CmeGap {
+  id              Int       @id @default(autoincrement())
+  botId           Int
+  bot             CmeGapBot @relation(fields: [botId], references: [id])
+
+  weekKey         String    // "2026-W20" 형식 (ISO 주차)
+  detectedAt      DateTime  @default(now())
+
+  fridayCloseKrw  Decimal   @db.Decimal(20, 2)
+  mondayOpenKrw   Decimal   @db.Decimal(20, 2)
+  gapPct          Decimal   @db.Decimal(6, 3)
+  direction       String    // "up" | "down"
+  gapHiKrw        Decimal   @db.Decimal(20, 2)
+  gapLoKrw        Decimal   @db.Decimal(20, 2)
+
+  status          String    @default("watching") // watching | entered | tp_ordered | filled | expired
+
+  entryPrice      Decimal?  @db.Decimal(20, 2)
+  entryOrderId    String?
+  entryFilledQty  Decimal?  @db.Decimal(10, 6)
+
+  tpPrice         Decimal?  @db.Decimal(20, 2)
+  tpOrderId       String?
+
+  exitPrice       Decimal?  @db.Decimal(20, 2)
+  exitFilledQty   Decimal?  @db.Decimal(10, 6)
+  pnlKrw          Decimal?  @db.Decimal(20, 2)
+  pnlPct          Decimal?  @db.Decimal(6, 3)
+
+  enteredAt       DateTime?
+  closedAt        DateTime?
+
+  @@index([botId, status])
+  @@index([status])
+  @@index([weekKey])
+  @@map("cme_gaps")
+}
+
 // 업비트 KRW 마켓 목록 영속화 — 서버 재시작 후에도 baseline 유지
 // initialize() 시 live API 대신 여기서 로드 → 재시작 전 상장 코인도 감지 가능
 model UpbitKnownMarket {
