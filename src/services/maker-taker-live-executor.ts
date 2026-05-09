@@ -79,7 +79,7 @@ export type LiveExecutorResult =
       makerGrossKrw: number;
       makerFeeKrw: number;
     }
-  | { kind: 'taker_expired'; pendingId: bigint }
+  | { kind: 'taker_expired'; pendingId: bigint; partialFillKrw?: number; partialFillQty?: number; partialFeeKrw?: number }
   | {
       kind: 'filled';
       pendingId: bigint;
@@ -257,7 +257,18 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       try {
         await takerLeg.cancelOrder(pending.takerOrderUuid);
       } catch {
-        // 취소 직전 체결됐거나 이미 취소된 주문일 수 있음 — taker_expired로 처리
+        // 취소 직전 체결됐거나 이미 취소된 주문일 수 있음
+      }
+      // 취소 후 부분체결 여부 확인 — 실제 수령한 KRW를 기록하기 위해
+      const finalPoll = await takerLeg.pollOrder(pending.takerOrderUuid);
+      if (finalPoll.filledQty > 0 && finalPoll.grossKrw > 0) {
+        return {
+          kind: 'taker_expired',
+          pendingId: pending.id,
+          partialFillKrw: finalPoll.grossKrw,
+          partialFillQty: finalPoll.filledQty,
+          partialFeeKrw: finalPoll.feeKrw,
+        };
       }
       return { kind: 'taker_expired', pendingId: pending.id };
     }

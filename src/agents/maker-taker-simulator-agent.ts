@@ -618,18 +618,32 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         return;
       }
 
-      case 'taker_expired':
+      case 'taker_expired': {
+        const partialNote = result.partialFillKrw
+          ? ` partial_fill=${result.partialFillQty}@${result.partialFillKrw}krw`
+          : '';
+        const makerGrossKrw = pending?.makerFilledGrossKrw ?? 0;
+        const partialNetKrw =
+          result.partialFillKrw != null && makerGrossKrw > 0
+            ? +(result.partialFillKrw - makerGrossKrw - (result.partialFeeKrw ?? 0)).toFixed(4)
+            : null;
         await (prisma.makerTakerSimTrade as any).update({
           where: { id: result.pendingId },
           data: {
             status: 'TAKER_EXPIRED',
             takerExecutedAt: new Date(),
+            ...(partialNetKrw != null ? {
+              grossProfitKrw: +(result.partialFillKrw! - makerGrossKrw).toFixed(4),
+              feeKrw: +(result.partialFeeKrw ?? 0).toFixed(4),
+              netProfitKrw: partialNetKrw,
+            } : {}),
             notes:
               (pending?.notes ?? '') +
-              ` | LIVE taker_expired (taker ASK cancelled at ${new Date().toISOString()})`,
+              ` | LIVE taker_expired (taker ASK cancelled at ${new Date().toISOString()})${partialNote}`,
           },
         });
         return;
+      }
 
       case 'expired':
         await (prisma.makerTakerSimTrade as any).update({

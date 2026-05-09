@@ -92,7 +92,9 @@ export class UpbitLeg implements ExchangeLeg {
     const filledQty = parseFloat(status?.executed_volume || '0');
     const grossKrw = extractKrw(status);
     const feeKrw = parseFloat(status?.paid_fee || '0');
-    return { filled: filledQty > 0 && grossKrw > 0, filledQty, grossKrw, feeKrw };
+    // state === 'done' 일 때만 완전 체결로 판단 (state==='wait'은 부분체결 포함 미완료)
+    const fullyFilled = status?.state === 'done' && filledQty > 0 && grossKrw > 0;
+    return { filled: fullyFilled, filledQty, grossKrw, feeKrw };
   }
 
   async placeMakerAsk(symbol: string, price: number, quantity: number): Promise<string | null> {
