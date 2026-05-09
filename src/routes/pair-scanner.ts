@@ -207,7 +207,8 @@ router.get(
         },
         orderBy: { createdAt: 'asc' },
       });
-      res.json({ success: true, data: trades });
+      res.setHeader('Content-Type', 'application/json');
+      res.send(JSON.stringify({ success: true, data: trades }, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
     } catch (err) {
       next(err);
     }
@@ -245,7 +246,8 @@ router.get(
         orderBy: { createdAt: 'desc' },
         take: limit,
       });
-      res.json({ success: true, data: trades });
+      res.setHeader('Content-Type', 'application/json');
+      res.send(JSON.stringify({ success: true, data: trades }, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
     } catch (err) {
       next(err);
     }
@@ -273,7 +275,8 @@ router.get(
         orderBy: { createdAt: 'desc' },
         take: 50,
       });
-      res.json({ success: true, data: trades });
+      res.setHeader('Content-Type', 'application/json');
+      res.send(JSON.stringify({ success: true, data: trades }, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
     } catch (err) {
       next(err);
     }
