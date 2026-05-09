@@ -132,18 +132,19 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     const sellResult = await makerLeg.sellIoc(bot.makerCoin, bot.quantity);
     if (!sellResult) return { kind: 'noop' };
 
-    // IOC 매도 수익이 최소 기대값(qty × 1000 KRW × 50%)에 못 미치면 중단
-    // grossKrw≈0은 IOC가 사실상 실패한 것 — takerCoin BID를 걸면 KRW 대규모 손실 발생
-    const minIocKrw = bot.quantity * 1000 * 0.5;
+    // IOC 매도 수익이 현재 호가 기준 기대값의 90% 미만이면 중단
+    // 부분체결(예: 6/10 units)이나 저가 체결 모두 차단 — takerCoin BID를 걸면 수량 불균형으로 대규모 손실 발생
+    const minIocKrw = makerBook.bid * bot.quantity * 0.9;
     if (sellResult.grossKrw < minIocKrw) {
       console.error(
-        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: IOC 매도 grossKrw=${sellResult.grossKrw} < min=${minIocKrw} — abort`,
+        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: IOC 매도 grossKrw=${sellResult.grossKrw} < min=${minIocKrw.toFixed(0)} (makerBid=${makerBook.bid}, qty=${bot.quantity}, filledQty=${sellResult.filledQty}) — abort`,
       );
       return { kind: 'noop' };
     }
 
     const takerOrderPrice = takerBook.bid + bot.bidOffsetKrw;
-    const orderId = await takerLeg.placeMakerBid(bot.takerCoin, takerOrderPrice, bot.quantity);
+    // IOC 부분체결 시 실제 체결된 수량으로 BID를 걸어 수량 정합성 유지
+    const orderId = await takerLeg.placeMakerBid(bot.takerCoin, takerOrderPrice, sellResult.filledQty);
     if (!orderId) {
       console.error(
         `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: makerCoin 매도 후 takerCoin BID 실패`,
@@ -230,6 +231,27 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     const takerPoll = await takerLeg.pollOrder(pending.takerOrderUuid);
 
     if (takerPoll.filled) {
+      if (takerPoll.grossKrw === 0) {
+        return {
+          kind: 'partial_hold',
+          pendingId: pending.id,
+          reason: 'taker ASK filled but grossKrw = 0 (defensive)',
+        };
+      }
+
+      // 부분체결 감지: 기대 수량의 90% 미만이면 partial_hold
+      // maker는 이미 전량 체결됨 → taker ASK 불완전 체결은 스테이블 손실
+      if (takerPoll.filledQty < bot.quantity * 0.9) {
+        console.warn(
+          `[LiveExecutor] bot ${bot.id} TAKER_PENDING: partial fill ${takerPoll.filledQty}/${bot.quantity} (${Math.round((takerPoll.filledQty / bot.quantity) * 100)}%) — partial_hold`,
+        );
+        return {
+          kind: 'partial_hold',
+          pendingId: pending.id,
+          reason: `TAKER_PENDING partial fill: ${takerPoll.filledQty.toFixed(4)}/${bot.quantity} qty`,
+        };
+      }
+
       const makerGrossKrw = pending.makerFilledGrossKrw ?? 0;
       const makerFeeKrw = pending.makerFilledFeeKrw ?? 0;
       const paidFeeKrw = makerFeeKrw + takerPoll.feeKrw;
