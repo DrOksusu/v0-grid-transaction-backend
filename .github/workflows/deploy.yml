@@ -129,6 +129,9 @@ jobs:
               -e "TWITTER_BEARER_TOKEN=${{ secrets.TWITTER_BEARER_TOKEN }}" \
               -e "CF_WORKER_URL=${{ secrets.CF_WORKER_URL }}" \
               -e "CF_WORKER_SECRET=${{ secrets.CF_WORKER_SECRET }}" \
+              -e "KAKAO_REST_API_KEY=${{ secrets.KAKAO_REST_API_KEY }}" \
+              -e "KAKAO_CLIENT_SECRET=${{ secrets.KAKAO_CLIENT_SECRET }}" \
+              -e "KAKAO_REDIRECT_URI=${{ secrets.KAKAO_REDIRECT_URI }}" \
               $ECR_REGISTRY/$IMAGE_NAME:latest
 
             echo "=== Step 5: 상태 확인 ==="
