@@ -49,12 +49,13 @@ class KakaoNotifyService {
   /** 나에게 보내기 */
   async sendToMe(message: string): Promise<void> {
     const accessToken = await this.getValidAccessToken();
+    const frontendUrl = process.env.FRONTEND_URL?.replace(/\/$/, '') ?? 'https://v0-grid-transaction.vercel.app';
     const template = {
       object_type: 'text',
       text: message,
       link: {
-        web_url: 'https://developers.kakao.com',
-        mobile_web_url: 'https://developers.kakao.com',
+        web_url: `${frontendUrl}/admin/btc-rsi`,
+        mobile_web_url: `${frontendUrl}/admin/btc-rsi`,
       },
     };
     await axios.post(
