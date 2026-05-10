@@ -16,6 +16,7 @@ interface AutoTradeConfig {
   useBinance: boolean;
   useBithumb: boolean;
   useMexc: boolean;
+  useGateio: boolean;
   autoSellEnabled: boolean;
   takeProfitPct: number;
   stopLossPct: number;
@@ -95,6 +96,24 @@ async function signedPost(
 
 const BINANCE = { baseUrl: 'https://api.binance.com', apiKeyHeader: 'X-MBX-APIKEY', paramsInBody: true };
 const MEXC = { baseUrl: 'https://api.mexc.com', apiKeyHeader: 'X-MEXC-APIKEY', paramsInBody: false };
+const GATEIO_BASE = 'https://api.gateio.ws';
+
+// Gate.io HMAC-SHA512 서명 (method + path + querystring + body_hash + timestamp)
+async function gateioRequest(apiKey: string, secretKey: string, method: string, path: string, queryString = '', body = ''): Promise<any> {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const bodyHash = crypto.createHash('sha512').update(body).digest('hex');
+  const message = `${method}\n${path}\n${queryString}\n${bodyHash}\n${timestamp}`;
+  const sign = crypto.createHmac('sha512', secretKey).update(message).digest('hex');
+  const url = `${GATEIO_BASE}${path}${queryString ? '?' + queryString : ''}`;
+  const res = await axios({
+    method: method.toLowerCase() as 'get' | 'post',
+    url,
+    data: body || undefined,
+    headers: { 'KEY': apiKey, 'Timestamp': String(timestamp), 'SIGN': sign, 'Content-Type': 'application/json' },
+    timeout: 10000,
+  });
+  return res.data;
+}
 
 // MEXC POST: axios가 Content-Type을 강제 추가하므로 Node.js https 모듈 직접 사용
 function mexcPost(apiKey: string, secretKey: string, endpoint: string, params: Record<string, string>): Promise<any> {
@@ -150,6 +169,7 @@ class ListingAutoTraderService {
         useBinance: true,
         useBithumb: true,
         useMexc: false,
+        useGateio: false,
         autoSellEnabled: true,
         takeProfitPct: 20,
         stopLossPct: 10,
@@ -162,6 +182,7 @@ class ListingAutoTraderService {
       useBinance: row.useBinance,
       useBithumb: row.useBithumb,
       useMexc: row.useMexc ?? false,
+      useGateio: row.useGateio ?? false,
       autoSellEnabled: row.autoSellEnabled ?? true,
       takeProfitPct: row.takeProfitPct ?? 20,
       stopLossPct: row.stopLossPct ?? 10,
@@ -178,6 +199,7 @@ class ListingAutoTraderService {
         useBinance: data.useBinance ?? true,
         useBithumb: data.useBithumb ?? true,
         useMexc: data.useMexc ?? false,
+        useGateio: data.useGateio ?? false,
         autoSellEnabled: data.autoSellEnabled ?? true,
         takeProfitPct: data.takeProfitPct ?? 20,
         stopLossPct: data.stopLossPct ?? 10,
@@ -191,6 +213,7 @@ class ListingAutoTraderService {
       useBinance: row.useBinance,
       useBithumb: row.useBithumb,
       useMexc: row.useMexc ?? false,
+      useGateio: row.useGateio ?? false,
       autoSellEnabled: row.autoSellEnabled ?? true,
       takeProfitPct: row.takeProfitPct ?? 20,
       stopLossPct: row.stopLossPct ?? 10,
@@ -228,6 +251,7 @@ class ListingAutoTraderService {
       config.useBinance ? this.buyOnBinance(announcementId, ticker, config.amountKrw) : null,
       config.useBithumb ? this.buyOnBithumb(announcementId, ticker, config.amountKrw) : null,
       config.useMexc ? this.buyOnMexc(announcementId, ticker, config.amountKrw) : null,
+      config.useGateio ? this.buyOnGateio(announcementId, ticker, config.amountKrw) : null,
     ]);
 
     const orders: OrderResult[] = [];
@@ -425,6 +449,76 @@ class ListingAutoTraderService {
     }
   }
 
+  // ── Private: Gate.io 시장가 매수 ──────────────────────────────────────────
+
+  private async buyOnGateio(announcementId: number, ticker: string, amountKrw: number): Promise<OrderResult> {
+    const exchange = 'gateio';
+    const existing = await (prisma as any).listingAutoOrder.findUnique({
+      where: { announcementId_exchange: { announcementId, exchange } },
+    });
+    if (existing) return { exchange, status: 'skipped', amountKrw, orderId: existing.orderId };
+
+    const dbRow = await (prisma as any).listingAutoOrder.create({
+      data: { announcementId, exchange, ticker, amountKrw, status: 'pending' },
+    });
+
+    const cred = await this.getGateioCreds();
+    if (!cred) {
+      await this.updateOrderFailed(dbRow.id, 'Gate.io 인증정보 없음');
+      return { exchange, status: 'failed', amountKrw, errorMsg: 'Gate.io 인증정보 없음' };
+    }
+
+    try {
+      const krwPerUsdt = await this.fetchKrwPerUsdt();
+      const usdtAmount = Math.floor((amountKrw / krwPerUsdt) * 100) / 100;
+
+      // Gate.io market buy: amount = quote currency (USDT)
+      const body = JSON.stringify({
+        currency_pair: `${ticker}_USDT`,
+        type: 'market',
+        side: 'buy',
+        amount: usdtAmount.toFixed(2),
+        time_in_force: 'ioc',
+      });
+
+      const data = await gateioRequest(cred.apiKey, cred.secretKey, 'POST', '/api/v4/spot/orders', '', body);
+      const orderId = String(data.id ?? '');
+      const fillPrice = parseFloat(data.fill_price ?? '0');
+      const filledTotal = parseFloat(data.filled_total ?? '0');
+
+      // fill_price = 코인당 USDT 가격, filledTotal = 실제 소비한 USDT
+      let filledQty = fillPrice > 0 ? filledTotal / fillPrice : 0;
+      if (filledQty <= 0 && orderId) {
+        filledQty = await this.pollGateioFilledQty(cred.apiKey, cred.secretKey, orderId, ticker);
+      }
+      const filledPrice = filledQty > 0 ? usdtAmount / filledQty : 0;
+
+      await (prisma as any).listingAutoOrder.update({
+        where: { id: dbRow.id },
+        data: { orderId, amountUsdt: usdtAmount, status: 'filled', filledQty, filledPrice },
+      });
+      return { exchange, status: 'filled', orderId, amountKrw, amountUsdt: usdtAmount };
+    } catch (err: any) {
+      const msg = err?.response?.data?.message ?? err?.response?.data?.label ?? err.message;
+      await this.updateOrderFailed(dbRow.id, msg);
+      return { exchange, status: 'failed', amountKrw, errorMsg: msg };
+    }
+  }
+
+  // Gate.io 체결량 폴링 (fill_price=0 대응)
+  private async pollGateioFilledQty(apiKey: string, secretKey: string, orderId: string, ticker: string, maxRetries = 4): Promise<number> {
+    for (let i = 0; i < maxRetries; i++) {
+      if (i > 0) await new Promise<void>(r => setTimeout(r, 1500));
+      try {
+        const data = await gateioRequest(apiKey, secretKey, 'GET', `/api/v4/spot/orders/${orderId}`, `currency_pair=${ticker}_USDT`);
+        const fillPrice = parseFloat(data.fill_price ?? '0');
+        const filledTotal = parseFloat(data.filled_total ?? '0');
+        if (fillPrice > 0 && filledTotal > 0) return filledTotal / fillPrice;
+      } catch {}
+    }
+    return 0;
+  }
+
   // MEXC 주문 체결량 폴링 (quoteOrderQty 매수 후 executedQty=0 대응)
   private async pollMexcFilledQty(apiKey: string, secretKey: string, symbol: string, orderId: string, maxRetries = 4): Promise<number> {
     for (let i = 0; i < maxRetries; i++) {
@@ -461,6 +555,15 @@ class ListingAutoTraderService {
   private async getMexcCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
     const row = await prisma.credential.findFirst({
       where: { userId: ADMIN_USER_ID, exchange: 'mexc' as any },
+      select: { apiKey: true, secretKey: true },
+    });
+    if (!row) return null;
+    return { apiKey: decrypt(row.apiKey), secretKey: decrypt(row.secretKey) };
+  }
+
+  private async getGateioCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
+    const row = await prisma.credential.findFirst({
+      where: { userId: ADMIN_USER_ID, exchange: 'gateio' as any },
       select: { apiKey: true, secretKey: true },
     });
     if (!row) return null;

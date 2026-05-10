@@ -19,6 +19,23 @@ function hmacSign(secretKey: string, params: Record<string, string>): string {
   return crypto.createHmac('sha256', secretKey).update(new URLSearchParams(params).toString()).digest('hex');
 }
 
+// Gate.io HMAC-SHA512 서명
+async function gateioRequest(apiKey: string, secretKey: string, method: string, path: string, queryString = '', body = ''): Promise<any> {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const bodyHash = crypto.createHash('sha512').update(body).digest('hex');
+  const message = `${method}\n${path}\n${queryString}\n${bodyHash}\n${timestamp}`;
+  const sign = crypto.createHmac('sha512', secretKey).update(message).digest('hex');
+  const url = `https://api.gateio.ws${path}${queryString ? '?' + queryString : ''}`;
+  const res = await axios({
+    method: method.toLowerCase() as 'get' | 'post',
+    url,
+    data: body || undefined,
+    headers: { 'KEY': apiKey, 'Timestamp': String(timestamp), 'SIGN': sign, 'Content-Type': 'application/json' },
+    timeout: 10000,
+  });
+  return res.data;
+}
+
 interface SellResult {
   orderId: string;
   filledQty: number;
@@ -114,6 +131,8 @@ class ListingAutoSellerService {
         result = await this.sellOnBithumb(ticker, order.filledQty ?? 0);
       } else if (order.exchange === 'mexc') {
         result = await this.sellOnMexc(ticker, order.filledQty ?? 0);
+      } else if (order.exchange === 'gateio') {
+        result = await this.sellOnGateio(ticker, order.filledQty ?? 0);
       } else {
         throw new Error(`지원하지 않는 거래소: ${order.exchange}`);
       }
@@ -288,6 +307,65 @@ class ListingAutoSellerService {
     return { orderId, filledQty, avgPrice };
   }
 
+  // ── Gate.io 시장가 매도 ──────────────────────────────────────────────────
+
+  private async sellOnGateio(ticker: string, qty: number): Promise<SellResult> {
+    const cred = await this.getGateioCreds();
+    if (!cred) throw new Error('Gate.io 인증정보 없음');
+    if (!qty || qty <= 0) throw new Error('매도 수량 없음');
+
+    const qtyStr = parseFloat(qty.toFixed(8)).toString();
+
+    // Gate.io market sell: amount = base currency (코인 수량)
+    const body = JSON.stringify({
+      currency_pair: `${ticker}_USDT`,
+      type: 'market',
+      side: 'sell',
+      amount: qtyStr,
+      time_in_force: 'ioc',
+    });
+
+    const data = await gateioRequest(cred.apiKey, cred.secretKey, 'POST', '/api/v4/spot/orders', '', body);
+    const orderId = String(data.id ?? '');
+    const fillPrice = parseFloat(data.fill_price ?? '0');
+    const filledTotal = parseFloat(data.filled_total ?? '0');
+
+    // filledQty: 실제로 팔린 수량 = 전체 - 남은 수량
+    const left = parseFloat(data.left ?? '0');
+    const requestedQty = parseFloat(data.amount ?? qtyStr);
+    const filledQty = requestedQty - left || qty;
+
+    let avgPrice: number | null = null;
+    if (fillPrice > 0) {
+      avgPrice = fillPrice;
+    } else if (filledQty > 0 && filledTotal > 0) {
+      avgPrice = filledTotal / filledQty;
+    }
+
+    // 폴링으로 체결가 확인
+    if (!avgPrice && orderId) {
+      avgPrice = await this.pollGateioFillPrice(cred.apiKey, cred.secretKey, orderId, ticker);
+    }
+    if (!avgPrice) {
+      avgPrice = await this.fetchCurrentPrice('gateio', ticker);
+    }
+
+    return { orderId, filledQty, avgPrice };
+  }
+
+  // Gate.io 매도 체결가 폴링
+  private async pollGateioFillPrice(apiKey: string, secretKey: string, orderId: string, ticker: string, maxRetries = 4): Promise<number | null> {
+    for (let i = 0; i < maxRetries; i++) {
+      if (i > 0) await new Promise<void>((r) => setTimeout(r, 1500));
+      try {
+        const data = await gateioRequest(apiKey, secretKey, 'GET', `/api/v4/spot/orders/${orderId}`, `currency_pair=${ticker}_USDT`);
+        const fillPrice = parseFloat(data.fill_price ?? '0');
+        if (fillPrice > 0) return fillPrice;
+      } catch {}
+    }
+    return null;
+  }
+
   // MEXC 매도 체결 금액 폴링 (즉시 응답에서 cummulativeQuoteQty=0 대응)
   private async pollMexcFilledUsdt(
     apiKey: string,
@@ -364,6 +442,14 @@ class ListingAutoSellerService {
           { timeout: 4000 },
         );
         return parseFloat(res.data.price);
+      } else if (exchange === 'gateio') {
+        const res = await axios.get(
+          `https://api.gateio.ws/api/v4/spot/tickers?currency_pair=${ticker}_USDT`,
+          { timeout: 4000 },
+        );
+        if (Array.isArray(res.data) && res.data.length > 0) {
+          return parseFloat(res.data[0].last ?? '0');
+        }
       }
     } catch {
       // 현재가 조회 실패는 무시하고 null 반환
@@ -431,6 +517,14 @@ class ListingAutoSellerService {
   private async getMexcCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
     const row = await prisma.credential.findFirst({
       where: { userId: ADMIN_USER_ID, exchange: 'mexc' as any },
+      select: { apiKey: true, secretKey: true },
+    });
+    return row ? { apiKey: decrypt(row.apiKey), secretKey: decrypt(row.secretKey) } : null;
+  }
+
+  private async getGateioCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
+    const row = await prisma.credential.findFirst({
+      where: { userId: ADMIN_USER_ID, exchange: 'gateio' as any },
       select: { apiKey: true, secretKey: true },
     });
     return row ? { apiKey: decrypt(row.apiKey), secretKey: decrypt(row.secretKey) } : null;

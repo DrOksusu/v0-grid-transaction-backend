@@ -402,6 +402,7 @@ enum Exchange {
   kis
   bithumb
   mexc
+  gateio
 }
 
 enum BotStatus {
@@ -588,6 +589,7 @@ model ListingAutoTradeConfig {
   useBinance      Boolean  @default(true)
   useBithumb      Boolean  @default(true)
   useMexc         Boolean  @default(false)
+  useGateio       Boolean  @default(false)
   autoSellEnabled Boolean  @default(true)
   takeProfitPct   Float    @default(20)   // +20% 목표 수익
   stopLossPct     Float    @default(10)   // -10% 손절

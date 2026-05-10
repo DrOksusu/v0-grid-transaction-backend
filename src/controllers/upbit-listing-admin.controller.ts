@@ -133,11 +133,11 @@ export const getAutoTradeConfig = async (req: AuthRequest, res: Response, next: 
 export const updateAutoTradeConfig = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const {
-      enabled, amountKrw, useBinance, useBithumb, useMexc,
+      enabled, amountKrw, useBinance, useBithumb, useMexc, useGateio,
       autoSellEnabled, takeProfitPct, stopLossPct, maxHoldMinutes,
     } = req.body;
     const config = await listingAutoTraderService.updateConfig({
-      enabled, amountKrw, useBinance, useBithumb, useMexc,
+      enabled, amountKrw, useBinance, useBithumb, useMexc, useGateio,
       autoSellEnabled, takeProfitPct, stopLossPct, maxHoldMinutes,
     });
     return successResponse(res, config);
