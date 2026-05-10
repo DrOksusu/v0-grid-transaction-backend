@@ -268,10 +268,77 @@ class ListingAutoSellerService {
       req.end();
     });
 
+    const orderId = String(data.orderId);
     const filledQty = parseFloat(data.executedQty ?? qty.toString());
-    const filledUsdt = parseFloat(data.cummulativeQuoteQty ?? '0');
-    const avgPrice = filledQty > 0 ? filledUsdt / filledQty : 0;
-    return { orderId: String(data.orderId), filledQty, avgPrice };
+
+    // MEXC는 매도 즉시 응답에서 cummulativeQuoteQty=0을 반환하므로 폴링으로 실제 체결 금액 확인
+    let filledUsdt = parseFloat(data.cummulativeQuoteQty ?? '0');
+    if (filledUsdt <= 0 && orderId) {
+      filledUsdt = await this.pollMexcFilledUsdt(cred.apiKey, cred.secretKey, `${ticker}USDT`, orderId);
+    }
+
+    // 폴링 후에도 0이면 현재가로 근사 (최후 fallback)
+    let avgPrice: number | null = null;
+    if (filledUsdt > 0 && filledQty > 0) {
+      avgPrice = filledUsdt / filledQty;
+    } else {
+      avgPrice = await this.fetchCurrentPrice('mexc', ticker);
+    }
+
+    return { orderId, filledQty, avgPrice };
+  }
+
+  // MEXC 매도 체결 금액 폴링 (즉시 응답에서 cummulativeQuoteQty=0 대응)
+  private async pollMexcFilledUsdt(
+    apiKey: string,
+    secretKey: string,
+    symbol: string,
+    orderId: string,
+    maxRetries = 4,
+  ): Promise<number> {
+    for (let i = 0; i < maxRetries; i++) {
+      if (i > 0) await new Promise<void>((r) => setTimeout(r, 1500));
+      try {
+        const timestamp = Date.now().toString();
+        const params = { symbol, orderId, timestamp };
+        const signature = crypto.createHmac('sha256', secretKey)
+          .update(new URLSearchParams(params).toString())
+          .digest('hex');
+        const qs = new URLSearchParams({ ...params, signature }).toString();
+
+        const filled = await new Promise<number>((resolve, reject) => {
+          const req = https.request(
+            {
+              hostname: 'api.mexc.com',
+              path: `/api/v3/order?${qs}`,
+              method: 'GET',
+              headers: { 'X-MEXC-APIKEY': apiKey },
+              timeout: 8000,
+            },
+            (res) => {
+              let body = '';
+              res.on('data', (c: string) => (body += c));
+              res.on('end', () => {
+                try {
+                  const d = JSON.parse(body);
+                  resolve(parseFloat(d.cummulativeQuoteQty ?? '0'));
+                } catch {
+                  reject(new Error('MEXC order 조회 파싱 실패'));
+                }
+              });
+            },
+          );
+          req.on('error', reject);
+          req.on('timeout', () => { req.destroy(); reject(new Error('MEXC order 조회 timeout')); });
+          req.end();
+        });
+
+        if (filled > 0) return filled;
+      } catch {
+        // 재시도
+      }
+    }
+    return 0;
   }
 
   // ── 거래소별 현재가 조회 ───────────────────────────────────────────────────
