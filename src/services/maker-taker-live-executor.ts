@@ -316,6 +316,19 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       }
       const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid);
       if (postCancelPoll.filled && postCancelPoll.grossKrw > 0) {
+        // 취소 시도 중 체결 — taker 집행 전 spread 재검증 (이미 역전됐을 수 있음)
+        const makerAvgPrice = postCancelPoll.grossKrw / postCancelPoll.filledQty;
+        const postRaceSpreadBps = Math.floor((takerBook.bid / makerAvgPrice - 1) * 10000);
+        if (postRaceSpreadBps < bot.cancelBelowBps) {
+          console.log(
+            `[LiveExecutor] bot ${bot.id} spread_cancel_race: spread inverted after fill (${postRaceSpreadBps}bp < ${bot.cancelBelowBps}bp) — taker skipped, partial_hold`,
+          );
+          return {
+            kind: 'partial_hold',
+            pendingId: pending.id,
+            reason: `spread_cancel race: spread inverted (${postRaceSpreadBps}bp < ${bot.cancelBelowBps}bp), taker skipped`,
+          };
+        }
         const takerOrderId = await takerLeg.placeMakerAsk(
           bot.takerCoin,
           takerBook.bid,
@@ -353,6 +366,21 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       };
     }
 
+    // taker 집행 전 spread 재검증 (폴링 시점에 호가 역전 가능)
+    if (bot.cancelBelowBps > 0) {
+      const pollSpreadBps = Math.floor((takerBook.bid / pending.makerOrderPrice - 1) * 10000);
+      if (pollSpreadBps < bot.cancelBelowBps) {
+        console.log(
+          `[LiveExecutor] bot ${bot.id} poll_spread_inverted: ${pollSpreadBps}bp < ${bot.cancelBelowBps}bp — taker skipped, partial_hold`,
+        );
+        return {
+          kind: 'partial_hold',
+          pendingId: pending.id,
+          reason: `maker filled but spread inverted at taker time (${pollSpreadBps}bp < ${bot.cancelBelowBps}bp)`,
+        };
+      }
+    }
+
     // taker 지정가 ASK 주문 (현재 takerBook.bid 가격)
     const takerOrderId = await takerLeg.placeMakerAsk(bot.takerCoin, takerBook.bid, poll.filledQty);
     if (!takerOrderId) {
@@ -381,6 +409,19 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     }
     const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid);
     if (postCancelPoll.filled && postCancelPoll.grossKrw > 0) {
+      // 만료 취소 중 체결 — taker 집행 전 spread 재검증
+      const makerAvgPrice = postCancelPoll.grossKrw / postCancelPoll.filledQty;
+      const expiredRaceSpreadBps = Math.floor((takerBook.bid / makerAvgPrice - 1) * 10000);
+      if (expiredRaceSpreadBps < bot.cancelBelowBps) {
+        console.log(
+          `[LiveExecutor] bot ${bot.id} expired_race: spread inverted after fill (${expiredRaceSpreadBps}bp < ${bot.cancelBelowBps}bp) — taker skipped, partial_hold`,
+        );
+        return {
+          kind: 'partial_hold',
+          pendingId: pending.id,
+          reason: `expired race: spread inverted (${expiredRaceSpreadBps}bp < ${bot.cancelBelowBps}bp), taker skipped`,
+        };
+      }
       const takerOrderId = await takerLeg.placeMakerAsk(
         bot.takerCoin,
         takerBook.bid,
