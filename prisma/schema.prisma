@@ -710,3 +710,28 @@ model UpbitKnownMarket {
 
   @@map("upbit_known_markets")
 }
+
+// 카카오톡 나에게 보내기 OAuth 토큰 (싱글톤 — id=1 고정)
+model KakaoToken {
+  id           Int      @id @default(1)
+  accessToken  String   @db.Text
+  refreshToken String   @db.Text
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("kakao_tokens")
+}
+
+// BTC RSI 다이버전스 알림 이력
+model BtcRsiAlert {
+  id        Int      @id @default(autoincrement())
+  rsiValue  Float
+  priceValue Float
+  alertType String   @default("bullish_divergence")
+  message   String   @db.Text
+  sentAt    DateTime @default(now())
+
+  @@index([sentAt])
+  @@map("btc_rsi_alerts")
+}

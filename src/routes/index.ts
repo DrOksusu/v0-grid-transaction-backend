@@ -20,6 +20,7 @@ import pairScannerRoutes from './pair-scanner';
 import generalArbAdminRoutes from './general-arb-admin';
 import upbitListingAdminRoutes from './upbit-listing-admin';
 import cmeGapRoutes from './cme-gap';
+import kakaoAdminRoutes from './kakao-admin';
 
 const router = Router();
 
@@ -52,5 +53,6 @@ router.use('/pair-scanner', pairScannerRoutes);
 router.use('/admin/general-arb', generalArbAdminRoutes);
 router.use('/admin/upbit-listings', upbitListingAdminRoutes);
 router.use('/admin/cme-gap', cmeGapRoutes);
+router.use('/admin/btc-rsi', kakaoAdminRoutes);
 
 export default router;

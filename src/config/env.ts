@@ -52,6 +52,12 @@ export const config = {
   },
   // 관리자 이메일 (admin 페이지/API 접근 권한자)
   adminEmail: process.env.ADMIN_EMAIL || '',
+  // 카카오 나에게 보내기 (BTC RSI 알림)
+  kakao: {
+    restApiKey: process.env.KAKAO_REST_API_KEY || '',
+    clientSecret: process.env.KAKAO_CLIENT_SECRET || '',
+    redirectUri: process.env.KAKAO_REDIRECT_URI || 'http://localhost:3010/api/admin/kakao/callback',
+  },
 };
 
 // startup 검증 — 미설정 시 즉시 throw

@@ -10,3 +10,4 @@ export { PairScannerAgent } from './pair-scanner-agent';
 export { GeneralArbScannerAgent, generalArbScannerAgent } from './general-arb-scanner-agent';
 export { UpbitListingMonitorAgent, upbitListingMonitorAgent } from './upbit-listing-monitor-agent';
 export { CmeGapAgent } from './cme-gap-agent';
+export { BtcRsiAgent } from './btc-rsi-agent';
