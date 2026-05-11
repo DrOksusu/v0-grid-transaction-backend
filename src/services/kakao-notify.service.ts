@@ -53,8 +53,8 @@ class KakaoNotifyService {
       object_type: 'text',
       text: message,
       link: {
-        web_url: 'https://koco.me',
-        mobile_web_url: 'https://koco.me',
+        web_url: 'https://v0-grid-transaction.vercel.app/admin/btc-rsi',
+        mobile_web_url: 'https://v0-grid-transaction.vercel.app/admin/btc-rsi',
       },
     };
     await axios.post(
