@@ -25,7 +25,9 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 export interface BithumbOrderbookTop {
   symbol: string;
   bid: number;
+  bidQty: number;
   ask: number;
+  askQty: number;
   timestamp: number;
 }
 
@@ -47,26 +49,34 @@ let subscriberCount = 0;
 
 // ── 내부 유틸 ─────────────────────────────────────────────────────────────────
 
-function bestBid(bids: Map<string, number>): number {
-  let best = 0;
+function bestBid(bids: Map<string, number>): { price: number; qty: number } {
+  let bestPrice = 0;
+  let bestQty = 0;
   for (const [priceStr, qty] of bids) {
     if (qty > 0) {
       const p = parseFloat(priceStr);
-      if (p > best) best = p;
+      if (p > bestPrice) {
+        bestPrice = p;
+        bestQty = qty;
+      }
     }
   }
-  return best;
+  return { price: bestPrice, qty: bestQty };
 }
 
-function bestAsk(asks: Map<string, number>): number {
-  let best = Infinity;
+function bestAsk(asks: Map<string, number>): { price: number; qty: number } {
+  let bestPrice = Infinity;
+  let bestQty = 0;
   for (const [priceStr, qty] of asks) {
     if (qty > 0) {
       const p = parseFloat(priceStr);
-      if (p < best) best = p;
+      if (p < bestPrice) {
+        bestPrice = p;
+        bestQty = qty;
+      }
     }
   }
-  return best === Infinity ? 0 : best;
+  return bestPrice === Infinity ? { price: 0, qty: 0 } : { price: bestPrice, qty: bestQty };
 }
 
 function applyDelta(
@@ -89,10 +99,10 @@ function applyDelta(
   }
   book.lastUpdated = Date.now();
 
-  const bid = bestBid(book.bids);
-  const ask = bestAsk(book.asks);
+  const { price: bid, qty: bidQty } = bestBid(book.bids);
+  const { price: ask, qty: askQty } = bestAsk(book.asks);
   if (bid > 0 && ask > 0) {
-    cache.set(symbol, { symbol, bid, ask, timestamp: Date.now() });
+    cache.set(symbol, { symbol, bid, bidQty, ask, askQty, timestamp: Date.now() });
   }
 }
 
@@ -132,11 +142,11 @@ async function initFromRest(): Promise<void> {
           book.asks.set(String(row.price), parseFloat(row.quantity));
         }
         book.lastUpdated = Date.now();
-        const bid = bestBid(book.bids);
-        const ask = bestAsk(book.asks);
+        const { price: bid, qty: bidQty } = bestBid(book.bids);
+        const { price: ask, qty: askQty } = bestAsk(book.asks);
         if (bid > 0 && ask > 0) {
-          cache.set(symbol, { symbol, bid, ask, timestamp: Date.now() });
-          console.log(`[BithumbStablecoinWs] REST 초기화: ${symbol} bid=${bid} ask=${ask}`);
+          cache.set(symbol, { symbol, bid, bidQty, ask, askQty, timestamp: Date.now() });
+          console.log(`[BithumbStablecoinWs] REST 초기화: ${symbol} bid=${bid} bidQty=${bidQty} ask=${ask} askQty=${askQty}`);
         }
       } catch {
         // 개별 코인 실패는 무시

@@ -38,7 +38,7 @@ import { isMakerBookSpreadProfitable, isCrossSpreadProfitable, calcCrossSpreadBp
 
 /** Upbit OrderbookTop → NormalizedBook */
 function normalizeUpbit(book: OrderbookTop): NormalizedBook {
-  return { bid: book.bid.price, ask: book.ask.price };
+  return { bid: book.bid.price, bidQty: book.bid.size, ask: book.ask.price, askQty: book.ask.size };
 }
 
 const MAX_STABLECOIN_PRICE_DIFF_RATIO = 0.10; // 두 스테이블코인 가격이 10% 이상 차이나면 데이터 이상
@@ -328,11 +328,11 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
 
     const makerBook: NormalizedBook =
       makerExchange === 'bithumb'
-        ? { bid: (makerBookRaw as any).bid, ask: (makerBookRaw as any).ask }
+        ? { bid: (makerBookRaw as any).bid, bidQty: (makerBookRaw as any).bidQty, ask: (makerBookRaw as any).ask, askQty: (makerBookRaw as any).askQty }
         : normalizeUpbit(makerBookRaw as OrderbookTop);
     const takerBook: NormalizedBook =
       takerExchange === 'bithumb'
-        ? { bid: (takerBookRaw as any).bid, ask: (takerBookRaw as any).ask }
+        ? { bid: (takerBookRaw as any).bid, ask: (takerBookRaw as any).ask, askQty: (takerBookRaw as any).askQty }
         : normalizeUpbit(takerBookRaw as OrderbookTop);
 
     if (isBookDataSuspect(makerBook.bid, takerBook.bid, bot.id)) return;

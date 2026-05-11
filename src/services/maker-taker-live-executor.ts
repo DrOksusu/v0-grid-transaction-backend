@@ -17,7 +17,7 @@
 import type { ExchangeLeg } from './exchange-leg';
 
 /** 거래소 중립 호가 스냅샷 */
-export type NormalizedBook = { bid: number; ask: number };
+export type NormalizedBook = { bid: number; bidQty?: number; ask: number; askQty?: number };
 
 /** 봇 입력 */
 export type LiveBotInput = {
@@ -141,7 +141,13 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     }
 
     // TAKER_SELL_FIRST: makerCoin IOC 매도 → takerCoin maker BID
-    const sellResult = await makerLeg.sellIoc(bot.makerCoin, bot.quantity);
+    // makerBid 잔량, takerAsk 잔량, bot.quantity 중 가장 작은 값으로 cap (thin book 슬리피지 방지)
+    const effectiveQty = Math.min(
+      bot.quantity,
+      makerBook.bidQty ?? bot.quantity,
+      takerBook.askQty ?? bot.quantity,
+    );
+    const sellResult = await makerLeg.sellIoc(bot.makerCoin, effectiveQty);
     if (!sellResult) return { kind: 'noop' };
 
     // 비정상 저가 체결만 abort — 부분체결(정상 단가)은 filledQty 기반 BID로 처리
