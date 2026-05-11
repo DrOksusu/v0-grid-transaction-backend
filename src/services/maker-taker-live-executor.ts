@@ -155,6 +155,15 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       return { kind: 'noop' };
     }
 
+    // 실현가 수익성 재확인: 실제 매도 체결가 ≤ takerAsk → 매수 시 이미 손실 확정 → 중단
+    // 호가 상단은 통과했어도 얇은 호가(thin book) 슬리피지로 역전 가능
+    if (avgIocPrice <= takerBook.ask) {
+      console.warn(
+        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: 매도 체결가 ${avgIocPrice.toFixed(0)} ≤ takerAsk ${takerBook.ask} — 매수 시 손실 확정, 중단 (KRW 유지)`,
+      );
+      return { kind: 'noop' };
+    }
+
     // takerCoin IOC 즉시 매수 — maker BID 대기 없이 바로 체결
     const buyResult = await takerLeg.buyIoc(bot.takerCoin, sellResult.filledQty, takerBook.ask);
     if (!buyResult) {
