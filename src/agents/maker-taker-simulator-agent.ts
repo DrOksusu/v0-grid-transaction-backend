@@ -156,7 +156,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       const direction = decideLegOrder(makerNorm, takerNorm);
 
       if (direction === 'MAKER_BUY_FIRST') {
-        const gate = isCrossSpreadProfitable(makerNorm.bid, takerNorm.bid, 'MAKER_BUY_FIRST', bot.minSpreadBps);
+        const gate = isCrossSpreadProfitable(makerNorm, takerNorm, 'MAKER_BUY_FIRST', bot.minSpreadBps);
         if (!gate.ok) return;
 
         const makerOrderPrice = makerNorm.bid + bot.bidOffsetKrw;
@@ -173,7 +173,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           },
         });
       } else {
-        const gate = isCrossSpreadProfitable(makerNorm.bid, takerNorm.bid, 'TAKER_SELL_FIRST', bot.minSpreadBps);
+        const gate = isCrossSpreadProfitable(makerNorm, takerNorm, 'TAKER_SELL_FIRST', bot.minSpreadBps);
         if (!gate.ok) return;
 
         const takerFirstPrice = makerNorm.bid;
@@ -410,7 +410,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       const direction = decideLegOrder(makerBook, takerBook);
 
       // 스프레드 게이트: 거래소 조합에 무관하게 항상 먼저 체크
-      const gate = isCrossSpreadProfitable(makerBook.bid, takerBook.bid, direction, bot.minSpreadBps);
+      const gate = isCrossSpreadProfitable(makerBook, takerBook, direction, bot.minSpreadBps);
       if (!gate.ok) {
         console.log(
           `[MakerTakerSimulatorAgent] bot ${bot.id} spread gate fail: ${gate.spreadBps}bp < ${bot.minSpreadBps}bp (${makerExchange}→${takerExchange} ${bot.makerCoin}/${bot.takerCoin})`,

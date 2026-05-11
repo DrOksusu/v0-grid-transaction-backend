@@ -14,19 +14,25 @@ export interface SpreadGateResult {
 /**
  * 크로스 스프레드를 bp로 계산해 minSpreadBps와 비교하는 순수 함수.
  *
- * @param makerBid  maker 코인 최우선 매수 호가
- * @param takerBid  taker 코인 최우선 매수 호가
+ * MAKER_BUY_FIRST: maker BID 대기 매수 → taker BID 지정가 매도
+ *   spread = takerBid / makerBid - 1
+ * TAKER_SELL_FIRST: makerCoin IOC 매도(makerBid 체결) → takerCoin IOC 매수(takerAsk 체결)
+ *   spread = makerBid / takerAsk - 1  ← IOC 매수는 ask 기준이므로 takerBid 아닌 takerAsk 사용
+ *
+ * @param makerBook  maker 거래소 호가 { bid, ask }
+ * @param takerBook  taker 거래소 호가 { bid, ask }
  * @param direction 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST'
  * @param minSpreadBps 최소 수익성 스프레드 (bp). 0이면 게이팅 비활성.
  */
 export function isCrossSpreadProfitable(
-  makerBid: number,
-  takerBid: number,
+  makerBook: { bid: number; ask: number },
+  takerBook: { bid: number; ask: number },
   direction: 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST',
   minSpreadBps: number,
 ): SpreadGateResult {
-  const numerator   = direction === 'MAKER_BUY_FIRST' ? takerBid : makerBid;
-  const denominator = direction === 'MAKER_BUY_FIRST' ? makerBid : takerBid;
+  const numerator   = direction === 'MAKER_BUY_FIRST' ? takerBook.bid : makerBook.bid;
+  // TAKER_SELL_FIRST: IOC 매수는 takerAsk에 체결 — takerBid 대신 takerAsk로 수익성 판단
+  const denominator = direction === 'MAKER_BUY_FIRST' ? makerBook.bid : takerBook.ask;
 
   if (!denominator || denominator <= 0) {
     return { ok: false, spreadBps: 0, reason: 'invalid orderbook (denominator=0)' };
@@ -69,7 +75,8 @@ export function calcCrossSpreadBps(
   direction: 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST',
 ): number {
   const numerator   = direction === 'MAKER_BUY_FIRST' ? takerBook.bid : makerBook.bid;
-  const denominator = direction === 'MAKER_BUY_FIRST' ? makerBook.bid : takerBook.bid;
+  // TAKER_SELL_FIRST: IOC 매수는 ask 기준 체결
+  const denominator = direction === 'MAKER_BUY_FIRST' ? makerBook.bid : takerBook.ask;
   if (!denominator || denominator <= 0) return 0;
   return Math.floor((numerator / denominator - 1) * 10000);
 }
