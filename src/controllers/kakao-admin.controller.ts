@@ -54,7 +54,9 @@ export const getAlertHistory = async (_req: Request, res: Response, next: NextFu
 /** 테스트 메시지 발송 */
 export const sendTestMessage = async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    await kakaoNotifyService.sendToMe('[BTC RSI Monitor] 테스트 메시지 ✅');
+    await kakaoNotifyService.sendToMe(
+      '[BTC RSI Monitor] 테스트 메시지 ✅\nhttps://v0-grid-transaction.vercel.app/admin/btc-rsi',
+    );
     res.json({ ok: true });
   } catch (err) {
     next(err);

@@ -111,7 +111,8 @@ class BtcRsiMonitorService {
           `현재 RSI: ${recent.rsi.toFixed(2)}\n` +
           `이전 저점 ($${prev.price.toLocaleString()} @ ${prevDate}, RSI ${prev.rsi.toFixed(2)}) ↔ ` +
           `최근 저점 ($${recent.price.toLocaleString()} @ ${recentDate}, RSI ${recent.rsi.toFixed(2)})\n` +
-          `⬇️ 가격 하락 / ⬆️ RSI 상승 → 매수 시그널`;
+          `⬇️ 가격 하락 / ⬆️ RSI 상승 → 매수 시그널\n` +
+          `https://v0-grid-transaction.vercel.app/admin/btc-rsi`;
 
         return { detected: true, msg, rsi: recent.rsi, price: recent.price };
       }
