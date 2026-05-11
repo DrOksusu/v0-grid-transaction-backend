@@ -32,7 +32,23 @@ jobs:
       # 주의: ECR은 ap-northeast-1, Lightsail DB는 ap-northeast-2 (서울) — region 명시 필수
       - name: Pre-deploy Lightsail DB snapshot
         id: snapshot
+        continue-on-error: true
         run: |
+          # 오래된 pre-deploy 스냅샷 정리 (최신 5개 유지)
+          SNAPS=$(aws lightsail get-relational-database-snapshots \
+            --region ap-northeast-2 \
+            --query "relationalDatabaseSnapshots[?starts_with(name, 'pre-deploy')].name" \
+            --output text | tr '\t' '\n' | sort)
+          COUNT=$(echo "$SNAPS" | grep -c . || true)
+          if [ "$COUNT" -ge 5 ]; then
+            DELETE_COUNT=$((COUNT - 4))
+            echo "$SNAPS" | head -n "$DELETE_COUNT" | while read SNAP_NAME; do
+              echo "Deleting old snapshot: $SNAP_NAME"
+              aws lightsail delete-relational-database-snapshot \
+                --region ap-northeast-2 \
+                --relational-database-snapshot-name "$SNAP_NAME" || true
+            done
+          fi
           SNAP="pre-deploy-${GITHUB_SHA:0:8}-$(date -u +%Y%m%d-%H%M%S)"
           echo "Creating snapshot: $SNAP"
           aws lightsail create-relational-database-snapshot \
