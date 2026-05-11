@@ -542,6 +542,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     const invalidatesBalance =
       result.kind === 'placed' ||
       result.kind === 'filled' ||
+      result.kind === 'instant_filled' ||
       result.kind === 'partial_hold' ||
       result.kind === 'taker_placed';
     if (invalidatesBalance && upbitClient) {
@@ -684,6 +685,38 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             notes:
               (pending?.notes ?? '') +
               ` | LIVE FILLED[${legOrder}] sell=${result.filledSellKrw} buy=${result.filledMakerKrw} fees=${feeKrw} net=${netProfitKrw}`,
+          },
+        });
+        return;
+      }
+
+      case 'instant_filled': {
+        const now = new Date();
+        const grossProfitKrw = +(result.sellGrossKrw - result.buyGrossKrw).toFixed(4);
+        const feeKrw = +result.paidFeeKrw.toFixed(4);
+        const netProfitKrw = +result.netProfitKrw.toFixed(4);
+        const avgSellPrice = Math.round(result.sellGrossKrw / Math.max(result.filledQty, 1e-9));
+        await (prisma.makerTakerSimTrade as any).create({
+          data: {
+            botId: bot.id,
+            makerCoin: bot.makerCoin,
+            takerCoin: bot.takerCoin,
+            quantity: result.filledQty,
+            makerOrderPrice: result.avgBuyPrice,
+            status: 'FILLED',
+            live: true,
+            legOrder: 'TAKER_SELL_FIRST',
+            takerFirstCostKrw: result.sellGrossKrw,
+            takerFirstFeeKrw: result.sellFeeKrw,
+            makerFilledAt: now,
+            makerFilledPrice: result.avgBuyPrice,
+            takerExecutedAt: now,
+            takerMarketBid: avgSellPrice,
+            grossProfitKrw,
+            feeKrw,
+            netProfitKrw,
+            realizedSpreadBps: result.realizedSpreadBps,
+            notes: `LIVE INSTANT FILLED [TAKER_SELL_FIRST] sell=${result.sellGrossKrw.toFixed(2)} buy=${result.buyGrossKrw.toFixed(2)} fees=${feeKrw} net=${netProfitKrw}`,
           },
         });
         return;

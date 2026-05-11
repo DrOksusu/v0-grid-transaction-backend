@@ -90,7 +90,19 @@ export type LiveExecutorResult =
       netProfitKrw: number;
       realizedSpreadBps: number;
     }
-  | { kind: 'partial_hold'; pendingId: bigint; reason: string };
+  | { kind: 'partial_hold'; pendingId: bigint; reason: string }
+  | {
+      kind: 'instant_filled';
+      filledQty: number;
+      sellGrossKrw: number;
+      sellFeeKrw: number;
+      buyGrossKrw: number;
+      buyFeeKrw: number;
+      paidFeeKrw: number;
+      netProfitKrw: number;
+      realizedSpreadBps: number;
+      avgBuyPrice: number;
+    };
 
 export type ProcessLiveInput = {
   bot: LiveBotInput;
@@ -143,23 +155,33 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       return { kind: 'noop' };
     }
 
-    const takerOrderPrice = takerBook.bid + bot.bidOffsetKrw;
-    // IOC 부분체결 시 실제 체결된 수량으로 BID를 걸어 수량 정합성 유지
-    const orderId = await takerLeg.placeMakerBid(bot.takerCoin, takerOrderPrice, sellResult.filledQty);
-    if (!orderId) {
+    // takerCoin IOC 즉시 매수 — maker BID 대기 없이 바로 체결
+    const buyResult = await takerLeg.buyIoc(bot.takerCoin, sellResult.filledQty, takerBook.ask);
+    if (!buyResult) {
       console.error(
-        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: makerCoin 매도 후 takerCoin BID 실패`,
+        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: makerCoin 매도 후 takerCoin IOC 매수 실패 — KRW 손실 가능`,
       );
       return { kind: 'noop' };
     }
 
+    const paidFeeKrw = sellResult.feeKrw + buyResult.feeKrw;
+    const netProfitKrw = sellResult.grossKrw - buyResult.grossKrw - paidFeeKrw;
+    const realizedSpreadBps =
+      buyResult.grossKrw > 0
+        ? Math.floor((sellResult.grossKrw / buyResult.grossKrw - 1) * 10000)
+        : 0;
+
     return {
-      kind: 'placed',
-      makerOrderUuid: orderId,
-      makerOrderPrice: takerOrderPrice,
-      legOrder: 'TAKER_SELL_FIRST',
-      takerFirstCostKrw: sellResult.grossKrw,
-      takerFirstFeeKrw: sellResult.feeKrw,
+      kind: 'instant_filled',
+      filledQty: buyResult.filledQty,
+      sellGrossKrw: sellResult.grossKrw,
+      sellFeeKrw: sellResult.feeKrw,
+      buyGrossKrw: buyResult.grossKrw,
+      buyFeeKrw: buyResult.feeKrw,
+      paidFeeKrw,
+      netProfitKrw,
+      realizedSpreadBps,
+      avgBuyPrice: Math.round(buyResult.grossKrw / Math.max(buyResult.filledQty, 1e-9)),
     };
   }
 

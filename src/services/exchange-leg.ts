@@ -16,6 +16,13 @@ export interface ExchangeLeg {
     quantity: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null>;
 
+  /** IOC 시장가 매수. 즉시 처리. priceHint = 예상 단가(KRW). null = 체결 없음 */
+  buyIoc(
+    symbol: string,
+    quantity: number,
+    priceHint: number,
+  ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null>;
+
   /** 지정가 maker BID 주문. null = 주문 실패 */
   placeMakerBid(symbol: string, price: number, quantity: number): Promise<string | null>;
 
@@ -58,6 +65,38 @@ export class UpbitLeg implements ExchangeLeg {
     let effectiveResp: any = resp;
 
     // Leg-2 IOC false positive 방어 (PR D 사례)
+    if (filledQty === 0 && resp.uuid) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const recheck = await this.upbit.getOrder(resp.uuid);
+      const recheckQty = parseFloat(recheck?.executed_volume || '0');
+      if (recheckQty > 0) {
+        filledQty = recheckQty;
+        effectiveResp = recheck;
+      }
+    }
+
+    if (filledQty === 0) return null;
+    return {
+      filledQty,
+      grossKrw: extractKrw(effectiveResp),
+      feeKrw: parseFloat(effectiveResp?.paid_fee || '0'),
+    };
+  }
+
+  async buyIoc(
+    symbol: string,
+    quantity: number,
+    priceHint: number,
+  ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
+    // Upbit 시장가 매수는 KRW 금액 기준 (price 파라미터)
+    const krwAmount = Math.ceil(quantity * priceHint * 1.01);
+    const resp = await this.upbit.placeBestIoc(`KRW-${symbol}`, 'bid', {
+      price: String(krwAmount),
+    });
+    let filledQty = parseFloat(resp.executed_volume || '0');
+    let effectiveResp: any = resp;
+
+    // IOC false positive 방어
     if (filledQty === 0 && resp.uuid) {
       await new Promise((r) => setTimeout(r, 1500));
       const recheck = await this.upbit.getOrder(resp.uuid);
@@ -123,6 +162,29 @@ export class BithumbLeg implements ExchangeLeg {
     if (!placed.orderId) return null;
 
     // 빗썸 시장가 매도는 거의 즉시 체결되나 polling 필요
+    for (let i = 0; i < 6; i++) {
+      const order = await this.client.getOrder(placed.orderId);
+      if (order.status === 'filled' && order.filledQty > 0) {
+        return {
+          filledQty: order.filledQty,
+          grossKrw: order.avgFillPrice * order.filledQty,
+          feeKrw: order.totalFeeKrw,
+        };
+      }
+      if (order.status === 'cancelled' || order.status === 'failed') return null;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return null;
+  }
+
+  async buyIoc(
+    symbol: string,
+    quantity: number,
+    priceHint: number,
+  ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
+    const placed = await this.client.placeMarketOrder('buy', symbol, quantity, priceHint);
+    if (!placed.orderId) return null;
+
     for (let i = 0; i < 6; i++) {
       const order = await this.client.getOrder(placed.orderId);
       if (order.status === 'filled' && order.filledQty > 0) {
