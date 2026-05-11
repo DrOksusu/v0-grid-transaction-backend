@@ -566,8 +566,12 @@ class ListingAutoTraderService {
       where: { userId: ADMIN_USER_ID, exchange: 'gateio' as any },
       select: { apiKey: true, secretKey: true },
     });
-    if (!row) return null;
-    return { apiKey: decrypt(row.apiKey), secretKey: decrypt(row.secretKey) };
+    if (row) return { apiKey: decrypt(row.apiKey), secretKey: decrypt(row.secretKey) };
+    // DB에 없으면 환경변수 fallback (GATEWAY_API_KEY / GATEWAY_SECRET_KEY)
+    const envKey = process.env.GATEWAY_API_KEY;
+    const envSecret = process.env.GATEWAY_SECRET_KEY;
+    if (envKey && envSecret) return { apiKey: envKey, secretKey: envSecret };
+    return null;
   }
 
   private async fetchKrwPerUsdt(): Promise<number> {

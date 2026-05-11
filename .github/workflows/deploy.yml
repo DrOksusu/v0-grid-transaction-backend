@@ -120,6 +120,8 @@ jobs:
               -e "KAKAO_REST_API_KEY=${{ secrets.KAKAO_REST_API_KEY }}" \
               -e "KAKAO_CLIENT_SECRET=${{ secrets.KAKAO_CLIENT_SECRET }}" \
               -e "KAKAO_REDIRECT_URI=${{ secrets.KAKAO_REDIRECT_URI }}" \
+              -e "GATEWAY_API_KEY=${{ secrets.GATEWAY_API_KEY }}" \
+              -e "GATEWAY_SECRET_KEY=${{ secrets.GATEWAY_SECRET_KEY }}" \
               $ECR_REGISTRY/$IMAGE_NAME:latest
 
             echo "=== Step 5: 상태 확인 ==="

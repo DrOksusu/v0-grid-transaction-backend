@@ -63,6 +63,11 @@ export const config = {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     chatId: process.env.TELEGRAM_CHAT_ID || '',
   },
+  // Gate.io 신규상장 자동매수/매도 API 키
+  gateio: {
+    apiKey: process.env.GATEWAY_API_KEY || '',
+    secretKey: process.env.GATEWAY_SECRET_KEY || '',
+  },
 };
 
 // startup 검증 — 미설정 시 즉시 throw

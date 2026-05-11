@@ -497,10 +497,11 @@ class UpbitListingMonitorService {
       this.fetchBybitPrice(ticker),
       this.fetchMexcPrice(ticker),
       this.fetchBithumbPrice(ticker),
+      this.fetchGateioPrice(ticker),
     ]);
 
     return results.map((r, i) => {
-      const exchanges = ['binance', 'bybit', 'mexc', 'bithumb'];
+      const exchanges = ['binance', 'bybit', 'mexc', 'bithumb', 'gateio'];
       if (r.status === 'fulfilled') return r.value;
       return { exchange: exchanges[i], price: null, volume24h: null, error: String(r.reason) };
     });
@@ -570,6 +571,26 @@ class UpbitListingMonitorService {
       };
     } catch {
       return { exchange: 'bithumb', price: null, volume24h: null };
+    }
+  }
+
+  private async fetchGateioPrice(ticker: string): Promise<ExchangePriceResult> {
+    try {
+      const res = await axios.get(
+        `https://api.gateio.ws/api/v4/spot/tickers?currency_pair=${ticker}_USDT`,
+        { timeout: 5000 },
+      );
+      if (!Array.isArray(res.data) || res.data.length === 0) {
+        return { exchange: 'gateio', price: null, volume24h: null };
+      }
+      const item = res.data[0];
+      return {
+        exchange: 'gateio',
+        price: parseFloat(item.last ?? '0') || null,
+        volume24h: parseFloat(item.quote_volume ?? '0') || null,
+      };
+    } catch {
+      return { exchange: 'gateio', price: null, volume24h: null };
     }
   }
 
