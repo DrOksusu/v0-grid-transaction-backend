@@ -1,7 +1,8 @@
-// 바이낸스 4시간봉 BTC/USDT RSI 상승 다이버전스 감지 + 카카오 알림
+// 바이낸스 4시간봉 BTC/USDT RSI 상승 다이버전스 감지 + 카카오/텔레그램 알림
 import axios from 'axios';
 import prisma from '../config/database';
 import { kakaoNotifyService } from './kakao-notify.service';
+import { telegramNotifyService } from './telegram-notify.service';
 
 interface Candle {
   openTime: number;
@@ -183,13 +184,15 @@ class BtcRsiMonitorService {
       return;
     }
 
-    try {
-      await kakaoNotifyService.sendToMe(msg);
-      await this.saveAlert(rsi, price, msg);
-      console.log('[BtcRsiMonitor] 상승 다이버전스 알림 발송 완료');
-    } catch (err: any) {
-      console.error('[BtcRsiMonitor] 카카오 알림 실패:', err.message);
-    }
+    const telegramMsg =
+      msg + `\n\n<a href="https://v0-grid-transaction.vercel.app/admin/btc-rsi">RSI 관리자 페이지 바로가기</a>`;
+
+    await Promise.allSettled([
+      kakaoNotifyService.sendToMe(msg).catch((e: any) => console.error('[BtcRsiMonitor] 카카오 알림 실패:', e.message)),
+      telegramNotifyService.sendMessage(telegramMsg).catch((e: any) => console.error('[BtcRsiMonitor] 텔레그램 알림 실패:', e.message)),
+    ]);
+    await this.saveAlert(rsi, price, msg);
+    console.log('[BtcRsiMonitor] 상승 다이버전스 알림 발송 완료');
   }
 }
 

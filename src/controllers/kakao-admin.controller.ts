@@ -1,6 +1,7 @@
 // 카카오 OAuth + BTC RSI 관리자 컨트롤러
 import { Request, Response, NextFunction } from 'express';
 import { kakaoNotifyService } from '../services/kakao-notify.service';
+import { telegramNotifyService } from '../services/telegram-notify.service';
 import { btcRsiMonitorService } from '../services/btc-rsi-monitor.service';
 
 /** OAuth 인증 URL 반환 */
@@ -54,9 +55,12 @@ export const getAlertHistory = async (_req: Request, res: Response, next: NextFu
 /** 테스트 메시지 발송 */
 export const sendTestMessage = async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    await kakaoNotifyService.sendToMe(
-      '[BTC RSI Monitor] 테스트 메시지 ✅\nhttps://v0-grid-transaction.vercel.app/admin/btc-rsi',
-    );
+    const testText = '[BTC RSI Monitor] 테스트 메시지 ✅\nhttps://v0-grid-transaction.vercel.app/admin/btc-rsi';
+    const testTelegramText = '[BTC RSI Monitor] 테스트 메시지 ✅\n<a href="https://v0-grid-transaction.vercel.app/admin/btc-rsi">RSI 관리자 페이지 바로가기</a>';
+    await Promise.all([
+      kakaoNotifyService.sendToMe(testText),
+      telegramNotifyService.sendMessage(testTelegramText),
+    ]);
     res.json({ ok: true });
   } catch (err) {
     next(err);

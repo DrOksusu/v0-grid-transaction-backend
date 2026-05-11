@@ -58,6 +58,11 @@ export const config = {
     clientSecret: process.env.KAKAO_CLIENT_SECRET || '',
     redirectUri: process.env.KAKAO_REDIRECT_URI || 'http://localhost:3010/api/admin/kakao/callback',
   },
+  // 텔레그램 봇 (BTC RSI 알림)
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+    chatId: process.env.TELEGRAM_CHAT_ID || '',
+  },
 };
 
 // startup 검증 — 미설정 시 즉시 throw
