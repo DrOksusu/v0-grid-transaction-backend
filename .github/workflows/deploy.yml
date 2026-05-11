@@ -28,36 +28,6 @@ jobs:
           role-to-assume: arn:aws:iam::827899252497:role/github-actions-ecr-deploy
           aws-region: ${{ env.AWS_REGION }}
 
-      # 배포 전 Lightsail DB 스냅샷 자동 생성 (롤백 대비)
-      # 주의: ECR은 ap-northeast-1, Lightsail DB는 ap-northeast-2 (서울) — region 명시 필수
-      - name: Pre-deploy Lightsail DB snapshot
-        id: snapshot
-        continue-on-error: true
-        run: |
-          # 오래된 pre-deploy 스냅샷 정리 (최신 5개 유지)
-          SNAPS=$(aws lightsail get-relational-database-snapshots \
-            --region ap-northeast-2 \
-            --query "relationalDatabaseSnapshots[?starts_with(name, 'pre-deploy')].name" \
-            --output text | tr '\t' '\n' | sort)
-          COUNT=$(echo "$SNAPS" | grep -c . || true)
-          if [ "$COUNT" -ge 5 ]; then
-            DELETE_COUNT=$((COUNT - 4))
-            echo "$SNAPS" | head -n "$DELETE_COUNT" | while read SNAP_NAME; do
-              echo "Deleting old snapshot: $SNAP_NAME"
-              aws lightsail delete-relational-database-snapshot \
-                --region ap-northeast-2 \
-                --relational-database-snapshot-name "$SNAP_NAME" || true
-            done
-          fi
-          SNAP="pre-deploy-${GITHUB_SHA:0:8}-$(date -u +%Y%m%d-%H%M%S)"
-          echo "Creating snapshot: $SNAP"
-          aws lightsail create-relational-database-snapshot \
-            --region ap-northeast-2 \
-            --relational-database-name Grid-bot-DB-v2 \
-            --relational-database-snapshot-name "$SNAP"
-          echo "snapshot_name=$SNAP" >> $GITHUB_OUTPUT
-          echo "스냅샷 요청 완료(비동기). 가용 상태가 되기까지 수 분 소요됨."
-
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
