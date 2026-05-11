@@ -157,6 +157,9 @@ model MakerTakerSimBot {
   minSpreadBps Int       @default(20)  // cross 스프레드(bp) >= 이 값일 때만 placement
   lastResumeAt DateTime?               // enabled false→true 전환 시각 (canary T_start)
 
+  // 매도 전략 — 봇별 구성. TAKER_SELL_FIRST: IOC 즉시 매도, MAKER_SELL_FIRST: 지정가 ASK 대기
+  sellStrategy String @default("TAKER_SELL_FIRST") // TAKER_SELL_FIRST | MAKER_SELL_FIRST
+
   // 크로스 거래소 지원 — 각 레그를 다른 거래소에서 실행 가능
   makerExchange String @default("upbit")  // makerCoin 거래소: "upbit" | "bithumb"
   takerExchange String @default("upbit")  // takerCoin 거래소: "upbit" | "bithumb"
@@ -199,8 +202,8 @@ model MakerTakerSimTrade {
   netProfitKrw      Decimal? @db.Decimal(18, 4)
   realizedSpreadBps Int?
 
-  // 적응형 레그 순서 (PR I)
-  legOrder          String   @default("MAKER_BUY_FIRST") // MAKER_BUY_FIRST | TAKER_SELL_FIRST
+  // 레그 순서
+  legOrder          String   @default("MAKER_BUY_FIRST") // MAKER_BUY_FIRST | TAKER_SELL_FIRST | MAKER_SELL_FIRST
   takerFirstCostKrw Decimal? @db.Decimal(18, 4)          // TAKER_SELL_FIRST: makerCoin IOC 매도로 받은 KRW
   takerFirstFeeKrw  Decimal? @db.Decimal(14, 4)          // TAKER_SELL_FIRST: IOC 매도 수수료
 

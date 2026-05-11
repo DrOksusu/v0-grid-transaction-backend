@@ -18,21 +18,31 @@ export interface SpreadGateResult {
  *   spread = takerBid / makerBid - 1
  * TAKER_SELL_FIRST: makerCoin IOC 매도(makerBid 체결) → takerCoin IOC 매수(takerAsk 체결)
  *   spread = makerBid / takerAsk - 1  ← IOC 매수는 ask 기준이므로 takerBid 아닌 takerAsk 사용
+ * MAKER_SELL_FIRST: makerCoin 지정가 ASK 대기 → takerCoin IOC 매수(takerAsk 체결)
+ *   spread = makerAsk / takerAsk - 1  ← 둘 다 ask 기준
  *
  * @param makerBook  maker 거래소 호가 { bid, ask }
  * @param takerBook  taker 거래소 호가 { bid, ask }
- * @param direction 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST'
+ * @param direction 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST' | 'MAKER_SELL_FIRST'
  * @param minSpreadBps 최소 수익성 스프레드 (bp). 0이면 게이팅 비활성.
  */
 export function isCrossSpreadProfitable(
   makerBook: { bid: number; ask: number },
   takerBook: { bid: number; ask: number },
-  direction: 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST',
+  direction: 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST' | 'MAKER_SELL_FIRST',
   minSpreadBps: number,
 ): SpreadGateResult {
-  const numerator   = direction === 'MAKER_BUY_FIRST' ? takerBook.bid : makerBook.bid;
-  // TAKER_SELL_FIRST: IOC 매수는 takerAsk에 체결 — takerBid 대신 takerAsk로 수익성 판단
-  const denominator = direction === 'MAKER_BUY_FIRST' ? makerBook.bid : takerBook.ask;
+  let numerator: number;
+  let denominator: number;
+  if (direction === 'MAKER_BUY_FIRST') {
+    numerator = takerBook.bid; denominator = makerBook.bid;
+  } else if (direction === 'MAKER_SELL_FIRST') {
+    // makerCoin ASK 매도 → takerCoin IOC 매수(takerAsk): 받은 금액 / 지불 금액
+    numerator = makerBook.ask; denominator = takerBook.ask;
+  } else {
+    // TAKER_SELL_FIRST: IOC 매수는 takerAsk에 체결
+    numerator = makerBook.bid; denominator = takerBook.ask;
+  }
 
   if (!denominator || denominator <= 0) {
     return { ok: false, spreadBps: 0, reason: 'invalid orderbook (denominator=0)' };
@@ -72,11 +82,17 @@ export function isMakerBookSpreadProfitable(
 export function calcCrossSpreadBps(
   makerBook: NormalizedBook,
   takerBook: NormalizedBook,
-  direction: 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST',
+  direction: 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST' | 'MAKER_SELL_FIRST',
 ): number {
-  const numerator   = direction === 'MAKER_BUY_FIRST' ? takerBook.bid : makerBook.bid;
-  // TAKER_SELL_FIRST: IOC 매수는 ask 기준 체결
-  const denominator = direction === 'MAKER_BUY_FIRST' ? makerBook.bid : takerBook.ask;
+  let numerator: number;
+  let denominator: number;
+  if (direction === 'MAKER_BUY_FIRST') {
+    numerator = takerBook.bid; denominator = makerBook.bid;
+  } else if (direction === 'MAKER_SELL_FIRST') {
+    numerator = makerBook.ask; denominator = takerBook.ask;
+  } else {
+    numerator = makerBook.bid; denominator = takerBook.ask;
+  }
   if (!denominator || denominator <= 0) return 0;
   return Math.floor((numerator / denominator - 1) * 10000);
 }

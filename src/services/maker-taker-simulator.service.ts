@@ -34,6 +34,23 @@ export function shouldFill(
   return 'wait';
 }
 
+/**
+ * MAKER_SELL_FIRST 체결 판단
+ *
+ * 지정가 ASK를 orderbook ask 가격으로 등록한 경우,
+ * 시장 ask가 우리 주문가 이상으로 오르면 우리가 최우선 매도자 → 체결 간주.
+ */
+export function shouldFillAsk(
+  order: PendingMakerOrder,
+  currentMakerOrderbook: OrderbookTop,
+  now: Date,
+): FillDecision {
+  const elapsed = now.getTime() - order.createdAt.getTime();
+  if (elapsed > order.maxPendingMs) return 'expire';
+  if (currentMakerOrderbook.ask.price >= order.makerOrderPrice) return 'fill';
+  return 'wait';
+}
+
 export interface TakerLegResult {
   takerPrice: number;
   grossProfitKrw: number;

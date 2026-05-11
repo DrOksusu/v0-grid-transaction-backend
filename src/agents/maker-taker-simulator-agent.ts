@@ -15,6 +15,7 @@ import { stablecoinPrisma as prisma } from '../config/database';
 import mainPrisma from '../config/database';
 import {
   shouldFill,
+  shouldFillAsk,
   simulateTakerLeg,
   isAbort,
 } from '../services/maker-taker-simulator.service';
@@ -153,7 +154,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     });
 
     if (!pending) {
-      const direction = decideLegOrder(makerNorm, takerNorm);
+      const direction = decideLegOrder(makerNorm, takerNorm, bot.sellStrategy ?? 'TAKER_SELL_FIRST');
 
       if (direction === 'MAKER_BUY_FIRST') {
         const gate = isCrossSpreadProfitable(makerNorm, takerNorm, 'MAKER_BUY_FIRST', bot.minSpreadBps);
@@ -170,6 +171,23 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             status: 'PENDING',
             legOrder: 'MAKER_BUY_FIRST',
             notes: `생성[MAKER_BUY_FIRST]: makerBid=${makerNorm.bid}, offset=${bot.bidOffsetKrw}, spread=${gate.spreadBps}bp`,
+          },
+        });
+      } else if (direction === 'MAKER_SELL_FIRST') {
+        const gate = isCrossSpreadProfitable(makerNorm, takerNorm, 'MAKER_SELL_FIRST', bot.minSpreadBps);
+        if (!gate.ok) return;
+
+        const makerOrderPrice = makerNorm.ask - bot.bidOffsetKrw;
+        await (prisma.makerTakerSimTrade as any).create({
+          data: {
+            botId: bot.id,
+            makerCoin: bot.makerCoin,
+            takerCoin: bot.takerCoin,
+            makerOrderPrice,
+            quantity: bot.quantity,
+            status: 'PENDING',
+            legOrder: 'MAKER_SELL_FIRST',
+            notes: `생성[MAKER_SELL_FIRST]: makerAsk=${makerNorm.ask}, takerAsk=${takerNorm.ask}, spread=${gate.spreadBps}bp`,
           },
         });
       } else {
@@ -202,16 +220,18 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
 
     // pending 주문 → 체결 판정
     const legOrder: string = pending.legOrder ?? 'MAKER_BUY_FIRST';
-    const bookForFill = legOrder === 'TAKER_SELL_FIRST' ? takerBook : makerBook;
-    const decision = shouldFill(
-      {
-        makerOrderPrice: pending.makerOrderPrice,
-        createdAt: pending.createdAt,
-        maxPendingMs: bot.maxPendingMs,
-      },
-      bookForFill,
-      now,
-    );
+    const orderParams = {
+      makerOrderPrice: pending.makerOrderPrice,
+      createdAt: pending.createdAt,
+      maxPendingMs: bot.maxPendingMs,
+    };
+    let decision: ReturnType<typeof shouldFill>;
+    if (legOrder === 'MAKER_SELL_FIRST') {
+      decision = shouldFillAsk(orderParams, makerBook, now);
+    } else {
+      const bookForFill = legOrder === 'TAKER_SELL_FIRST' ? takerBook : makerBook;
+      decision = shouldFill(orderParams, bookForFill, now);
+    }
 
     if (decision === 'wait') return;
 
@@ -255,6 +275,42 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           notes:
             (pending.notes ?? '') +
             ` | FILLED[TAKER_SELL_FIRST] takerSell=${takerFirstCostKrw} takerBuy=${makerFilledKrw} net=${netProfitKrw.toFixed(2)}`,
+        },
+      });
+      return;
+    }
+
+    if (legOrder === 'MAKER_SELL_FIRST') {
+      // makerCoin ASK 체결가(makerOrderPrice)로 받은 KRW → takerCoin 현재 ask로 매수
+      const qty = Number(bot.quantity);
+      const makerSellKrw = pending.makerOrderPrice * qty;
+      const makerFee = (makerSellKrw * bot.makerFeeBps) / 10000;
+      const takerBuyPrice = takerNorm.ask;
+      const takerBuyKrw = takerBuyPrice * qty;
+      const takerFee = (takerBuyKrw * bot.takerFeeBps) / 10000;
+      const feeKrw = makerFee + takerFee;
+      const grossProfitKrw = makerSellKrw - takerBuyKrw;
+      const netProfitKrw = grossProfitKrw - feeKrw;
+      const realizedSpreadBps =
+        takerBuyKrw > 0
+          ? Math.floor(((makerSellKrw - takerBuyKrw) / takerBuyKrw) * 10000)
+          : 0;
+
+      await (prisma.makerTakerSimTrade as any).update({
+        where: { id: pending.id },
+        data: {
+          status: 'FILLED',
+          makerFilledAt: now,
+          makerFilledPrice: pending.makerOrderPrice,
+          takerExecutedAt: now,
+          takerMarketBid: Math.round(takerBuyKrw / Math.max(qty, 1e-9)),
+          grossProfitKrw,
+          feeKrw,
+          netProfitKrw,
+          realizedSpreadBps,
+          notes:
+            (pending.notes ?? '') +
+            ` | FILLED[MAKER_SELL_FIRST] makerSell=${makerSellKrw.toFixed(2)} takerBuy=${takerBuyKrw.toFixed(2)} net=${netProfitKrw.toFixed(2)}`,
         },
       });
       return;
@@ -407,7 +463,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     // 잔고 사전 체크 (pending 없을 때만)
     let preCheckOk = true;
     if (pending === null) {
-      const direction = decideLegOrder(makerBook, takerBook);
+      const direction = decideLegOrder(makerBook, takerBook, bot.sellStrategy ?? 'TAKER_SELL_FIRST');
 
       // 스프레드 게이트: 거래소 조합에 무관하게 항상 먼저 체크
       const gate = isCrossSpreadProfitable(makerBook, takerBook, direction, bot.minSpreadBps);
@@ -453,7 +509,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} pre-check 실패: ${precheck.reason}`);
           preCheckOk = false;
         }
-      } else if (preCheckOk && direction === 'TAKER_SELL_FIRST' && upbitClient && makerExchange === 'upbit') {
+      } else if (preCheckOk && (direction === 'TAKER_SELL_FIRST' || direction === 'MAKER_SELL_FIRST') && upbitClient && makerExchange === 'upbit') {
         let balances: Record<string, number>;
         try {
           balances = await upbitClient.cache.get();
@@ -465,7 +521,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         const makerCoinBalance = balances[bot.makerCoin] ?? 0;
         if (makerCoinBalance < Number(bot.quantity)) {
           console.log(
-            `[MakerTakerSimulatorAgent] bot ${bot.id} TAKER_SELL_FIRST pre-check: makerCoin 잔고 부족 (${makerCoinBalance} < ${bot.quantity})`,
+            `[MakerTakerSimulatorAgent] bot ${bot.id} ${direction} pre-check: makerCoin 잔고 부족 (${makerCoinBalance} < ${bot.quantity})`,
           );
           preCheckOk = false;
         }
@@ -480,11 +536,11 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         }
 
         if (preCheckOk) {
-          if (direction === 'TAKER_SELL_FIRST' && makerExchange === 'bithumb') {
+          if ((direction === 'TAKER_SELL_FIRST' || direction === 'MAKER_SELL_FIRST') && makerExchange === 'bithumb') {
             const available = bithumbAvail[bot.makerCoin] ?? 0;
             if (available < Number(bot.quantity)) {
               console.log(
-                `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb TAKER_SELL_FIRST 잔고 부족: ${bot.makerCoin} available=${available.toFixed(4)} < quantity=${bot.quantity}`,
+                `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb ${direction} 잔고 부족: ${bot.makerCoin} available=${available.toFixed(4)} < quantity=${bot.quantity}`,
               );
               preCheckOk = false;
             }
@@ -526,6 +582,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       killSwitch: bot.killSwitch,
       minSpreadBps: bot.minSpreadBps,
       cancelBelowBps: (bot.makerFeeBps ?? 5) + (bot.takerFeeBps ?? 5),
+      sellStrategy: bot.sellStrategy ?? 'TAKER_SELL_FIRST',
     };
 
     const result = await runLiveExecutor({
@@ -705,7 +762,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             makerOrderPrice: result.avgBuyPrice,
             status: 'FILLED',
             live: true,
-            legOrder: 'TAKER_SELL_FIRST',
+            legOrder: bot.sellStrategy ?? 'TAKER_SELL_FIRST',
             takerFirstCostKrw: result.sellGrossKrw,
             takerFirstFeeKrw: result.sellFeeKrw,
             makerFilledAt: now,
