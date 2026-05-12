@@ -192,15 +192,13 @@ export class BithumbLeg implements ExchangeLeg {
     priceHint: number,
     maxKrwBudget?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
-    // Bithumb 시장가 매수는 수량(unit) 기반 — 예산 상한을 최대 구매 가능 수량으로 환산
-    // priceHint × 1.02 버퍼: 스냅샷과 실제 체결가 사이 최대 2% 슬리피지 허용
-    let effectiveQty = quantity;
-    if (maxKrwBudget != null && priceHint > 0) {
-      const maxAffordableQty = Math.floor(maxKrwBudget / (priceHint * 1.02));
-      effectiveQty = Math.min(quantity, maxAffordableQty);
-      if (effectiveQty <= 0) return null;
-    }
-    const placed = await this.client.placeMarketOrder('buy', symbol, effectiveQty, priceHint);
+    // Bithumb 시장가 매수 = KRW 금액 기준 (Upbit와 동일 구조)
+    // quantity × priceHint = 팔린 수량만큼 그대로 사기 위한 KRW 추정액
+    // maxKrwBudget이 있으면 fee-aware 예산 상한으로 cap — 초과 지출 방지
+    const estimatedKrw = Math.ceil(quantity * priceHint);
+    const krwAmount = maxKrwBudget != null ? Math.min(estimatedKrw, maxKrwBudget) : estimatedKrw;
+    if (krwAmount <= 0) return null;
+    const placed = await this.client.placeMarketBuyKrw(symbol, krwAmount);
     if (!placed.orderId) return null;
 
     for (let i = 0; i < 6; i++) {

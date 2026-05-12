@@ -240,6 +240,22 @@ export class BithumbClient implements ExchangeClient {
   }
 
   /**
+   * 시장가 매수 — KRW 금액 직접 지정.
+   * ord_type='price', price=krwAmount → 빗썸이 시장가로 살 수 있는 만큼 체결 (소수점 수량 포함).
+   */
+  async placeMarketBuyKrw(symbol: string, krwAmount: number): Promise<PlacedOrder> {
+    const market = `KRW-${symbol.toUpperCase()}`;
+    const body = {
+      market,
+      side: 'bid',
+      ord_type: 'price',
+      price: String(Math.round(krwAmount)),
+    };
+    const response = await this.apiPost<{ uuid: string }>('/v1/orders', body);
+    return { orderId: response.uuid ?? '', status: 'pending', filledQty: 0, avgFillPrice: 0, totalFeeKrw: 0 };
+  }
+
+  /**
    * 지정가 매수 주문.
    * POST /v1/orders { market, side:'bid', ord_type:'limit', price, volume }
    */
