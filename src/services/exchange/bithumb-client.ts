@@ -304,4 +304,73 @@ export class BithumbClient implements ExchangeClient {
     if (market) params.market = market;
     return this.apiGet('/v1/orders', params);
   }
+
+  /**
+   * 코인 입금 주소 조회.
+   * GET /v1/deposits/coin_address?currency={symbol}[&net_type={netType}]
+   * 빗썸 API는 Upbit와 동일한 포맷 사용 (currency = 코인 심볼, KRW- prefix 없음)
+   */
+  async getDepositAddress(symbol: string, netType?: string): Promise<{
+    currency: string;
+    net_type: string;
+    deposit_address: string;
+    secondary_address?: string;
+  } | null> {
+    try {
+      const params: Record<string, string> = { currency: symbol.toUpperCase() };
+      if (netType) params.net_type = netType;
+      const data = await this.apiGet<any>('/v1/deposits/coin_address', params);
+      return data ?? null;
+    } catch (err: any) {
+      console.error(`[Bithumb] 입금주소 조회 실패 (${symbol}):`, err.message);
+      return null;
+    }
+  }
+
+  /**
+   * 출금 가능 정보 조회 (수수료, 최소 출금액).
+   * GET /v1/withdraws/chance?currency={symbol}&net_type={netType}
+   *
+   * 응답 구조 (Upbit-compatible API):
+   *   currency: { code, withdraw_fee, wallet_state, ... }
+   *   withdraw_limit: { minimum, onetime, daily, ... }
+   *   member_level: { wallet_locked, ... }
+   */
+  async getWithdrawChance(symbol: string, netType: string): Promise<{
+    fee: string;
+    minimum_amount: string;
+  }> {
+    const params: Record<string, string> = {
+      currency: symbol.toUpperCase(),
+      net_type: netType,
+    };
+    const data = await this.apiGet<any>('/v1/withdraws/chance', params);
+    return {
+      fee: data?.currency?.withdraw_fee ?? '0',
+      minimum_amount: data?.withdraw_limit?.minimum ?? '0',
+    };
+  }
+
+  /**
+   * 코인 출금 실행.
+   * POST /v1/withdraws/coin
+   */
+  async withdrawCoin(params: {
+    currency: string;
+    net_type: string;
+    amount: string;
+    address: string;
+    secondary_address?: string;
+  }): Promise<{ uuid: string }> {
+    const body: Record<string, unknown> = {
+      currency: params.currency.toUpperCase(),
+      net_type: params.net_type,
+      amount: params.amount,
+      address: params.address,
+    };
+    if (params.secondary_address) {
+      body.secondary_address = params.secondary_address;
+    }
+    return this.apiPost<{ uuid: string }>('/v1/withdraws/coin', body);
+  }
 }

@@ -645,6 +645,65 @@ export class UpbitService {
     }, `getDepositAddress(${currency})`);
   }
 
+  // 출금 가능 정보 조회 (수수료, 최소 출금액 등)
+  async getWithdrawChance(currency: string, netType: string) {
+    return executeWithRetry(async () => {
+      await throttleOrderApi();
+
+      const params: Record<string, string> = { currency, net_type: netType };
+      const queryString = new URLSearchParams(params).toString();
+
+      const response = await axiosInstance.get(
+        `${UPBIT_API_URL}/withdraws/chance?${queryString}`,
+        {
+          headers: this.getHeaders(queryString),
+        }
+      );
+
+      // 실제 응답 구조:
+      //   currency: { code, withdraw_fee, wallet_state, ... }
+      //   withdraw_limit: { minimum, onetime, daily, ... }
+      //   member_level: { wallet_locked, ... }
+      return response.data;
+    }, `getWithdrawChance(${currency}, ${netType})`);
+  }
+
+  // 코인 출금 실행
+  async withdrawCoin(params: {
+    currency: string;
+    net_type: string;
+    amount: string;
+    address: string;
+    secondary_address?: string;
+  }) {
+    return executeWithRetry(async () => {
+      await throttleOrderApi();
+
+      const body: Record<string, string> = {
+        currency: params.currency,
+        net_type: params.net_type,
+        amount: params.amount,
+        address: params.address,
+      };
+      if (params.secondary_address) {
+        body.secondary_address = params.secondary_address;
+      }
+
+      const queryString = new URLSearchParams(body).toString();
+
+      const response = await axiosInstance.post(
+        `${UPBIT_API_URL}/withdraws/coin`,
+        body,
+        {
+          headers: this.getHeaders(queryString),
+        }
+      );
+
+      // 반환: { uuid, txid, ... }
+      return response.data;
+    }, `withdrawCoin(${params.currency})`);
+  }
+
   // 현재가 조회 (공개 API)
   static async getCurrentPrice(market: string, retries = 3) {
     for (let i = 0; i < retries; i++) {

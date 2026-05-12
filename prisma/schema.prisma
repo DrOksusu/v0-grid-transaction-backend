@@ -26,6 +26,7 @@ model User {
   upbitDonations    UpbitDonation[]
   usdtDeposits      UsdtDeposit[]
   usdtPayments      UsdtPayment[]
+  coinTransfers     CoinTransfer[]
 
   @@map("users")
 }
@@ -721,6 +722,31 @@ model KakaoToken {
   updatedAt    DateTime @updatedAt
 
   @@map("kakao_tokens")
+}
+
+// 거래소 간 코인 이체 기록
+model CoinTransfer {
+  id               Int       @id @default(autoincrement())
+  userId           Int
+  fromExchange     String    // "upbit" | "bithumb"
+  toExchange       String
+  currency         String
+  netType          String    // "TRC20", "ERC20" 등
+  amount           Decimal   @db.Decimal(20, 8)
+  fee              Decimal?  @db.Decimal(20, 8)
+  destAddress      String    @db.Text
+  secondaryAddress String?
+  state            String    // "prepared" | "executing" | "requested" | "failed"
+  srcWithdrawUuid  String?
+  errorCode        String?
+  errorMessage     String?   @db.Text
+  preparedAt       DateTime  @default(now())
+  executedAt       DateTime?
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([state])
+  @@map("coin_transfers")
 }
 
 // BTC RSI 다이버전스 알림 이력
