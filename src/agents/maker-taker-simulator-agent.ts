@@ -10,6 +10,7 @@ import {
   subscribeBithumbStablecoinOrderbooks,
   unsubscribeBithumbStablecoinOrderbooks,
   getBithumbStablecoinOrderbook,
+  getBithumbOrderbookForTrading,
 } from '../services/bithumb-stablecoin-ws-manager';
 import { stablecoinPrisma as prisma } from '../config/database';
 import mainPrisma from '../config/database';
@@ -441,14 +442,14 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     const makerExchange: string = bot.makerExchange ?? 'upbit';
     const takerExchange: string = bot.takerExchange ?? 'upbit';
 
-    // 거래소별 호가 조회 및 정규화
+    // 거래 결정용 호가 조회: Bithumb은 10초 freshness 임계 적용 (stale 데이터로 게이트 우회 방지)
     const makerBookRaw =
       makerExchange === 'bithumb'
-        ? getBithumbStablecoinOrderbook(bot.makerCoin)
+        ? getBithumbOrderbookForTrading(bot.makerCoin)
         : upbitBooks.get(`KRW-${bot.makerCoin}`);
     const takerBookRaw =
       takerExchange === 'bithumb'
-        ? getBithumbStablecoinOrderbook(bot.takerCoin)
+        ? getBithumbOrderbookForTrading(bot.takerCoin)
         : upbitBooks.get(`KRW-${bot.takerCoin}`);
 
     if (!makerBookRaw || !takerBookRaw) return;

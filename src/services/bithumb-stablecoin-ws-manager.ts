@@ -20,6 +20,8 @@ export const BITHUMB_STABLECOIN_SYMBOLS = ['USDT', 'USDC', 'USDS', 'USD1', 'USDE
 export type BithumbStablecoin = typeof BITHUMB_STABLECOIN_SYMBOLS[number];
 
 const CACHE_TTL_MS = 120_000;
+/** 거래 결정에 사용할 최대 허용 stale 시간. 이보다 오래된 호가는 게이트 차단. */
+const TRADING_FRESHNESS_MS = 10_000;
 const MAX_RECONNECT_ATTEMPTS = Infinity;
 
 export interface BithumbOrderbookTop {
@@ -267,6 +269,17 @@ export function unsubscribeBithumbStablecoinOrderbooks(): void {
 export function getBithumbStablecoinOrderbook(symbol: string): BithumbOrderbookTop | null {
   const entry = cache.get(symbol);
   if (!entry || Date.now() - entry.timestamp > CACHE_TTL_MS) return null;
+  return entry;
+}
+
+/**
+ * 거래 결정(게이트 체크 + 주문 실행)에만 사용하는 엄격한 freshness 조회.
+ * TRADING_FRESHNESS_MS(10초)보다 오래된 데이터는 null 반환 → 봇이 해당 사이클을 스킵.
+ * UI 표시 등 비거래 용도는 getBithumbStablecoinOrderbook 사용.
+ */
+export function getBithumbOrderbookForTrading(symbol: string): BithumbOrderbookTop | null {
+  const entry = cache.get(symbol);
+  if (!entry || Date.now() - entry.timestamp > TRADING_FRESHNESS_MS) return null;
   return entry;
 }
 
