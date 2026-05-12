@@ -106,6 +106,7 @@ export type LiveExecutorResult =
       netProfitKrw: number;
       realizedSpreadBps: number;
       avgBuyPrice: number;
+      avgSellPrice: number;
     };
 
 export type ProcessLiveInput = {
@@ -214,6 +215,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       netProfitKrw,
       realizedSpreadBps,
       avgBuyPrice: Math.round(buyResult.grossKrw / Math.max(buyResult.filledQty, 1e-9)),
+      avgSellPrice: Math.round(avgIocPrice),  // makerCoin 실제 IOC 매도 단가
     };
   }
 

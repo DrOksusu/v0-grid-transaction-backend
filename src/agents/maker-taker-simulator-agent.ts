@@ -773,8 +773,8 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         const feeKrw = +result.paidFeeKrw.toFixed(4);
         const netProfitKrw = +result.netProfitKrw.toFixed(4);
         // instant_filled = TAKER_SELL_FIRST 즉시 체결
-        // takerMarketBid = takerCoin 매수 단가 (buyGrossKrw / filledQty)
-        // avgSellPrice(= sellGrossKrw / filledQty)는 잘못된 혼합 계산이므로 사용 안 함
+        // makerFilledPrice = takerCoin(매수한 코인) 단가 = avgBuyPrice (매수가로 표시)
+        // takerMarketBid  = makerCoin(매도한 코인) 실제 IOC 체결 단가 = avgSellPrice (매도가로 표시)
         await (prisma.makerTakerSimTrade as any).create({
           data: {
             botId: bot.id,
@@ -790,7 +790,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             makerFilledAt: now,
             makerFilledPrice: result.avgBuyPrice,
             takerExecutedAt: now,
-            takerMarketBid: result.avgBuyPrice,
+            takerMarketBid: result.avgSellPrice,
             grossProfitKrw,
             feeKrw,
             netProfitKrw,
