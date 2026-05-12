@@ -749,7 +749,12 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
               makerFilledPrice: pending?.makerOrderPrice ?? null,
             }),
             takerExecutedAt: now,
-            takerMarketBid: Math.round(result.filledSellKrw / Math.max(result.filledQty, 1e-9)),
+            // TAKER_SELL_FIRST: filledMakerKrw = takerCoin 매수 비용, filledQty = takerCoin 매수 수량
+            // → takerCoin 단가 = filledMakerKrw / filledQty
+            // 그 외: filledSellKrw = taker 매도 수익, filledQty = taker 매도 수량 → 그대로 나누면 정확
+            takerMarketBid: legOrder === 'TAKER_SELL_FIRST'
+              ? Math.round(result.filledMakerKrw / Math.max(result.filledQty, 1e-9))
+              : Math.round(result.filledSellKrw / Math.max(result.filledQty, 1e-9)),
             grossProfitKrw,
             feeKrw,
             netProfitKrw,
@@ -767,7 +772,9 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         const grossProfitKrw = +(result.sellGrossKrw - result.buyGrossKrw).toFixed(4);
         const feeKrw = +result.paidFeeKrw.toFixed(4);
         const netProfitKrw = +result.netProfitKrw.toFixed(4);
-        const avgSellPrice = Math.round(result.sellGrossKrw / Math.max(result.filledQty, 1e-9));
+        // instant_filled = TAKER_SELL_FIRST 즉시 체결
+        // takerMarketBid = takerCoin 매수 단가 (buyGrossKrw / filledQty)
+        // avgSellPrice(= sellGrossKrw / filledQty)는 잘못된 혼합 계산이므로 사용 안 함
         await (prisma.makerTakerSimTrade as any).create({
           data: {
             botId: bot.id,
@@ -783,7 +790,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             makerFilledAt: now,
             makerFilledPrice: result.avgBuyPrice,
             takerExecutedAt: now,
-            takerMarketBid: avgSellPrice,
+            takerMarketBid: result.avgBuyPrice,
             grossProfitKrw,
             feeKrw,
             netProfitKrw,
