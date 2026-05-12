@@ -679,6 +679,8 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             takerOrderUuid: result.takerOrderUuid,
             makerFilledAt: now,
             makerFilledPrice: Math.round(result.makerGrossKrw / Math.max(result.makerFilledQty, 1e-9)),
+            // TAKER_PENDING 중 taker ASK 주문가 임시 저장 — FILLED 시 실제 체결가로 덮어씌워짐
+            takerMarketBid: result.takerAskPrice,
             // grossProfitKrw/feeKrw에 maker fill 데이터 임시 저장 (TAKER_PENDING 동안 P&L 계산용)
             grossProfitKrw: +result.makerGrossKrw.toFixed(4),
             feeKrw: +result.makerFeeKrw.toFixed(4),

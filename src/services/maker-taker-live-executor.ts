@@ -82,6 +82,7 @@ export type LiveExecutorResult =
       makerFilledQty: number;
       makerGrossKrw: number;
       makerFeeKrw: number;
+      takerAskPrice: number;
     }
   | { kind: 'taker_expired'; pendingId: bigint; partialFillKrw?: number; partialFillQty?: number; partialFeeKrw?: number }
   | {
@@ -465,6 +466,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
           makerFilledQty: postCancelPoll.filledQty,
           makerGrossKrw: postCancelPoll.grossKrw,
           makerFeeKrw: postCancelPoll.feeKrw,
+          takerAskPrice: raceAskPrice,
         };
       }
       return { kind: 'spread_cancelled', pendingId: pending.id };
@@ -507,6 +509,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       makerFilledQty: poll.filledQty,
       makerGrossKrw: poll.grossKrw,
       makerFeeKrw: poll.feeKrw,
+      takerAskPrice: askPrice,
     };
   }
 
@@ -544,6 +547,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
         makerFilledQty: postCancelPoll.filledQty,
         makerGrossKrw: postCancelPoll.grossKrw,
         makerFeeKrw: postCancelPoll.feeKrw,
+        takerAskPrice: expiredAskPrice,
       };
     }
     return { kind: 'expired', pendingId: pending.id };
