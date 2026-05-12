@@ -109,6 +109,16 @@ export type LiveExecutorResult =
       avgSellPrice: number;
     };
 
+/**
+ * Maker 체결가 기준으로 minSpreadBps를 보장하는 Taker ASK 가격 계산.
+ * 현재 호가가 이미 충분하면 현재 호가를 그대로 사용 (즉시 체결 우선).
+ * 호가가 부족하면 목표 수익선에 지정가로 걸어 시간이 지나면 체결 대기.
+ */
+function calcTakerAskPrice(makerAvgPrice: number, takerBid: number, minSpreadBps: number): number {
+  const minAskPrice = Math.ceil(makerAvgPrice * (1 + minSpreadBps / 10000));
+  return Math.max(takerBid, minAskPrice);
+}
+
 export type ProcessLiveInput = {
   bot: LiveBotInput;
   pending: PendingTradeInput | null;
@@ -432,20 +442,13 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       if (postCancelPoll.filled && postCancelPoll.grossKrw > 0) {
         // 취소 시도 중 체결 — taker 집행 전 spread 재검증 (이미 역전됐을 수 있음)
         const makerAvgPrice = postCancelPoll.grossKrw / postCancelPoll.filledQty;
-        const postRaceSpreadBps = Math.floor((takerBook.bid / makerAvgPrice - 1) * 10000);
-        if (postRaceSpreadBps < bot.cancelBelowBps) {
-          console.log(
-            `[LiveExecutor] bot ${bot.id} spread_cancel_race: spread inverted after fill (${postRaceSpreadBps}bp < ${bot.cancelBelowBps}bp) — taker skipped, partial_hold`,
-          );
-          return {
-            kind: 'partial_hold',
-            pendingId: pending.id,
-            reason: `spread_cancel race: spread inverted (${postRaceSpreadBps}bp < ${bot.cancelBelowBps}bp), taker skipped`,
-          };
-        }
+        const raceAskPrice = calcTakerAskPrice(makerAvgPrice, takerBook.bid, bot.minSpreadBps);
+        console.log(
+          `[LiveExecutor] bot ${bot.id} spread_cancel_race: maker filled, taker ask @ ${raceAskPrice} (bid=${takerBook.bid}, minSpread=${bot.minSpreadBps}bp)`,
+        );
         const takerOrderId = await takerLeg.placeMakerAsk(
           bot.takerCoin,
-          takerBook.bid,
+          raceAskPrice,
           postCancelPoll.filledQty,
         );
         if (!takerOrderId) {
@@ -480,23 +483,15 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       };
     }
 
-    // taker 집행 전 spread 재검증 (폴링 시점에 호가 역전 가능)
-    if (bot.cancelBelowBps > 0) {
-      const pollSpreadBps = Math.floor((takerBook.bid / pending.makerOrderPrice - 1) * 10000);
-      if (pollSpreadBps < bot.cancelBelowBps) {
-        console.log(
-          `[LiveExecutor] bot ${bot.id} poll_spread_inverted: ${pollSpreadBps}bp < ${bot.cancelBelowBps}bp — taker skipped, partial_hold`,
-        );
-        return {
-          kind: 'partial_hold',
-          pendingId: pending.id,
-          reason: `maker filled but spread inverted at taker time (${pollSpreadBps}bp < ${bot.cancelBelowBps}bp)`,
-        };
-      }
-    }
-
-    // taker 지정가 ASK 주문 (현재 takerBook.bid 가격)
-    const takerOrderId = await takerLeg.placeMakerAsk(bot.takerCoin, takerBook.bid, poll.filledQty);
+    // taker 지정가 ASK 주문 — minSpreadBps 보장 가격으로 주문
+    // 현재 호가가 충분하면 즉시 체결, 부족하면 목표 수익선에 걸어 대기
+    const makerAvgPrice = poll.grossKrw / poll.filledQty;
+    const askPrice = calcTakerAskPrice(makerAvgPrice, takerBook.bid, bot.minSpreadBps);
+    const pollSpreadBps = Math.floor((takerBook.bid / makerAvgPrice - 1) * 10000);
+    console.log(
+      `[LiveExecutor] bot ${bot.id} taker ask @ ${askPrice} (bid=${takerBook.bid}, makerAvg=${makerAvgPrice.toFixed(0)}, currentSpread=${pollSpreadBps}bp, minSpread=${bot.minSpreadBps}bp)`,
+    );
+    const takerOrderId = await takerLeg.placeMakerAsk(bot.takerCoin, askPrice, poll.filledQty);
     if (!takerOrderId) {
       return {
         kind: 'partial_hold',
@@ -524,21 +519,15 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid);
     if (postCancelPoll.filled && postCancelPoll.grossKrw > 0) {
       // 만료 취소 중 체결 — taker 집행 전 spread 재검증
-      const makerAvgPrice = postCancelPoll.grossKrw / postCancelPoll.filledQty;
-      const expiredRaceSpreadBps = Math.floor((takerBook.bid / makerAvgPrice - 1) * 10000);
-      if (expiredRaceSpreadBps < bot.cancelBelowBps) {
-        console.log(
-          `[LiveExecutor] bot ${bot.id} expired_race: spread inverted after fill (${expiredRaceSpreadBps}bp < ${bot.cancelBelowBps}bp) — taker skipped, partial_hold`,
-        );
-        return {
-          kind: 'partial_hold',
-          pendingId: pending.id,
-          reason: `expired race: spread inverted (${expiredRaceSpreadBps}bp < ${bot.cancelBelowBps}bp), taker skipped`,
-        };
-      }
+      const expiredMakerAvgPrice = postCancelPoll.grossKrw / postCancelPoll.filledQty;
+      const expiredAskPrice = calcTakerAskPrice(expiredMakerAvgPrice, takerBook.bid, bot.minSpreadBps);
+      const expiredRaceSpreadBps = Math.floor((takerBook.bid / expiredMakerAvgPrice - 1) * 10000);
+      console.log(
+        `[LiveExecutor] bot ${bot.id} expired_race: taker ask @ ${expiredAskPrice} (bid=${takerBook.bid}, currentSpread=${expiredRaceSpreadBps}bp, minSpread=${bot.minSpreadBps}bp)`,
+      );
       const takerOrderId = await takerLeg.placeMakerAsk(
         bot.takerCoin,
-        takerBook.bid,
+        expiredAskPrice,
         postCancelPoll.filledQty,
       );
       if (!takerOrderId) {
