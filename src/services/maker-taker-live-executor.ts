@@ -34,6 +34,8 @@ export type LiveBotInput = {
   minSpreadBps: number;
   /** maker PENDING 중 스프레드가 이 값(bps) 미만이면 maker 주문 취소. 보통 makerFeeBps + takerFeeBps */
   cancelBelowBps: number;
+  /** taker 거래소 수수료 (bps). fee-aware 매수 예산 상한 계산에 사용 */
+  takerFeeBps: number;
   /** 봇별 매도 전략. TAKER_SELL_FIRST(기본) | MAKER_SELL_FIRST(지정가 ASK 대기) */
   sellStrategy: string;
 };
@@ -179,17 +181,14 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       return { kind: 'noop' };
     }
 
-    // 실현가 수익성 재확인: 실제 매도 체결가 ≤ takerAsk → 매수 시 이미 손실 확정 → 중단
-    // 호가 상단은 통과했어도 얇은 호가(thin book) 슬리피지로 역전 가능
-    if (avgIocPrice <= takerBook.ask) {
-      console.warn(
-        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: 매도 체결가 ${avgIocPrice.toFixed(0)} ≤ takerAsk ${takerBook.ask} — 매수 시 손실 확정, 중단 (KRW 유지)`,
-      );
-      return { kind: 'noop' };
-    }
+    // fee-aware 매수 예산 상한: 매도 순수익(grossKrw - feeKrw)으로 매수비용+수수료 커버 가능한 최대액
+    // maxBuyGross × (1 + takerFeeBps/10000) ≤ sellGross - sellFee  →  netProfitKrw ≥ 0 보장
+    const maxBuyGrossKrw = Math.floor(
+      ((sellResult.grossKrw - sellResult.feeKrw) * 10000) / (10000 + bot.takerFeeBps),
+    );
 
-    // takerCoin IOC 즉시 매수 — maker BID 대기 없이 바로 체결
-    const buyResult = await takerLeg.buyIoc(bot.takerCoin, sellResult.filledQty, takerBook.ask);
+    // takerCoin IOC 즉시 매수 — maxKrwBudget으로 초과지출 차단
+    const buyResult = await takerLeg.buyIoc(bot.takerCoin, sellResult.filledQty, takerBook.ask, maxBuyGrossKrw);
     if (!buyResult) {
       console.error(
         `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: makerCoin 매도 후 takerCoin IOC 매수 실패 — KRW 손실 가능`,
@@ -297,7 +296,10 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
 
       // takerCoin IOC 매수 — thin book 슬리피지 방지: filledQty vs takerAsk 잔량 중 작은 값
       const effectiveQty = Math.min(poll.filledQty, takerBook.askQty ?? poll.filledQty);
-      const buyResult = await takerLeg.buyIoc(bot.takerCoin, effectiveQty, takerBook.ask);
+      const maxBuyGrossKrwMs = Math.floor(
+        ((poll.grossKrw - poll.feeKrw) * 10000) / (10000 + bot.takerFeeBps),
+      );
+      const buyResult = await takerLeg.buyIoc(bot.takerCoin, effectiveQty, takerBook.ask, maxBuyGrossKrwMs);
       if (!buyResult) {
         console.error(
           `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST: maker ASK 체결 후 takerLeg buyIoc 실패 — KRW 손실 가능`,

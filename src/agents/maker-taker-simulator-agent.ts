@@ -54,12 +54,17 @@ function isBookDataSuspect(makerBid: number, takerBid: number, botId: number): b
   return false;
 }
 
+/** instant_filled 직후 동일 봇 재발화 방지 쿨다운 (ms) */
+const INSTANT_FILL_COOLDOWN_MS = 10_000;
+
 export class MakerTakerSimulatorAgent extends BaseAgent {
   private unsubscribe: (() => void) | null = null;
   private evaluateInFlight = false;
   private upbitClients = new Map<number, { upbit: UpbitService; cache: BalanceCache }>();
   private bithumbClients = new Map<number, BithumbClient>();
   private bithumbBalanceCaches = new Map<number, { data: Record<string, number>; at: number }>();
+  /** instant_filled 직후 재발화 방지: botId → 마지막 체결 시각(ms) */
+  private recentlyFiredBots = new Map<number, number>();
 
   constructor() {
     super({
@@ -367,6 +372,10 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   ): Promise<void> {
     if (bot.killSwitch) return;
 
+    // instant_filled 직후 10초 쿨다운 — PENDING 없는 상태에서 연속 발화로 인한 손실 방지
+    const lastFired = this.recentlyFiredBots.get(bot.id);
+    if (lastFired && Date.now() - lastFired < INSTANT_FILL_COOLDOWN_MS) return;
+
     const makerExchange: string = bot.makerExchange ?? 'upbit';
     const takerExchange: string = bot.takerExchange ?? 'upbit';
 
@@ -582,6 +591,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       killSwitch: bot.killSwitch,
       minSpreadBps: bot.minSpreadBps,
       cancelBelowBps: (bot.makerFeeBps ?? 5) + (bot.takerFeeBps ?? 5),
+      takerFeeBps: bot.takerFeeBps ?? 5,
       sellStrategy: bot.sellStrategy ?? 'TAKER_SELL_FIRST',
     };
 
@@ -610,6 +620,11 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     }
 
     await this.persistLiveResult(bot, pending, result);
+
+    // instant_filled 이후 쿨다운 등록 — 다음 WS 이벤트에서 즉시 재발화 차단
+    if (result.kind === 'instant_filled') {
+      this.recentlyFiredBots.set(bot.id, Date.now());
+    }
   }
 
   private async persistLiveResult(

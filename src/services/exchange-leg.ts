@@ -16,11 +16,17 @@ export interface ExchangeLeg {
     quantity: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null>;
 
-  /** IOC 시장가 매수. 즉시 처리. priceHint = 예상 단가(KRW). null = 체결 없음 */
+  /**
+   * IOC 시장가 매수. 즉시 처리. null = 체결 없음.
+   * @param priceHint 예상 단가(KRW) — 예산 계산 기준
+   * @param maxKrwBudget 지불 KRW 상한. 지정하면 priceHint 기반 추정액과 min 취함.
+   *   매도 순수익(grossKrw - feeKrw)을 fee-adjusted 값으로 전달하면 gross P&L ≥ 0 보장.
+   */
   buyIoc(
     symbol: string,
     quantity: number,
     priceHint: number,
+    maxKrwBudget?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null>;
 
   /** 지정가 maker BID 주문. null = 주문 실패 */
@@ -87,9 +93,12 @@ export class UpbitLeg implements ExchangeLeg {
     symbol: string,
     quantity: number,
     priceHint: number,
+    maxKrwBudget?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
     // Upbit 시장가 매수는 KRW 금액 기준 (price 파라미터)
-    const krwAmount = Math.ceil(quantity * priceHint * 1.01);
+    // maxKrwBudget: fee-adjusted 상한 — 초과 지출 시 net P&L < 0 되는 것 방지
+    const estimatedKrw = Math.ceil(quantity * priceHint * 1.01);
+    const krwAmount = maxKrwBudget != null ? Math.min(estimatedKrw, maxKrwBudget) : estimatedKrw;
     const resp = await this.upbit.placeBestIoc(`KRW-${symbol}`, 'bid', {
       price: String(krwAmount),
     });
@@ -181,6 +190,7 @@ export class BithumbLeg implements ExchangeLeg {
     symbol: string,
     quantity: number,
     priceHint: number,
+    _maxKrwBudget?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
     const placed = await this.client.placeMarketOrder('buy', symbol, quantity, priceHint);
     if (!placed.orderId) return null;
