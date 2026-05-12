@@ -19,8 +19,8 @@ const BITHUMB_WS_URL = 'wss://pubwss.bithumb.com/pub/ws';
 export const BITHUMB_STABLECOIN_SYMBOLS = ['USDT', 'USDC', 'USDS', 'USD1', 'USDE'] as const;
 export type BithumbStablecoin = typeof BITHUMB_STABLECOIN_SYMBOLS[number];
 
-const CACHE_TTL_MS = 30_000;
-const MAX_RECONNECT_ATTEMPTS = 10;
+const CACHE_TTL_MS = 120_000;
+const MAX_RECONNECT_ATTEMPTS = Infinity;
 
 export interface BithumbOrderbookTop {
   symbol: string;
@@ -107,15 +107,15 @@ function applyDelta(
 }
 
 function scheduleReconnect(): void {
-  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    console.error('[BithumbStablecoinWs] 최대 재연결 횟수 초과. REST fallback 으로 동작.');
-    return;
-  }
-  const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30_000);
+  const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 60_000);
   reconnectAttempts++;
-  console.log(`[BithumbStablecoinWs] ${delay}ms 후 재연결 (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-  reconnectTimer = setTimeout(() => {
+  console.log(`[BithumbStablecoinWs] ${delay}ms 후 재연결 (시도 ${reconnectAttempts})`);
+  reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
+    // WS 재연결 전 REST로 먼저 호가 갱신 (WS가 오래 끊겼을 때 stale 방지)
+    if (reconnectAttempts > 3) {
+      await initFromRest().catch(e => console.warn('[BithumbStablecoinWs] REST 재초기화 실패:', e.message));
+    }
     connectInternal();
   }, delay);
 }
@@ -167,6 +167,7 @@ function connectInternal(): void {
       return;
     }
     reconnectAttempts = 0;
+    stopRestFallback();
     const symbols = BITHUMB_STABLECOIN_SYMBOLS.map(s => `${s}_KRW`);
     currentWs.send(JSON.stringify({ type: 'orderbookdepth', symbols }));
     console.log('[BithumbStablecoinWs] orderbookdepth 구독 시작:', symbols.join(', '));
@@ -199,13 +200,43 @@ function connectInternal(): void {
     if (ws !== currentWs) return;
     ws = null;
     console.log(`[BithumbStablecoinWs] 연결 종료 (code=${code}) — 재연결 예약`);
-    if (subscriberCount > 0) scheduleReconnect();
+    if (subscriberCount > 0) {
+      scheduleReconnect();
+      startRestFallback();
+    }
   });
 
   currentWs.on('error', (err: Error) => {
     console.error('[BithumbStablecoinWs] 오류:', err.message);
     if (ws === currentWs) ws = null;
   });
+}
+
+// ── REST 폴링 fallback (WS 연결 불가 시 주기적 호가 갱신) ────────────────────
+const REST_FALLBACK_INTERVAL_MS = 10_000;
+let restFallbackTimer: NodeJS.Timeout | null = null;
+
+function startRestFallback(): void {
+  if (restFallbackTimer) return;
+  restFallbackTimer = setInterval(async () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // WS 복구됨 — REST fallback 불필요
+      stopRestFallback();
+      return;
+    }
+    await initFromRest().catch(e =>
+      console.warn('[BithumbStablecoinWs] REST fallback 갱신 실패:', e.message),
+    );
+  }, REST_FALLBACK_INTERVAL_MS);
+  console.log('[BithumbStablecoinWs] REST fallback 폴링 시작 (10s 주기)');
+}
+
+function stopRestFallback(): void {
+  if (restFallbackTimer) {
+    clearInterval(restFallbackTimer);
+    restFallbackTimer = null;
+    console.log('[BithumbStablecoinWs] REST fallback 폴링 중지');
+  }
 }
 
 // ── 공개 API ─────────────────────────────────────────────────────────────────
@@ -215,6 +246,7 @@ export function subscribeBithumbStablecoinOrderbooks(): void {
   subscriberCount++;
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   connectInternal();
+  startRestFallback();
 }
 
 /** Observer/Agent 종료 시 호출 — ref count 감소, 마지막 구독자 해제 시 WS 종료 */
@@ -222,6 +254,7 @@ export function unsubscribeBithumbStablecoinOrderbooks(): void {
   subscriberCount = Math.max(0, subscriberCount - 1);
   if (subscriberCount > 0) return;
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  stopRestFallback();
   if (ws) {
     ws.close();
     ws = null;
