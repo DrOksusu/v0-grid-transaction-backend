@@ -13,6 +13,7 @@ import {
   subscribeBithumbStablecoinOrderbooks,
   unsubscribeBithumbStablecoinOrderbooks,
   getAllBithumbStablecoinOrderbooks,
+  isBithumbStablecoinWsConnected,
 } from './bithumb-stablecoin-ws-manager';
 
 // ─────────────────────────────────────────────────────────────
@@ -58,6 +59,7 @@ export interface PairScannerSnapshot {
   pairs: PairConfig[];
   stats: PairStats[];
   wsConnected: boolean;
+  bithumbWsConnected: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -231,6 +233,7 @@ class PairScannerService {
       pairs: this.getPairs(),
       stats: this.getStats(),
       wsConnected: this.ws !== null && this.ws.readyState === WebSocket.OPEN,
+      bithumbWsConnected: isBithumbStablecoinWsConnected(),
     };
   }
 
