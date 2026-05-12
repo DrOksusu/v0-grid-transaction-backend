@@ -115,7 +115,15 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
 
       const upbitBooks = getAllStablecoinOrderbooks();
 
-      for (const bot of bots) {
+      // live 봇: 매수 잔고 오름차순 정렬 (잔고 가장 적은 코인 우선 매수)
+      const sortedBots = [
+        ...bots.filter((b: any) => b.live).sort((a: any, b: any) =>
+          this.getBuyBalance(a, upbitBooks) - this.getBuyBalance(b, upbitBooks),
+        ),
+        ...bots.filter((b: any) => !b.live),
+      ];
+
+      for (const bot of sortedBots) {
         try {
           await this.processBot(bot, upbitBooks);
         } catch (err: any) {
@@ -361,6 +369,58 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           ` | FILLED[MAKER_BUY_FIRST] takerBid=${takerResult.takerPrice} net=${takerResult.netProfitKrw.toFixed(2)}`,
       },
     });
+  }
+
+  /**
+   * 이번 사이클에 이 봇이 매수할 코인의 현재 잔고를 캐시에서 동기로 조회.
+   * 잔고가 작을수록 먼저 처리해 포트폴리오 자동 리밸런싱.
+   * 캐시 없으면 Infinity 반환(우선순위 후순위).
+   */
+  private getBuyBalance(bot: any, upbitBooks: ReadonlyMap<string, OrderbookTop>): number {
+    const makerExchange: string = bot.makerExchange ?? 'upbit';
+    const takerExchange: string = bot.takerExchange ?? 'upbit';
+
+    const makerBookRaw = makerExchange === 'bithumb'
+      ? getBithumbStablecoinOrderbook(bot.makerCoin)
+      : upbitBooks.get(`KRW-${bot.makerCoin}`);
+    const takerBookRaw = takerExchange === 'bithumb'
+      ? getBithumbStablecoinOrderbook(bot.takerCoin)
+      : upbitBooks.get(`KRW-${bot.takerCoin}`);
+
+    if (!makerBookRaw || !takerBookRaw) return Infinity;
+
+    const makerBid = makerExchange === 'bithumb'
+      ? (makerBookRaw as any).bid
+      : (makerBookRaw as OrderbookTop).bid.price;
+    const makerAsk = makerExchange === 'bithumb'
+      ? (makerBookRaw as any).ask
+      : (makerBookRaw as OrderbookTop).ask.price;
+    const takerBid = takerExchange === 'bithumb'
+      ? (takerBookRaw as any).bid
+      : (takerBookRaw as OrderbookTop).bid.price;
+    const takerAsk = takerExchange === 'bithumb'
+      ? (takerBookRaw as any).ask
+      : (takerBookRaw as OrderbookTop).ask.price;
+
+    const direction = decideLegOrder(
+      { bid: makerBid, ask: makerAsk },
+      { bid: takerBid, ask: takerAsk },
+      bot.sellStrategy ?? 'TAKER_SELL_FIRST',
+    );
+
+    // TAKER_SELL_FIRST / MAKER_SELL_FIRST → takerCoin 매수
+    // MAKER_BUY_FIRST → makerCoin 매수
+    const [buyCoin, buyExchange] = direction === 'MAKER_BUY_FIRST'
+      ? [bot.makerCoin as string, makerExchange]
+      : [bot.takerCoin as string, takerExchange];
+
+    if (buyExchange === 'upbit') {
+      return this.upbitClients.get(bot.userId)?.cache.peek()?.[buyCoin] ?? Infinity;
+    } else {
+      const cache = this.bithumbBalanceCaches.get(bot.userId);
+      if (!cache) return Infinity;
+      return cache.data[buyCoin] ?? 0;
+    }
   }
 
   /**

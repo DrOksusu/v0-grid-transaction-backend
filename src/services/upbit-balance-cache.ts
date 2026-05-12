@@ -38,6 +38,12 @@ export class BalanceCache {
     return map;
   }
 
+  /** 캐시가 유효하면 API 호출 없이 동기 반환, 없으면 null */
+  peek(): Record<string, number> | null {
+    if (this.cached && Date.now() - this.cachedAt < this.ttlMs) return this.cached;
+    return null;
+  }
+
   invalidate(): void {
     this.cached = null;
     this.cachedAt = 0;
