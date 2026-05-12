@@ -199,9 +199,12 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
 
     const paidFeeKrw = sellResult.feeKrw + buyResult.feeKrw;
     const netProfitKrw = sellResult.grossKrw - buyResult.grossKrw - paidFeeKrw;
+    const avgBuyPrice = Math.round(buyResult.grossKrw / Math.max(buyResult.filledQty, 1e-9));
+    const avgSellPriceRound = Math.round(avgIocPrice);
+    // 단가 비율로 spread 계산 — KRW 총액 비율은 수량 불일치(fee cap)로 부풀려짐
     const realizedSpreadBps =
-      buyResult.grossKrw > 0
-        ? Math.floor((sellResult.grossKrw / buyResult.grossKrw - 1) * 10000)
+      avgBuyPrice > 0
+        ? Math.floor((avgSellPriceRound / avgBuyPrice - 1) * 10000)
         : 0;
 
     return {
@@ -214,8 +217,8 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       paidFeeKrw,
       netProfitKrw,
       realizedSpreadBps,
-      avgBuyPrice: Math.round(buyResult.grossKrw / Math.max(buyResult.filledQty, 1e-9)),
-      avgSellPrice: Math.round(avgIocPrice),  // makerCoin 실제 IOC 매도 단가
+      avgBuyPrice,
+      avgSellPrice: avgSellPriceRound,
     };
   }
 

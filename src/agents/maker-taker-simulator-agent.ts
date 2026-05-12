@@ -375,6 +375,8 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     // instant_filled 직후 10초 쿨다운 — PENDING 없는 상태에서 연속 발화로 인한 손실 방지
     const lastFired = this.recentlyFiredBots.get(bot.id);
     if (lastFired && Date.now() - lastFired < INSTANT_FILL_COOLDOWN_MS) return;
+    // async 시작 전 즉시 등록 — await 중 다른 WS 이벤트가 쿨다운을 우회하는 race condition 방지
+    this.recentlyFiredBots.set(bot.id, Date.now());
 
     const makerExchange: string = bot.makerExchange ?? 'upbit';
     const takerExchange: string = bot.takerExchange ?? 'upbit';
@@ -621,10 +623,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
 
     await this.persistLiveResult(bot, pending, result);
 
-    // instant_filled 이후 쿨다운 등록 — 다음 WS 이벤트에서 즉시 재발화 차단
-    if (result.kind === 'instant_filled') {
-      this.recentlyFiredBots.set(bot.id, Date.now());
-    }
+    // 쿨다운 등록은 async 시작 전(line 377)에서 처리 — 여기서 중복 등록 불필요
   }
 
   private async persistLiveResult(
