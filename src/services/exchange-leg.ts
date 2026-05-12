@@ -96,8 +96,8 @@ export class UpbitLeg implements ExchangeLeg {
     maxKrwBudget?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
     // Upbit 시장가 매수는 KRW 금액 기준 (price 파라미터)
-    // maxKrwBudget: fee-adjusted 상한 — 초과 지출 시 net P&L < 0 되는 것 방지
-    const estimatedKrw = Math.ceil(quantity * priceHint * 1.01);
+    // 팔린 수량만큼 그대로 매수 — 버퍼 없이 quantity × priceHint KRW 전달
+    const estimatedKrw = Math.ceil(quantity * priceHint);
     const krwAmount = maxKrwBudget != null ? Math.min(estimatedKrw, maxKrwBudget) : estimatedKrw;
     const resp = await this.upbit.placeBestIoc(`KRW-${symbol}`, 'bid', {
       price: String(krwAmount),
