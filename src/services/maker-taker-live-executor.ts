@@ -182,14 +182,8 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       return { kind: 'noop' };
     }
 
-    // fee-aware 매수 예산 상한: 매도 순수익(grossKrw - feeKrw)으로 매수비용+수수료 커버 가능한 최대액
-    // maxBuyGross × (1 + takerFeeBps/10000) ≤ sellGross - sellFee  →  netProfitKrw ≥ 0 보장
-    const maxBuyGrossKrw = Math.floor(
-      ((sellResult.grossKrw - sellResult.feeKrw) * 10000) / (10000 + bot.takerFeeBps),
-    );
-
-    // takerCoin IOC 즉시 매수 — maxKrwBudget으로 초과지출 차단
-    const buyResult = await takerLeg.buyIoc(bot.takerCoin, sellResult.filledQty, takerBook.ask, maxBuyGrossKrw);
+    // 팔린 수량 그대로 매수 — KRW 잔고는 충분히 유지하므로 예산 cap 없음
+    const buyResult = await takerLeg.buyIoc(bot.takerCoin, sellResult.filledQty, takerBook.ask);
     if (!buyResult) {
       console.error(
         `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: makerCoin 매도 후 takerCoin IOC 매수 실패 — KRW 손실 가능`,
