@@ -277,6 +277,66 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
 
   // MAKER_SELL_FIRST: makerCoin 지정가 ASK 체결 대기 → 체결 후 takerCoin IOC 매수
   if (pending.legOrder === 'MAKER_SELL_FIRST') {
+    // 스프레드 감시: takerCoin 가격 상승으로 스프레드가 수수료 손익분기 미만이면 선제 취소
+    if (bot.cancelBelowBps > 0 && pending.makerOrderPrice > 0) {
+      const currentSpreadBps = Math.floor((pending.makerOrderPrice / takerBook.ask - 1) * 10000);
+      if (currentSpreadBps < bot.cancelBelowBps) {
+        console.log(
+          `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST spread_cancelled: currentSpread=${currentSpreadBps}bp < cancelBelow=${bot.cancelBelowBps}bp (takerAsk=${takerBook.ask}, makerOrderPrice=${pending.makerOrderPrice})`,
+        );
+        try {
+          await makerLeg.cancelOrder(pending.makerOrderUuid);
+        } catch {
+          // 취소 직전 체결됐을 수 있음 — 폴링으로 확인
+        }
+        const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid);
+        if (postCancelPoll.filled && postCancelPoll.grossKrw > 0) {
+          // 레이스: 취소 시도 중 이미 체결 — Leg2 강제 집행 (자산 불균형 방지)
+          console.warn(
+            `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST spread_cancel_race: maker filled, proceeding with Leg2 (spread=${currentSpreadBps}bp)`,
+          );
+          const buyResult = await takerLeg.buyIoc(
+            bot.takerCoin,
+            postCancelPoll.filledQty,
+            takerBook.ask,
+            postCancelPoll.grossKrw,
+          );
+          if (!buyResult) {
+            return {
+              kind: 'partial_hold',
+              pendingId: pending.id,
+              reason: 'MAKER_SELL_FIRST spread_cancel race: maker filled but buyIoc failed',
+            };
+          }
+          if (buyResult.filledQty < postCancelPoll.filledQty * 0.9) {
+            return {
+              kind: 'partial_hold',
+              pendingId: pending.id,
+              reason: `MAKER_SELL_FIRST spread_cancel race: 매수 부분체결 ${buyResult.filledQty.toFixed(4)}/${postCancelPoll.filledQty}`,
+            };
+          }
+          const racePaidFeeKrw = postCancelPoll.feeKrw + buyResult.feeKrw;
+          const raceNetProfitKrw = postCancelPoll.grossKrw - buyResult.grossKrw - racePaidFeeKrw;
+          const raceSpreadBps =
+            buyResult.grossKrw > 0
+              ? Math.floor((postCancelPoll.grossKrw / buyResult.grossKrw - 1) * 10000)
+              : 0;
+          return {
+            kind: 'filled',
+            pendingId: pending.id,
+            filledQty: postCancelPoll.filledQty,
+            filledMakerKrw: buyResult.grossKrw,
+            filledSellKrw: postCancelPoll.grossKrw,
+            buyFilledQty: buyResult.filledQty,
+            paidFeeKrw: racePaidFeeKrw,
+            netProfitKrw: raceNetProfitKrw,
+            realizedSpreadBps: raceSpreadBps,
+          };
+        }
+        return { kind: 'spread_cancelled', pendingId: pending.id };
+      }
+    }
+
     const poll = await makerLeg.pollOrder(pending.makerOrderUuid);
 
     if (poll.filled) {
