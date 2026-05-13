@@ -813,16 +813,19 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             status: 'FILLED',
             ...(fromTakerPending ? {} : {
               makerFilledAt: now,
-              // TAKER_SELL_FIRST: takerCoin 실제 매수가 (BID 체결 단가)
-              // 그 외: makerCoin BID 체결가 (게이트 호가 기준)
-              makerFilledPrice: legOrder === 'TAKER_SELL_FIRST'
+              // makerFilledPrice = "매수가" (UI buyPriceKrw)
+              // TAKER_SELL_FIRST:  takerCoin BID 체결 단가 (filledMakerKrw ÷ qty)
+              // MAKER_SELL_FIRST:  takerCoin IOC 매수 단가 (filledMakerKrw ÷ qty)
+              // MAKER_BUY_FIRST:   makerCoin BID 주문가 (makerOrderPrice)
+              makerFilledPrice: (legOrder === 'TAKER_SELL_FIRST' || legOrder === 'MAKER_SELL_FIRST')
                 ? Math.round(result.filledMakerKrw / Math.max(result.filledQty, 1e-9))
                 : (pending?.makerOrderPrice ?? null),
             }),
             takerExecutedAt: now,
-            // takerMarketBid = "매도 단가"
-            // TAKER_SELL_FIRST: makerCoin IOC 매도가 (filledSellKrw ÷ filledQty)
-            // 그 외: takerCoin 시장가 ASK 체결가 (filledSellKrw ÷ filledQty)
+            // takerMarketBid = "매도가" (UI sellPriceKrw)
+            // TAKER_SELL_FIRST:  makerCoin IOC 매도가 (filledSellKrw ÷ qty)
+            // MAKER_SELL_FIRST:  makerCoin ASK 체결가 (filledSellKrw ÷ qty)
+            // MAKER_BUY_FIRST:   takerCoin ASK 체결가 (filledSellKrw ÷ qty)
             takerMarketBid: Math.round(result.filledSellKrw / Math.max(result.filledQty, 1e-9)),
             grossProfitKrw,
             feeKrw,
