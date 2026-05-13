@@ -757,7 +757,9 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             feeKrw: +result.makerFeeKrw.toFixed(4),
             notes:
               (pending?.notes ?? '') +
-              ` | LIVE taker ASK placed (uuid=${result.takerOrderUuid} price=${Math.round(result.makerGrossKrw / Math.max(result.makerFilledQty, 1e-9))} qty=${result.makerFilledQty.toFixed(8)})`,
+              (result.legOrder === 'MAKER_SELL_FIRST'
+                ? ` | LIVE MAKER_SELL_FIRST Leg2 BID placed (uuid=${result.takerOrderUuid} bid=${result.takerAskPrice} sell=${Math.round(result.makerGrossKrw / Math.max(result.makerFilledQty, 1e-9))} qty=${result.makerFilledQty.toFixed(8)})`
+                : ` | LIVE taker ASK placed (uuid=${result.takerOrderUuid} price=${Math.round(result.makerGrossKrw / Math.max(result.makerFilledQty, 1e-9))} qty=${result.makerFilledQty.toFixed(8)})`),
           },
         });
         return;

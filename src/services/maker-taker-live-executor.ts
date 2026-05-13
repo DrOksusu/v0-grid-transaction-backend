@@ -85,6 +85,8 @@ export type LiveExecutorResult =
       makerGrossKrw: number;
       makerFeeKrw: number;
       takerAskPrice: number;
+      /** MAKER_SELL_FIRST 구분용. undefined = MAKER_BUY_FIRST (하위호환) */
+      legOrder?: string;
     }
   | { kind: 'taker_expired'; pendingId: bigint; partialFillKrw?: number; partialFillQty?: number; partialFeeKrw?: number }
   | { kind: 'taker_requeued'; pendingId: bigint; newTakerOrderUuid: string; takerAskPrice: number }
@@ -278,8 +280,92 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     return { kind: 'waiting', pendingId: pending.id };
   }
 
-  // MAKER_SELL_FIRST: makerCoin 지정가 ASK 체결 대기 → 체결 후 takerCoin IOC 매수
+  // MAKER_SELL_FIRST: Leg1=makerCoin 지정가 ASK → Leg2=takerCoin 지정가 BID (minSpreadBps 보장가)
   if (pending.legOrder === 'MAKER_SELL_FIRST') {
+    // 하위 상태 A: TAKER_PENDING — Leg1 체결 완료, Leg2 지정가 BID 대기 중
+    if (pending.status === 'TAKER_PENDING' && pending.takerOrderUuid) {
+      const takerPoll = await takerLeg.pollOrder(pending.takerOrderUuid);
+
+      if (takerPoll.filled) {
+        if (takerPoll.grossKrw === 0) {
+          return {
+            kind: 'partial_hold',
+            pendingId: pending.id,
+            reason: 'MAKER_SELL_FIRST TAKER_PENDING: takerCoin BID filled but grossKrw = 0 (defensive)',
+          };
+        }
+        if (takerPoll.filledQty < bot.quantity * 0.9) {
+          console.warn(
+            `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST TAKER_PENDING: 매수 부분체결 ${takerPoll.filledQty.toFixed(4)}/${bot.quantity} — partial_hold`,
+          );
+          return {
+            kind: 'partial_hold',
+            pendingId: pending.id,
+            reason: `MAKER_SELL_FIRST TAKER_PENDING: 매수 부분체결 ${takerPoll.filledQty.toFixed(4)}/${bot.quantity} qty`,
+          };
+        }
+
+        const makerGrossKrw = pending.makerFilledGrossKrw ?? 0;
+        const makerFeeKrw = pending.makerFilledFeeKrw ?? 0;
+        const paidFeeKrw = makerFeeKrw + takerPoll.feeKrw;
+        const netProfitKrw = makerGrossKrw - takerPoll.grossKrw - paidFeeKrw;
+        const realizedSpreadBps =
+          takerPoll.grossKrw > 0
+            ? Math.floor((makerGrossKrw / takerPoll.grossKrw - 1) * 10000)
+            : 0;
+
+        return {
+          kind: 'filled',
+          pendingId: pending.id,
+          filledQty: takerPoll.filledQty,
+          filledMakerKrw: takerPoll.grossKrw,  // takerCoin 매수에 지불한 KRW
+          filledSellKrw: makerGrossKrw,          // makerCoin ASK 체결로 받은 KRW
+          buyFilledQty: takerPoll.filledQty,
+          paidFeeKrw,
+          netProfitKrw,
+          realizedSpreadBps,
+        };
+      }
+
+      // Leg2 BID 타임아웃 — maker 체결 시각 기준
+      const takerElapsed = Date.now() - (pending.makerFilledAt ?? pending.createdAt).getTime();
+      if (takerElapsed > bot.maxPendingMs) {
+        try {
+          await takerLeg.cancelOrder(pending.takerOrderUuid);
+        } catch {}
+        const finalPoll = await takerLeg.pollOrder(pending.takerOrderUuid);
+        if (finalPoll.filledQty > 0 && finalPoll.grossKrw > 0) {
+          return {
+            kind: 'taker_expired',
+            pendingId: pending.id,
+            partialFillKrw: finalPoll.grossKrw,
+            partialFillQty: finalPoll.filledQty,
+            partialFeeKrw: finalPoll.feeKrw,
+          };
+        }
+        // killSwitch 꺼져 있으면 같은 목표가에 BID 재주문 (수익선 포기 없이 대기)
+        if (!bot.killSwitch && pending.takerAskPrice) {
+          const newOrderId = await takerLeg.placeMakerBid(
+            bot.takerCoin,
+            pending.takerAskPrice,
+            bot.quantity,
+          );
+          if (newOrderId) {
+            return {
+              kind: 'taker_requeued',
+              pendingId: pending.id,
+              newTakerOrderUuid: newOrderId,
+              takerAskPrice: pending.takerAskPrice,
+            };
+          }
+        }
+        return { kind: 'taker_expired', pendingId: pending.id };
+      }
+
+      return { kind: 'waiting', pendingId: pending.id };
+    }
+
+    // 하위 상태 B: PENDING — Leg1 ASK 대기 중
     // 스프레드 감시: takerCoin 가격 상승으로 스프레드가 수수료 손익분기 미만이면 선제 취소
     if (bot.cancelBelowBps > 0 && pending.makerOrderPrice > 0) {
       const currentSpreadBps = Math.floor((pending.makerOrderPrice / takerBook.ask - 1) * 10000);
@@ -294,46 +380,33 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
         }
         const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid);
         if (postCancelPoll.filled && postCancelPoll.grossKrw > 0) {
-          // 레이스: 취소 시도 중 이미 체결 — Leg2 강제 집행 (자산 불균형 방지)
+          // 레이스: 취소 시도 중 이미 체결 — Leg2 지정가 BID 강제 집행
           console.warn(
-            `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST spread_cancel_race: maker filled, proceeding with Leg2 (spread=${currentSpreadBps}bp)`,
+            `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST spread_cancel_race: maker filled, placing Leg2 BID (spread=${currentSpreadBps}bp)`,
           );
-          const buyResult = await takerLeg.buyIoc(
+          const raceAvgPrice = postCancelPoll.grossKrw / postCancelPoll.filledQty;
+          const raceTargetBid = Math.floor(raceAvgPrice / (1 + bot.minSpreadBps / 10000));
+          const raceLeg2Id = await takerLeg.placeMakerBid(
             bot.takerCoin,
+            raceTargetBid,
             postCancelPoll.filledQty,
-            takerBook.ask,
-            postCancelPoll.grossKrw,
           );
-          if (!buyResult) {
+          if (!raceLeg2Id) {
             return {
               kind: 'partial_hold',
               pendingId: pending.id,
-              reason: 'MAKER_SELL_FIRST spread_cancel race: maker filled but buyIoc failed',
+              reason: 'MAKER_SELL_FIRST spread_cancel race: maker filled but placeMakerBid failed',
             };
           }
-          if (buyResult.filledQty < postCancelPoll.filledQty * 0.9) {
-            return {
-              kind: 'partial_hold',
-              pendingId: pending.id,
-              reason: `MAKER_SELL_FIRST spread_cancel race: 매수 부분체결 ${buyResult.filledQty.toFixed(4)}/${postCancelPoll.filledQty}`,
-            };
-          }
-          const racePaidFeeKrw = postCancelPoll.feeKrw + buyResult.feeKrw;
-          const raceNetProfitKrw = postCancelPoll.grossKrw - buyResult.grossKrw - racePaidFeeKrw;
-          const raceSpreadBps =
-            buyResult.grossKrw > 0
-              ? Math.floor((postCancelPoll.grossKrw / buyResult.grossKrw - 1) * 10000)
-              : 0;
           return {
-            kind: 'filled',
+            kind: 'taker_placed',
             pendingId: pending.id,
-            filledQty: postCancelPoll.filledQty,
-            filledMakerKrw: buyResult.grossKrw,
-            filledSellKrw: postCancelPoll.grossKrw,
-            buyFilledQty: buyResult.filledQty,
-            paidFeeKrw: racePaidFeeKrw,
-            netProfitKrw: raceNetProfitKrw,
-            realizedSpreadBps: raceSpreadBps,
+            takerOrderUuid: raceLeg2Id,
+            makerFilledQty: postCancelPoll.filledQty,
+            makerGrossKrw: postCancelPoll.grossKrw,
+            makerFeeKrw: postCancelPoll.feeKrw,
+            takerAskPrice: raceTargetBid,
+            legOrder: 'MAKER_SELL_FIRST',
           };
         }
         return { kind: 'spread_cancelled', pendingId: pending.id };
@@ -351,48 +424,33 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
         };
       }
 
-      // takerCoin IOC 매수 — 매도 대금 전액을 budget 상한으로 사용해 filledQty 전량 매수 보장
-      const buyResult = await takerLeg.buyIoc(bot.takerCoin, poll.filledQty, takerBook.ask, poll.grossKrw);
-      if (!buyResult) {
+      // Leg2: minSpreadBps 보장 최대 매수가로 지정가 BID (즉시 또는 대기 체결)
+      const makerAvgPrice = poll.grossKrw / poll.filledQty;
+      const targetBidPrice = Math.floor(makerAvgPrice / (1 + bot.minSpreadBps / 10000));
+      console.log(
+        `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST Leg1 filled → Leg2 BID @ ${targetBidPrice} (sell=${makerAvgPrice.toFixed(0)}, minSpread=${bot.minSpreadBps}bp)`,
+      );
+      const leg2OrderId = await takerLeg.placeMakerBid(bot.takerCoin, targetBidPrice, poll.filledQty);
+      if (!leg2OrderId) {
         console.error(
-          `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST: maker ASK 체결 후 takerLeg buyIoc 실패 — KRW 손실 가능`,
+          `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST: Leg1 체결 후 Leg2 placeMakerBid 실패 — KRW 손실 가능`,
         );
         return {
           kind: 'partial_hold',
           pendingId: pending.id,
-          reason: 'MAKER_SELL_FIRST: maker ASK filled but takerLeg buyIoc failed',
+          reason: 'MAKER_SELL_FIRST: Leg1 체결 후 Leg2 지정가 BID 실패',
         };
       }
-
-      // 매수 부분체결 감지: 기대 수량의 90% 미만이면 partial_hold
-      if (buyResult.filledQty < poll.filledQty * 0.9) {
-        console.warn(
-          `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST: 매수 부분체결 ${buyResult.filledQty.toFixed(4)}/${poll.filledQty} (${Math.round((buyResult.filledQty / poll.filledQty) * 100)}%) — partial_hold`,
-        );
-        return {
-          kind: 'partial_hold',
-          pendingId: pending.id,
-          reason: `MAKER_SELL_FIRST: 매수 부분체결 ${buyResult.filledQty.toFixed(4)}/${poll.filledQty} qty`,
-        };
-      }
-
-      const paidFeeKrw = poll.feeKrw + buyResult.feeKrw;
-      const netProfitKrw = poll.grossKrw - buyResult.grossKrw - paidFeeKrw;
-      const realizedSpreadBps =
-        buyResult.grossKrw > 0
-          ? Math.floor((poll.grossKrw / buyResult.grossKrw - 1) * 10000)
-          : 0;
 
       return {
-        kind: 'filled',
+        kind: 'taker_placed',
         pendingId: pending.id,
-        filledQty: poll.filledQty,
-        filledMakerKrw: buyResult.grossKrw,   // takerCoin 매수에 지불한 KRW
-        filledSellKrw: poll.grossKrw,           // makerCoin ASK 체결로 받은 KRW
-        buyFilledQty: buyResult.filledQty,      // 실제 takerCoin 매수 수량 (makerFilledPrice 계산용)
-        paidFeeKrw,
-        netProfitKrw,
-        realizedSpreadBps,
+        takerOrderUuid: leg2OrderId,
+        makerFilledQty: poll.filledQty,
+        makerGrossKrw: poll.grossKrw,
+        makerFeeKrw: poll.feeKrw,
+        takerAskPrice: targetBidPrice,
+        legOrder: 'MAKER_SELL_FIRST',
       };
     }
 
