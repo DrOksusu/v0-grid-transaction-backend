@@ -490,9 +490,9 @@ export const listMakerTakerTrades = async (
     });
 
     const serialized = trades.map((t) => {
-      // legOrder 무관하게 항상 동일한 매핑:
-      // makerFilledPrice = makerCoin 매수 단가 (maker BID 체결가 or TAKER_SELL_FIRST 후속 IOC BID 체결가)
-      // takerMarketBid  = takerCoin 매도 단가 (taker 시장가 ASK 체결가 or TAKER_SELL_FIRST 선행 ASK 체결가)
+      // legOrder 무관하게 동일한 의미:
+      // makerFilledPrice = "매수가" (TAKER_SELL_FIRST: takerCoin BID 체결가, 그 외: makerCoin BID 체결가)
+      // takerMarketBid   = "매도가" (TAKER_SELL_FIRST: makerCoin IOC 매도가, 그 외: takerCoin ASK 체결가)
       const buyPriceKrw = t.makerFilledPrice ?? null;
       const sellPriceKrw = t.takerMarketBid ?? null;
 
