@@ -206,10 +206,11 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     const netProfitKrw = sellResult.grossKrw - buyResult.grossKrw - paidFeeKrw;
     const avgBuyPrice = Math.round(buyResult.grossKrw / Math.max(buyResult.filledQty, 1e-9));
     const avgSellPriceRound = Math.round(avgIocPrice);
-    // 단가 비율로 spread 계산 — KRW 총액 비율은 수량 불일치(fee cap)로 부풀려짐
+    // 크로스 코인 아비트리지: 실현 스프레드 = KRW 수익 / 매수 비용
+    // 단가 비율은 코인이 달라 sell/buy 수량이 다를 수 있어 정확하지 않음 (Math.round 오차로 정보 손실)
     const realizedSpreadBps =
-      avgBuyPrice > 0
-        ? Math.floor((avgSellPriceRound / avgBuyPrice - 1) * 10000)
+      buyResult.grossKrw > 0
+        ? Math.floor((sellResult.grossKrw / buyResult.grossKrw - 1) * 10000)
         : 0;
 
     return {
