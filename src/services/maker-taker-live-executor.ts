@@ -156,6 +156,9 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     // MAKER_SELL_FIRST: makerCoin 지정가 ASK → 체결 후 takerCoin IOC 매수
     if (direction === 'MAKER_SELL_FIRST') {
       const makerOrderPrice = makerBook.ask - bot.bidOffsetKrw;
+      // 진입 게이트: 주문 시점 스프레드가 minSpreadBps 미만이면 noop
+      const entrySpreadBps = Math.floor((makerOrderPrice / takerBook.ask - 1) * 10000);
+      if (entrySpreadBps < bot.minSpreadBps) return { kind: 'noop' };
       // makerBook.askQty: 매도 가능 잔량, takerBook.askQty: 매수 가능 잔량 — 양쪽 모두 캡
       const effectiveQty = Math.min(
         bot.quantity,
