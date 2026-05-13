@@ -169,7 +169,7 @@ function connectInternal(): void {
       return;
     }
     reconnectAttempts = 0;
-    stopRestFallback();
+    // REST 주기 폴링은 WS 연결 후에도 계속 유지 (얇은 시장 심볼은 WS delta가 10초 이상 안 올 수 있음)
     const symbols = BITHUMB_STABLECOIN_SYMBOLS.map(s => `${s}_KRW`);
     currentWs.send(JSON.stringify({ type: 'orderbookdepth', symbols }));
     console.log('[BithumbStablecoinWs] orderbookdepth 구독 시작:', symbols.join(', '));
@@ -214,23 +214,20 @@ function connectInternal(): void {
   });
 }
 
-// ── REST 폴링 fallback (WS 연결 불가 시 주기적 호가 갱신) ────────────────────
-const REST_FALLBACK_INTERVAL_MS = 10_000;
+// ── REST 주기 폴링 (WS 연결 여부와 무관하게 항상 실행) ─────────────────────────
+// WS delta는 호가 변동 시에만 오므로, 얇은 시장(USDS 등)은 10s+ 무업데이트 가능.
+// 10s 주기 REST 폴링으로 TRADING_FRESHNESS_MS(10s) 이내 보장.
+const REST_FALLBACK_INTERVAL_MS = 8_000;
 let restFallbackTimer: NodeJS.Timeout | null = null;
 
 function startRestFallback(): void {
   if (restFallbackTimer) return;
   restFallbackTimer = setInterval(async () => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      // WS 복구됨 — REST fallback 불필요
-      stopRestFallback();
-      return;
-    }
     await initFromRest().catch(e =>
-      console.warn('[BithumbStablecoinWs] REST fallback 갱신 실패:', e.message),
+      console.warn('[BithumbStablecoinWs] REST 주기 갱신 실패:', e.message),
     );
   }, REST_FALLBACK_INTERVAL_MS);
-  console.log('[BithumbStablecoinWs] REST fallback 폴링 시작 (10s 주기)');
+  console.log('[BithumbStablecoinWs] REST 주기 폴링 시작 (8s 주기, WS와 병행)');
 }
 
 function stopRestFallback(): void {

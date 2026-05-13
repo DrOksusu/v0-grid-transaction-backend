@@ -452,7 +452,11 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         ? getBithumbOrderbookForTrading(bot.takerCoin)
         : upbitBooks.get(`KRW-${bot.takerCoin}`);
 
-    if (!makerBookRaw || !takerBookRaw) return;
+    if (!makerBookRaw || !takerBookRaw) {
+      if (!makerBookRaw) console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} ${makerExchange} ${bot.makerCoin} 호가 stale — 스킵`);
+      if (!takerBookRaw) console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} ${takerExchange} ${bot.takerCoin} 호가 stale — 스킵`);
+      return;
+    }
 
     const makerBook: NormalizedBook =
       makerExchange === 'bithumb'
