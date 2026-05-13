@@ -97,6 +97,8 @@ export type LiveExecutorResult =
       paidFeeKrw: number;
       netProfitKrw: number;
       realizedSpreadBps: number;
+      /** MAKER_SELL_FIRST 전용: takerCoin 실제 매수 수량 (makerFilledPrice 계산용) */
+      buyFilledQty?: number;
     }
   | { kind: 'partial_hold'; pendingId: bigint; reason: string }
 ;
@@ -154,9 +156,11 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     // MAKER_SELL_FIRST: makerCoin 지정가 ASK → 체결 후 takerCoin IOC 매수
     if (direction === 'MAKER_SELL_FIRST') {
       const makerOrderPrice = makerBook.ask - bot.bidOffsetKrw;
+      // makerBook.askQty: 매도 가능 잔량, takerBook.askQty: 매수 가능 잔량 — 양쪽 모두 캡
       const effectiveQty = Math.min(
         bot.quantity,
         makerBook.askQty ?? bot.quantity,
+        takerBook.askQty ?? bot.quantity,
       );
       const orderId = await makerLeg.placeMakerAsk(bot.makerCoin, makerOrderPrice, effectiveQty);
       if (!orderId) return { kind: 'noop' };
@@ -297,6 +301,18 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
         };
       }
 
+      // 매수 부분체결 감지: 기대 수량의 90% 미만이면 partial_hold
+      if (buyResult.filledQty < poll.filledQty * 0.9) {
+        console.warn(
+          `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST: 매수 부분체결 ${buyResult.filledQty.toFixed(4)}/${poll.filledQty} (${Math.round((buyResult.filledQty / poll.filledQty) * 100)}%) — partial_hold`,
+        );
+        return {
+          kind: 'partial_hold',
+          pendingId: pending.id,
+          reason: `MAKER_SELL_FIRST: 매수 부분체결 ${buyResult.filledQty.toFixed(4)}/${poll.filledQty} qty`,
+        };
+      }
+
       const paidFeeKrw = poll.feeKrw + buyResult.feeKrw;
       const netProfitKrw = poll.grossKrw - buyResult.grossKrw - paidFeeKrw;
       const realizedSpreadBps =
@@ -310,6 +326,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
         filledQty: poll.filledQty,
         filledMakerKrw: buyResult.grossKrw,   // takerCoin 매수에 지불한 KRW
         filledSellKrw: poll.grossKrw,           // makerCoin ASK 체결로 받은 KRW
+        buyFilledQty: buyResult.filledQty,      // 실제 takerCoin 매수 수량 (makerFilledPrice 계산용)
         paidFeeKrw,
         netProfitKrw,
         realizedSpreadBps,

@@ -836,12 +836,14 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             ...(fromTakerPending ? {} : {
               makerFilledAt: now,
               // makerFilledPrice = "매수가" (UI buyPriceKrw)
-              // TAKER_SELL_FIRST:  takerCoin BID 체결 단가 (filledMakerKrw ÷ qty)
-              // MAKER_SELL_FIRST:  takerCoin IOC 매수 단가 (filledMakerKrw ÷ qty)
+              // TAKER_SELL_FIRST:  takerCoin BID 체결 단가 (filledMakerKrw ÷ filledQty)
+              // MAKER_SELL_FIRST:  takerCoin IOC 매수 단가 (filledMakerKrw ÷ buyFilledQty) — 실제 매수 수량 기준
               // MAKER_BUY_FIRST:   makerCoin BID 주문가 (makerOrderPrice)
-              makerFilledPrice: (legOrder === 'TAKER_SELL_FIRST' || legOrder === 'MAKER_SELL_FIRST')
-                ? Math.round(result.filledMakerKrw / Math.max(result.filledQty, 1e-9))
-                : (pending?.makerOrderPrice ?? null),
+              makerFilledPrice: legOrder === 'MAKER_SELL_FIRST'
+                ? Math.round(result.filledMakerKrw / Math.max(result.buyFilledQty ?? result.filledQty, 1e-9))
+                : legOrder === 'TAKER_SELL_FIRST'
+                  ? Math.round(result.filledMakerKrw / Math.max(result.filledQty, 1e-9))
+                  : (pending?.makerOrderPrice ?? null),
             }),
             takerExecutedAt: now,
             // takerMarketBid = "매도가" (UI sellPriceKrw)
