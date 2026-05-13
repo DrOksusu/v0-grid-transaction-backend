@@ -25,20 +25,22 @@ export interface SpreadGateResult {
  * @param takerBook  taker 거래소 호가 { bid, ask }
  * @param direction 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST' | 'MAKER_SELL_FIRST'
  * @param minSpreadBps 최소 수익성 스프레드 (bp). 0이면 게이팅 비활성.
+ * @param bidOffsetKrw MAKER_SELL_FIRST 전용: 실제 주문가 = ask - bidOffsetKrw. 기본 0.
  */
 export function isCrossSpreadProfitable(
   makerBook: { bid: number; ask: number },
   takerBook: { bid: number; ask: number },
   direction: 'MAKER_BUY_FIRST' | 'TAKER_SELL_FIRST' | 'MAKER_SELL_FIRST',
   minSpreadBps: number,
+  bidOffsetKrw: number = 0,
 ): SpreadGateResult {
   let numerator: number;
   let denominator: number;
   if (direction === 'MAKER_BUY_FIRST') {
     numerator = takerBook.bid; denominator = makerBook.bid;
   } else if (direction === 'MAKER_SELL_FIRST') {
-    // makerCoin ASK 매도 → takerCoin IOC 매수(takerAsk): 받은 금액 / 지불 금액
-    numerator = makerBook.ask; denominator = takerBook.ask;
+    // 실제 주문가(ask - bidOffsetKrw) 기준으로 수익성 계산
+    numerator = makerBook.ask - bidOffsetKrw; denominator = takerBook.ask;
   } else {
     // TAKER_SELL_FIRST: IOC 매수는 takerAsk에 체결
     numerator = makerBook.bid; denominator = takerBook.ask;

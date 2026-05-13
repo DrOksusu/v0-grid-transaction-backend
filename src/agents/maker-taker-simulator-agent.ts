@@ -188,7 +188,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           },
         });
       } else if (direction === 'MAKER_SELL_FIRST') {
-        const gate = isCrossSpreadProfitable(makerNorm, takerNorm, 'MAKER_SELL_FIRST', bot.minSpreadBps);
+        const gate = isCrossSpreadProfitable(makerNorm, takerNorm, 'MAKER_SELL_FIRST', bot.minSpreadBps, bot.bidOffsetKrw);
         if (!gate.ok) return;
 
         const makerOrderPrice = makerNorm.ask - bot.bidOffsetKrw;
@@ -542,7 +542,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       const direction = decideLegOrder(makerBook, takerBook, bot.sellStrategy ?? 'TAKER_SELL_FIRST');
 
       // 스프레드 게이트: 거래소 조합에 무관하게 항상 먼저 체크
-      const gate = isCrossSpreadProfitable(makerBook, takerBook, direction, bot.minSpreadBps);
+      const gate = isCrossSpreadProfitable(makerBook, takerBook, direction, bot.minSpreadBps, direction === 'MAKER_SELL_FIRST' ? bot.bidOffsetKrw : 0);
       if (!gate.ok) {
         console.log(
           `[MakerTakerSimulatorAgent] bot ${bot.id} spread gate fail: ${gate.spreadBps}bp < ${bot.minSpreadBps}bp (${makerExchange}→${takerExchange} ${bot.makerCoin}/${bot.takerCoin})`,
