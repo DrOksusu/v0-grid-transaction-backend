@@ -500,6 +500,11 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             pending.status === 'TAKER_PENDING' && pending.feeKrw != null
               ? Number(pending.feeKrw)
               : null,
+          // TAKER_PENDING 재주문용 — takerMarketBid에 임시 저장된 목표 ASK가
+          takerAskPrice:
+            pending.status === 'TAKER_PENDING' && pending.takerMarketBid != null
+              ? Number(pending.takerMarketBid)
+              : null,
         }
       : null;
 
@@ -755,6 +760,23 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
               ` | LIVE taker ASK placed (uuid=${result.takerOrderUuid} price=${Math.round(result.makerGrossKrw / Math.max(result.makerFilledQty, 1e-9))} qty=${result.makerFilledQty.toFixed(8)})`,
           },
         });
+        return;
+      }
+
+      case 'taker_requeued': {
+        await (prisma.makerTakerSimTrade as any).update({
+          where: { id: result.pendingId },
+          data: {
+            takerOrderUuid: result.newTakerOrderUuid,
+            makerFilledAt: new Date(), // 타이머 리셋 — 새 maxPendingMs 카운트다운 시작
+            notes:
+              (pending?.notes ?? '') +
+              ` | taker_requeued(ask=${result.takerAskPrice}) at ${new Date().toISOString()}`,
+          },
+        });
+        console.log(
+          `[MakerTakerSimulatorAgent] bot ${bot.id} #${result.pendingId} TAKER_PENDING 재주문 (uuid=${result.newTakerOrderUuid} ask=${result.takerAskPrice})`,
+        );
         return;
       }
 

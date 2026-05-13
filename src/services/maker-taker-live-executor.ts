@@ -59,6 +59,8 @@ export type PendingTradeInput = {
   makerFilledGrossKrw: number | null;
   /** TAKER_PENDING 상태: maker 체결 수수료 */
   makerFilledFeeKrw: number | null;
+  /** TAKER_PENDING 상태: taker ASK 목표 단가 (타임아웃 재주문 시 재사용) */
+  takerAskPrice: number | null;
 };
 
 /** 결과 — discriminated union */
@@ -85,6 +87,7 @@ export type LiveExecutorResult =
       takerAskPrice: number;
     }
   | { kind: 'taker_expired'; pendingId: bigint; partialFillKrw?: number; partialFillQty?: number; partialFeeKrw?: number }
+  | { kind: 'taker_requeued'; pendingId: bigint; newTakerOrderUuid: string; takerAskPrice: number }
   | {
       kind: 'filled';
       pendingId: bigint;
@@ -396,6 +399,22 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
           partialFillQty: finalPoll.filledQty,
           partialFeeKrw: finalPoll.feeKrw,
         };
+      }
+      // 부분체결 없고 killSwitch 꺼져 있으면 원래 가격에 재주문 (봇 삭제 전까지 무한 반복)
+      if (!bot.killSwitch && pending.takerAskPrice) {
+        const newOrderId = await takerLeg.placeMakerAsk(
+          bot.takerCoin,
+          pending.takerAskPrice,
+          bot.quantity,
+        );
+        if (newOrderId) {
+          return {
+            kind: 'taker_requeued',
+            pendingId: pending.id,
+            newTakerOrderUuid: newOrderId,
+            takerAskPrice: pending.takerAskPrice,
+          };
+        }
       }
       return { kind: 'taker_expired', pendingId: pending.id };
     }
