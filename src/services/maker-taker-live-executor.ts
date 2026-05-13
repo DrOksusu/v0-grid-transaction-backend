@@ -257,7 +257,11 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     }
 
     if (elapsed > bot.maxPendingMs) {
-      await takerLeg.cancelOrder(pending.makerOrderUuid);
+      try {
+        await takerLeg.cancelOrder(pending.makerOrderUuid);
+      } catch {
+        // 이미 취소됐거나 만료된 주문 — expired로 처리
+      }
       return { kind: 'expired', pendingId: pending.id };
     }
 
