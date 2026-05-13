@@ -96,19 +96,7 @@ export type LiveExecutorResult =
       realizedSpreadBps: number;
     }
   | { kind: 'partial_hold'; pendingId: bigint; reason: string }
-  | {
-      kind: 'instant_filled';
-      filledQty: number;
-      sellGrossKrw: number;
-      sellFeeKrw: number;
-      buyGrossKrw: number;
-      buyFeeKrw: number;
-      paidFeeKrw: number;
-      netProfitKrw: number;
-      realizedSpreadBps: number;
-      avgBuyPrice: number;
-      avgSellPrice: number;
-    };
+;
 
 /**
  * Maker 체결가 기준으로 minSpreadBps를 보장하는 Taker ASK 가격 계산.
@@ -193,37 +181,22 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       return { kind: 'noop' };
     }
 
-    // 팔린 수량 그대로 매수 — KRW 잔고는 충분히 유지하므로 예산 cap 없음
-    const buyResult = await takerLeg.buyIoc(bot.takerCoin, sellResult.filledQty, takerBook.ask);
-    if (!buyResult) {
+    // gate 시점 ask 가격으로 지정가 BID — IOC 대신 체결될 때까지 대기 (슬리피지 방지)
+    const orderId = await takerLeg.placeMakerBid(bot.takerCoin, takerBook.ask, sellResult.filledQty);
+    if (!orderId) {
       console.error(
-        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: makerCoin 매도 후 takerCoin IOC 매수 실패 — KRW 손실 가능`,
+        `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: makerCoin 매도 후 takerCoin 지정가 BID 실패 — KRW 손실 가능`,
       );
       return { kind: 'noop' };
     }
 
-    const paidFeeKrw = sellResult.feeKrw + buyResult.feeKrw;
-    const netProfitKrw = sellResult.grossKrw - buyResult.grossKrw - paidFeeKrw;
-    const avgBuyPrice = Math.round(buyResult.grossKrw / Math.max(buyResult.filledQty, 1e-9));
-    const avgSellPriceRound = Math.round(avgIocPrice);
-    // 단가 비율로 spread 계산 — KRW 총액 비율은 수량 불일치(fee cap)로 부풀려짐
-    const realizedSpreadBps =
-      avgBuyPrice > 0
-        ? Math.floor((avgSellPriceRound / avgBuyPrice - 1) * 10000)
-        : 0;
-
     return {
-      kind: 'instant_filled',
-      filledQty: buyResult.filledQty,
-      sellGrossKrw: sellResult.grossKrw,
-      sellFeeKrw: sellResult.feeKrw,
-      buyGrossKrw: buyResult.grossKrw,
-      buyFeeKrw: buyResult.feeKrw,
-      paidFeeKrw,
-      netProfitKrw,
-      realizedSpreadBps,
-      avgBuyPrice,
-      avgSellPrice: avgSellPriceRound,
+      kind: 'placed',
+      makerOrderUuid: orderId,
+      makerOrderPrice: takerBook.ask,
+      legOrder: 'TAKER_SELL_FIRST',
+      takerFirstCostKrw: sellResult.grossKrw,
+      takerFirstFeeKrw: sellResult.feeKrw,
     };
   }
 

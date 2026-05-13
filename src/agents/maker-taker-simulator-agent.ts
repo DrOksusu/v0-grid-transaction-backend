@@ -55,7 +55,7 @@ function isBookDataSuspect(makerBid: number, takerBid: number, botId: number): b
   return false;
 }
 
-/** instant_filled 직후 동일 봇 재발화 방지 쿨다운 (ms) */
+/** 동일 봇 연속 재발화 방지 쿨다운 (ms) */
 const INSTANT_FILL_COOLDOWN_MS = 10_000;
 
 export class MakerTakerSimulatorAgent extends BaseAgent {
@@ -64,7 +64,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   private upbitClients = new Map<number, { upbit: UpbitService; cache: BalanceCache }>();
   private bithumbClients = new Map<number, BithumbClient>();
   private bithumbBalanceCaches = new Map<number, { data: Record<string, number>; at: number }>();
-  /** instant_filled 직후 재발화 방지: botId → 마지막 체결 시각(ms) */
+  /** 연속 재발화 방지: botId → 마지막 발화 시각(ms) */
   private recentlyFiredBots = new Map<number, number>();
 
   constructor() {
@@ -433,7 +433,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   ): Promise<void> {
     if (bot.killSwitch) return;
 
-    // instant_filled 직후 10초 쿨다운 — PENDING 없는 상태에서 연속 발화로 인한 손실 방지
+    // 10초 쿨다운 — WS 이벤트 연속 발화로 인한 중복 진입 방지
     const lastFired = this.recentlyFiredBots.get(bot.id);
     if (lastFired && Date.now() - lastFired < INSTANT_FILL_COOLDOWN_MS) return;
     // async 시작 전 즉시 등록 — await 중 다른 WS 이벤트가 쿨다운을 우회하는 race condition 방지
@@ -672,7 +672,6 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     const invalidatesBalance =
       result.kind === 'placed' ||
       result.kind === 'filled' ||
-      result.kind === 'instant_filled' ||
       result.kind === 'partial_hold' ||
       result.kind === 'taker_placed';
     if (invalidatesBalance && upbitClient) {
@@ -824,40 +823,6 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             notes:
               (pending?.notes ?? '') +
               ` | LIVE FILLED[${legOrder}] sell=${result.filledSellKrw} buy=${result.filledMakerKrw} fees=${feeKrw} net=${netProfitKrw}`,
-          },
-        });
-        return;
-      }
-
-      case 'instant_filled': {
-        const now = new Date();
-        const grossProfitKrw = +(result.sellGrossKrw - result.buyGrossKrw).toFixed(4);
-        const feeKrw = +result.paidFeeKrw.toFixed(4);
-        const netProfitKrw = +result.netProfitKrw.toFixed(4);
-        // instant_filled = TAKER_SELL_FIRST 즉시 체결
-        // makerFilledPrice = takerCoin(매수한 코인) 단가 = avgBuyPrice (매수가로 표시)
-        // takerMarketBid  = makerCoin(매도한 코인) 실제 IOC 체결 단가 = avgSellPrice (매도가로 표시)
-        await (prisma.makerTakerSimTrade as any).create({
-          data: {
-            botId: bot.id,
-            makerCoin: bot.makerCoin,
-            takerCoin: bot.takerCoin,
-            quantity: result.filledQty,
-            makerOrderPrice: result.avgBuyPrice,
-            status: 'FILLED',
-            live: true,
-            legOrder: bot.sellStrategy ?? 'TAKER_SELL_FIRST',
-            takerFirstCostKrw: result.sellGrossKrw,
-            takerFirstFeeKrw: result.sellFeeKrw,
-            makerFilledAt: now,
-            makerFilledPrice: result.avgBuyPrice,
-            takerExecutedAt: now,
-            takerMarketBid: result.avgSellPrice,
-            grossProfitKrw,
-            feeKrw,
-            netProfitKrw,
-            realizedSpreadBps: result.realizedSpreadBps,
-            notes: `LIVE INSTANT FILLED [TAKER_SELL_FIRST] sell=${result.sellGrossKrw.toFixed(2)} buy=${result.buyGrossKrw.toFixed(2)} fees=${feeKrw} net=${netProfitKrw}`,
           },
         });
         return;
