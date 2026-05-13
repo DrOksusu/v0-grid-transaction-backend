@@ -455,6 +455,8 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     if (!makerBookRaw || !takerBookRaw) {
       if (!makerBookRaw) console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} ${makerExchange} ${bot.makerCoin} 호가 stale — 스킵`);
       if (!takerBookRaw) console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} ${takerExchange} ${bot.takerCoin} 호가 stale — 스킵`);
+      // 호가 stale이어도 만료된 pending trade는 강제 처리 (주문 취소 + EXPIRED 전환)
+      await this.forceExpireOverduePending(bot);
       return;
     }
 
@@ -905,5 +907,49 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     for (const [k, v] of Object.entries(full)) out[k] = v.available;
     this.bithumbBalanceCaches.set(userId, { data: out, at: Date.now() });
     return out;
+  }
+
+  /**
+   * 호가 stale 등으로 정상 경로가 막혔을 때 만료된 pending trade를 강제 EXPIRED로 전환.
+   * 주문 취소 후 DB 업데이트. 체결 race condition은 무시 (stale 상황이므로 안전 우선).
+   */
+  private async forceExpireOverduePending(bot: any): Promise<void> {
+    const pending = await (prisma.makerTakerSimTrade as any).findFirst({
+      where: { botId: bot.id, status: { in: ['PENDING', 'TAKER_PENDING'] }, live: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!pending) return;
+
+    const elapsed = Date.now() - pending.createdAt.getTime();
+    if (elapsed <= bot.maxPendingMs) return;
+
+    const elapsedMin = Math.floor(elapsed / 60_000);
+    console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} 호가 stale 중 overdue pending #${pending.id} (${elapsedMin}min) → force-expire`);
+
+    // 주문 취소 시도 (이미 만료/취소됐을 수 있으므로 오류 무시)
+    try {
+      const makerExchange: string = bot.makerExchange ?? 'upbit';
+      const takerExchange: string = bot.takerExchange ?? 'upbit';
+      const legOrder: string = pending.legOrder ?? 'MAKER_BUY_FIRST';
+      // TAKER_SELL_FIRST pending: 주문이 takerLeg에 있음
+      const cancelOnExchange = legOrder === 'TAKER_SELL_FIRST' ? takerExchange : makerExchange;
+      if (cancelOnExchange === 'upbit') {
+        const c = await this.getUpbitClientFor(bot.userId);
+        await c.upbit.cancelOrder(pending.makerOrderUuid);
+      } else {
+        const c = await this.getBithumbClientFor(bot.userId);
+        await c.cancelOrder(pending.makerOrderUuid);
+      }
+    } catch {
+      // 이미 취소됐거나 체결 — 무시
+    }
+
+    await (prisma.makerTakerSimTrade as any).update({
+      where: { id: pending.id },
+      data: {
+        status: 'EXPIRED',
+        notes: (pending.notes ?? '') + ` | force-expired: stale orderbook after ${Math.floor(elapsed / 60_000)}min`,
+      },
+    });
   }
 }

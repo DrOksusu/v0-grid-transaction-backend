@@ -136,13 +136,19 @@ export class UpbitLeg implements ExchangeLeg {
   async pollOrder(
     orderId: string,
   ): Promise<{ filled: boolean; filledQty: number; grossKrw: number; feeKrw: number }> {
-    const status: any = await this.upbit.getOrder(orderId);
-    const filledQty = parseFloat(status?.executed_volume || '0');
-    const grossKrw = extractKrw(status);
-    const feeKrw = parseFloat(status?.paid_fee || '0');
-    // state === 'done' 일 때만 완전 체결로 판단 (state==='wait'은 부분체결 포함 미완료)
-    const fullyFilled = status?.state === 'done' && filledQty > 0 && grossKrw > 0;
-    return { filled: fullyFilled, filledQty, grossKrw, feeKrw };
+    try {
+      const status: any = await this.upbit.getOrder(orderId);
+      const filledQty = parseFloat(status?.executed_volume || '0');
+      const grossKrw = extractKrw(status);
+      const feeKrw = parseFloat(status?.paid_fee || '0');
+      // state === 'done' 일 때만 완전 체결로 판단 (state==='wait'은 부분체결 포함 미완료)
+      const fullyFilled = status?.state === 'done' && filledQty > 0 && grossKrw > 0;
+      return { filled: fullyFilled, filledQty, grossKrw, feeKrw };
+    } catch (err: any) {
+      // API 오류(404, 네트워크 등) → 미체결 처리. elapsed 체크가 만료를 담당.
+      console.warn(`[UpbitLeg] pollOrder ${orderId} 실패 — 미체결로 처리:`, err.message);
+      return { filled: false, filledQty: 0, grossKrw: 0, feeKrw: 0 };
+    }
   }
 
   async placeMakerAsk(symbol: string, price: number, quantity: number): Promise<string | null> {
@@ -224,14 +230,20 @@ export class BithumbLeg implements ExchangeLeg {
   async pollOrder(
     orderId: string,
   ): Promise<{ filled: boolean; filledQty: number; grossKrw: number; feeKrw: number }> {
-    const order = await this.client.getOrder(orderId);
-    const filled = order.status === 'filled' && order.filledQty > 0;
-    return {
-      filled,
-      filledQty: order.filledQty,
-      grossKrw: order.avgFillPrice * order.filledQty,
-      feeKrw: order.totalFeeKrw,
-    };
+    try {
+      const order = await this.client.getOrder(orderId);
+      const filled = order.status === 'filled' && order.filledQty > 0;
+      return {
+        filled,
+        filledQty: order.filledQty,
+        grossKrw: order.avgFillPrice * order.filledQty,
+        feeKrw: order.totalFeeKrw,
+      };
+    } catch (err: any) {
+      // API 오류 → 미체결 처리. elapsed 체크가 만료를 담당.
+      console.warn(`[BithumbLeg] pollOrder ${orderId} 실패 — 미체결로 처리:`, err.message);
+      return { filled: false, filledQty: 0, grossKrw: 0, feeKrw: 0 };
+    }
   }
 
   async placeMakerAsk(symbol: string, price: number, quantity: number): Promise<string | null> {
