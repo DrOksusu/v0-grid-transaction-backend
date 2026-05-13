@@ -284,11 +284,8 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
         };
       }
 
-      // takerCoin IOC 매수 — askQty 캡 제거(자산 불균형 유발), maxBuyGrossKrwMs가 budget 상한 담당
-      const maxBuyGrossKrwMs = Math.floor(
-        ((poll.grossKrw - poll.feeKrw) * 10000) / (10000 + bot.takerFeeBps),
-      );
-      const buyResult = await takerLeg.buyIoc(bot.takerCoin, poll.filledQty, takerBook.ask, maxBuyGrossKrwMs);
+      // takerCoin IOC 매수 — 매도 대금 전액을 budget 상한으로 사용해 filledQty 전량 매수 보장
+      const buyResult = await takerLeg.buyIoc(bot.takerCoin, poll.filledQty, takerBook.ask, poll.grossKrw);
       if (!buyResult) {
         console.error(
           `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST: maker ASK 체결 후 takerLeg buyIoc 실패 — KRW 손실 가능`,
