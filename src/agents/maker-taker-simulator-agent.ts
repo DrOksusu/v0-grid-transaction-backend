@@ -67,6 +67,13 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   /** 연속 재발화 방지: botId → 마지막 발화 시각(ms) */
   private recentlyFiredBots = new Map<number, number>();
 
+  // Spread 완화 상태 머신
+  private lastFilledAt: Date | null = null;
+  private spreadRelaxState: 'NORMAL' | 'RELAXED' = 'NORMAL';
+  private spreadRelaxEnteredAt: Date = new Date();
+  private readonly SPREAD_RELAX_WINDOW_MS = 20 * 60 * 1000;
+  private readonly SPREAD_RELAX_OFFSET_BPS = 12;
+
   constructor() {
     super({
       id: 'maker-taker-sim',
@@ -84,6 +91,21 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         console.error('[MakerTakerSimulatorAgent] evaluate unhandled:', err.message);
       });
     });
+
+    // lastFilledAt 초기화: 최근 FILLED 거래 시각으로 세팅
+    try {
+      const lastFill = await (prisma.makerTakerSimTrade as any).findFirst({
+        where: { live: true, status: 'FILLED' },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true },
+      });
+      if (lastFill) {
+        this.lastFilledAt = lastFill.createdAt;
+      }
+    } catch {
+      // DB 오류 시 null 유지 — NORMAL 상태에서 20분 타이머 시작
+    }
+
     console.log('[MakerTakerSimulatorAgent] 시작 (Upbit + Bithumb WS)');
   }
 
@@ -104,6 +126,49 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     // 이벤트 드리븐 — 사이클 루프 미사용
   }
 
+  private updateSpreadRelaxState(): void {
+    const elapsed = Date.now() - this.spreadRelaxEnteredAt.getTime();
+    if (elapsed < this.SPREAD_RELAX_WINDOW_MS) return;
+
+    if (this.spreadRelaxState === 'NORMAL') {
+      const noFillInWindow =
+        this.lastFilledAt === null ||
+        this.lastFilledAt.getTime() < this.spreadRelaxEnteredAt.getTime();
+      if (noFillInWindow) {
+        this.spreadRelaxState = 'RELAXED';
+        this.spreadRelaxEnteredAt = new Date();
+        console.log(
+          `[SpreadRelax] NORMAL→RELAXED: 20분간 FILLED 없음, -${this.SPREAD_RELAX_OFFSET_BPS}bp 완화`,
+        );
+      } else {
+        // 윈도우 내 fill 있었으면 타이머만 리셋
+        this.spreadRelaxEnteredAt = new Date();
+      }
+    } else {
+      // RELAXED 상태에서 20분 경과 → NORMAL 복원
+      this.spreadRelaxState = 'NORMAL';
+      this.spreadRelaxEnteredAt = new Date();
+      console.log('[SpreadRelax] RELAXED→NORMAL: 20분 경과, 기본 spread 복원');
+    }
+  }
+
+  private getEffectiveMinSpreadBps(bot: any): number {
+    if (this.spreadRelaxState === 'NORMAL') return bot.minSpreadBps;
+    const cancelBelowBps = (bot.makerFeeBps ?? 5) + (bot.takerFeeBps ?? 5);
+    const relaxed = bot.minSpreadBps - this.SPREAD_RELAX_OFFSET_BPS;
+    // watchdog이 즉시 취소하지 않도록 cancelBelowBps+1 이상 보장
+    return Math.max(cancelBelowBps + 1, relaxed);
+  }
+
+  private recordFill(): void {
+    this.lastFilledAt = new Date();
+    if (this.spreadRelaxState === 'RELAXED') {
+      this.spreadRelaxState = 'NORMAL';
+      this.spreadRelaxEnteredAt = new Date();
+      console.log('[SpreadRelax] RELAXED→NORMAL: FILLED 발생, 기본 spread 즉시 복원');
+    }
+  }
+
   private async evaluate(): Promise<void> {
     if (this.evaluateInFlight) return;
     this.evaluateInFlight = true;
@@ -113,6 +178,8 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         where: { enabled: true, killSwitch: false },
       });
       if (bots.length === 0) return;
+
+      this.updateSpreadRelaxState();
 
       const upbitBooks = getAllStablecoinOrderbooks();
 
@@ -663,7 +730,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       quantity: Number(bot.quantity),
       maxPendingMs: bot.maxPendingMs,
       killSwitch: bot.killSwitch,
-      minSpreadBps: bot.minSpreadBps,
+      minSpreadBps: this.getEffectiveMinSpreadBps(bot),
       cancelBelowBps: (bot.makerFeeBps ?? 5) + (bot.takerFeeBps ?? 5),
       takerFeeBps: bot.takerFeeBps ?? 5,
       sellStrategy: bot.sellStrategy ?? 'TAKER_SELL_FIRST',
@@ -823,6 +890,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
 
       case 'filled': {
         const now = new Date();
+        this.recordFill();
         const grossProfitKrw = +(result.filledSellKrw - result.filledMakerKrw).toFixed(4);
         const feeKrw = +result.paidFeeKrw.toFixed(4);
         const netProfitKrw = +result.netProfitKrw.toFixed(4);
