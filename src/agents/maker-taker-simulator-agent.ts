@@ -72,7 +72,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   private spreadRelaxState: 'NORMAL' | 'RELAXED' = 'NORMAL';
   private spreadRelaxEnteredAt: Date = new Date();
   private readonly SPREAD_RELAX_WINDOW_MS = 20 * 60 * 1000;
-  private readonly SPREAD_RELAX_OFFSET_BPS = 12;
+  private readonly SPREAD_RELAX_TARGET_BPS = 12;
 
   constructor() {
     super({
@@ -138,7 +138,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         this.spreadRelaxState = 'RELAXED';
         this.spreadRelaxEnteredAt = new Date();
         console.log(
-          `[SpreadRelax] NORMAL→RELAXED: 20분간 FILLED 없음, -${this.SPREAD_RELAX_OFFSET_BPS}bp 완화`,
+          `[SpreadRelax] NORMAL→RELAXED: 20분간 FILLED 없음, minSpread → ${this.SPREAD_RELAX_TARGET_BPS}bp`,
         );
       } else {
         // 윈도우 내 fill 있었으면 타이머만 리셋
@@ -155,9 +155,8 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   private getEffectiveMinSpreadBps(bot: any): number {
     if (this.spreadRelaxState === 'NORMAL') return bot.minSpreadBps;
     const cancelBelowBps = (bot.makerFeeBps ?? 5) + (bot.takerFeeBps ?? 5);
-    const relaxed = bot.minSpreadBps - this.SPREAD_RELAX_OFFSET_BPS;
-    // watchdog이 즉시 취소하지 않도록 cancelBelowBps+1 이상 보장
-    return Math.max(cancelBelowBps + 1, relaxed);
+    // RELAXED: 12bp 고정. watchdog 취소 방지를 위해 cancelBelowBps+1 이상 보장
+    return Math.max(cancelBelowBps + 1, this.SPREAD_RELAX_TARGET_BPS);
   }
 
   private recordFill(): void {
