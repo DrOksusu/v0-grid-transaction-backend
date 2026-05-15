@@ -11,6 +11,7 @@ import {
   listMakerTakerTrades,
   getOrderbooks,
   getBithumbOrderbooks,
+  getCoinoneOrderbooks,
   getCrossExchangeLatest,
 } from '../controllers/stablecoin-admin.controller';
 
@@ -36,6 +37,7 @@ router.get('/maker-taker-trades', listMakerTakerTrades);
 // 모니터링 탭 — 실시간 호가
 router.get('/orderbooks', getOrderbooks);
 router.get('/bithumb-orderbooks', getBithumbOrderbooks);
+router.get('/coinone-orderbooks', getCoinoneOrderbooks);
 router.get('/cross-exchange-latest', getCrossExchangeLatest);
 
 export default router;

@@ -7,6 +7,10 @@ import { reconcileBotAssets } from '../services/maker-taker-asset-reconciliation
 import { stablecoinPrisma } from '../config/database';
 import mainPrisma from '../config/database';
 import { getBithumbStablecoinOrderbook, getAllBithumbStablecoinOrderbooks } from '../services/bithumb-stablecoin-ws-manager';
+import { getAllCoinoneStablecoinOrderbooks, subscribeCoinoneStablecoinOrderbooks } from '../services/coinone-stablecoin-price-manager';
+
+// 코인원 폴링은 컨트롤러 import 시점에 자동 시작 (모니터링 전용)
+subscribeCoinoneStablecoinOrderbooks();
 import { BithumbClient } from '../services/exchange/bithumb-client';
 import { UpbitService } from '../services/upbit.service';
 import { decrypt } from '../utils/encryption';
@@ -553,6 +557,24 @@ export const getOrderbooks = async (req: AuthRequest, res: Response, next: NextF
 export const getBithumbOrderbooks = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const all = getAllBithumbStablecoinOrderbooks();
+    const coins = ['USDT', 'USDC', 'USD1', 'USDS', 'USDE'] as const;
+    const books: Record<string, any> = {};
+    for (const coin of coins) {
+      const top = all.get(coin);
+      if (top) {
+        books[coin] = { bid: top.bid, ask: top.ask, timestamp: top.timestamp };
+      }
+    }
+    res.json({ books, fetchedAt: Date.now() });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/** GET /api/admin/stablecoin/coinone-orderbooks — 코인원 스테이블코인 5종 실시간 호가 */
+export const getCoinoneOrderbooks = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const all = getAllCoinoneStablecoinOrderbooks();
     const coins = ['USDT', 'USDC', 'USD1', 'USDS', 'USDE'] as const;
     const books: Record<string, any> = {};
     for (const coin of coins) {
