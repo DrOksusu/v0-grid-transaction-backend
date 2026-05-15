@@ -7,6 +7,7 @@
 
 import type { UpbitService } from './upbit.service';
 import type { BithumbClient } from './exchange/bithumb-client';
+import type { CoinoneClient } from './exchange/coinone-client';
 
 /** 거래소별 주문 수행 어댑터 */
 export interface ExchangeLeg {
@@ -253,5 +254,103 @@ export class BithumbLeg implements ExchangeLeg {
 
   async cancelOrder(orderId: string): Promise<void> {
     await this.client.cancelOrder(orderId);
+  }
+}
+
+/** 코인원 구현체 — cancel/poll 시 symbol 필요해서 내부 Map으로 추적 */
+export class CoinoneLeg implements ExchangeLeg {
+  private readonly orderSymbolMap = new Map<string, string>();
+
+  constructor(private readonly client: CoinoneClient) {}
+
+  async sellIoc(
+    symbol: string,
+    quantity: number,
+  ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
+    const placed = await this.client.placeMarketOrder('sell', symbol, quantity);
+    if (!placed.orderId) return null;
+    this.orderSymbolMap.set(placed.orderId, symbol);
+
+    for (let i = 0; i < 6; i++) {
+      const order = await this.client.getOrder(placed.orderId, symbol);
+      if (order.status === 'filled' && order.filledQty > 0) {
+        return {
+          filledQty: order.filledQty,
+          grossKrw: order.avgFillPrice * order.filledQty,
+          feeKrw: order.totalFeeKrw,
+        };
+      }
+      if (order.status === 'cancelled' || order.status === 'failed') return null;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return null;
+  }
+
+  async buyIoc(
+    symbol: string,
+    quantity: number,
+    priceHint: number,
+    maxKrwBudget?: number,
+  ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
+    const estimatedKrw = Math.ceil(quantity * priceHint);
+    const krwAmount = maxKrwBudget != null ? Math.min(estimatedKrw, maxKrwBudget) : estimatedKrw;
+    if (krwAmount <= 0) return null;
+
+    const placed = await this.client.placeMarketBuyKrw(symbol, krwAmount);
+    if (!placed.orderId) return null;
+    this.orderSymbolMap.set(placed.orderId, symbol);
+
+    for (let i = 0; i < 6; i++) {
+      const order = await this.client.getOrder(placed.orderId, symbol);
+      if (order.status === 'filled' && order.filledQty > 0) {
+        return {
+          filledQty: order.filledQty,
+          grossKrw: order.avgFillPrice * order.filledQty,
+          feeKrw: order.totalFeeKrw,
+        };
+      }
+      if (order.status === 'cancelled' || order.status === 'failed') return null;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return null;
+  }
+
+  async placeMakerBid(symbol: string, price: number, quantity: number): Promise<string | null> {
+    const resp = await this.client.buyLimit(symbol, price, quantity);
+    const orderId: string = resp?.order_id ?? null;
+    if (orderId) this.orderSymbolMap.set(orderId, symbol);
+    return orderId;
+  }
+
+  async pollOrder(
+    orderId: string,
+  ): Promise<{ filled: boolean; filledQty: number; grossKrw: number; feeKrw: number }> {
+    try {
+      const symbol = this.orderSymbolMap.get(orderId);
+      const order = await this.client.getOrder(orderId, symbol);
+      const filled = order.status === 'filled' && order.filledQty > 0;
+      return {
+        filled,
+        filledQty: order.filledQty,
+        grossKrw: order.avgFillPrice * order.filledQty,
+        feeKrw: order.totalFeeKrw,
+      };
+    } catch (err: any) {
+      console.warn(`[CoinoneLeg] pollOrder ${orderId} 실패 — 미체결로 처리:`, err.message);
+      return { filled: false, filledQty: 0, grossKrw: 0, feeKrw: 0 };
+    }
+  }
+
+  async placeMakerAsk(symbol: string, price: number, quantity: number): Promise<string | null> {
+    const resp = await this.client.sellLimit(symbol, price, quantity);
+    const orderId: string = resp?.order_id ?? null;
+    if (orderId) this.orderSymbolMap.set(orderId, symbol);
+    return orderId;
+  }
+
+  async cancelOrder(orderId: string): Promise<void> {
+    const symbol = this.orderSymbolMap.get(orderId);
+    await this.client.cancelOrder(orderId, symbol);
+    this.orderSymbolMap.delete(orderId);
   }
 }

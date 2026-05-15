@@ -81,6 +81,13 @@ export function getAllCoinoneStablecoinOrderbooks(): ReadonlyMap<string, Coinone
   return new Map(cache);
 }
 
+/** 거래용 조회 — 10s 신선도 게이트 (빗썸 패턴과 동일). null = 데이터 없거나 낡음 */
+export function getCoinoneOrderbookForTrading(symbol: string): CoinoneOrderbookTop | null {
+  const entry = cache.get(symbol.toUpperCase());
+  if (!entry || Date.now() - entry.timestamp > 10_000) return null;
+  return entry;
+}
+
 /** WS 없이 REST만 쓰므로 항상 "연결됨"으로 간주 */
 export function isCoinoneStablecoinPolling(): boolean {
   return pollTimer !== null;

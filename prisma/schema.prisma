@@ -404,6 +404,7 @@ enum Exchange {
   bithumb
   mexc
   gateio
+  coinone
 }
 
 enum BotStatus {

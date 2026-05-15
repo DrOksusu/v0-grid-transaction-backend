@@ -28,13 +28,19 @@ import {
   type LiveBotInput,
   type LiveExecutorResult,
 } from '../services/maker-taker-live-executor';
-import { UpbitLeg, BithumbLeg } from '../services/exchange-leg';
+import { UpbitLeg, BithumbLeg, CoinoneLeg } from '../services/exchange-leg';
 import { tradingLock } from '../services/stablecoin-trading-lock';
 import { checkMakerPlacementBalance } from '../services/maker-taker-balance-precheck';
 import { shouldAutoPauseForMinBalance } from '../services/maker-taker-min-balance-guard';
 import { UpbitService } from '../services/upbit.service';
 import { BalanceCache } from '../services/upbit-balance-cache';
 import { BithumbClient } from '../services/exchange/bithumb-client';
+import { CoinoneClient } from '../services/exchange/coinone-client';
+import {
+  subscribeCoinoneStablecoinOrderbooks,
+  unsubscribeCoinoneStablecoinOrderbooks,
+  getCoinoneOrderbookForTrading,
+} from '../services/coinone-stablecoin-price-manager';
 import { decrypt } from '../utils/encryption';
 import { isMakerBookSpreadProfitable, isCrossSpreadProfitable, calcCrossSpreadBps } from '../services/maker-taker-spread-gate';
 
@@ -64,6 +70,8 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   private upbitClients = new Map<number, { upbit: UpbitService; cache: BalanceCache }>();
   private bithumbClients = new Map<number, BithumbClient>();
   private bithumbBalanceCaches = new Map<number, { data: Record<string, number>; at: number }>();
+  private coinoneClients = new Map<number, CoinoneClient>();
+  private coinoneBalanceCaches = new Map<number, { data: Record<string, number>; at: number }>();
   /** 연속 재발화 방지: botId → 마지막 발화 시각(ms) */
   private recentlyFiredBots = new Map<number, number>();
 
@@ -86,6 +94,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   protected async onStart(): Promise<void> {
     subscribeStablecoinOrderbooks();
     subscribeBithumbStablecoinOrderbooks();
+    subscribeCoinoneStablecoinOrderbooks();
     this.unsubscribe = onStablecoinOrderbookUpdate(() => {
       this.evaluate().catch((err: Error) => {
         console.error('[MakerTakerSimulatorAgent] evaluate unhandled:', err.message);
@@ -116,9 +125,12 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     }
     unsubscribeStablecoinOrderbooks();
     unsubscribeBithumbStablecoinOrderbooks();
+    unsubscribeCoinoneStablecoinOrderbooks();
     this.upbitClients.clear();
     this.bithumbClients.clear();
     this.bithumbBalanceCaches.clear();
+    this.coinoneClients.clear();
+    this.coinoneBalanceCaches.clear();
     console.log('[MakerTakerSimulatorAgent] 정지');
   }
 
@@ -508,15 +520,19 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     const makerExchange: string = bot.makerExchange ?? 'upbit';
     const takerExchange: string = bot.takerExchange ?? 'upbit';
 
-    // 거래 결정용 호가 조회: Bithumb은 10초 freshness 임계 적용 (stale 데이터로 게이트 우회 방지)
+    // 거래 결정용 호가 조회: Bithumb/Coinone은 10초 freshness 임계 적용 (stale 데이터로 게이트 우회 방지)
     const makerBookRaw =
       makerExchange === 'bithumb'
         ? getBithumbOrderbookForTrading(bot.makerCoin)
-        : upbitBooks.get(`KRW-${bot.makerCoin}`);
+        : makerExchange === 'coinone'
+          ? getCoinoneOrderbookForTrading(bot.makerCoin)
+          : upbitBooks.get(`KRW-${bot.makerCoin}`);
     const takerBookRaw =
       takerExchange === 'bithumb'
         ? getBithumbOrderbookForTrading(bot.takerCoin)
-        : upbitBooks.get(`KRW-${bot.takerCoin}`);
+        : takerExchange === 'coinone'
+          ? getCoinoneOrderbookForTrading(bot.takerCoin)
+          : upbitBooks.get(`KRW-${bot.takerCoin}`);
 
     if (!makerBookRaw || !takerBookRaw) {
       if (!makerBookRaw) console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} ${makerExchange} ${bot.makerCoin} 호가 stale — 스킵`);
@@ -529,11 +545,15 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     const makerBook: NormalizedBook =
       makerExchange === 'bithumb'
         ? { bid: (makerBookRaw as any).bid, bidQty: (makerBookRaw as any).bidQty, ask: (makerBookRaw as any).ask, askQty: (makerBookRaw as any).askQty }
-        : normalizeUpbit(makerBookRaw as OrderbookTop);
+        : makerExchange === 'coinone'
+          ? { bid: (makerBookRaw as any).bid, ask: (makerBookRaw as any).ask }
+          : normalizeUpbit(makerBookRaw as OrderbookTop);
     const takerBook: NormalizedBook =
       takerExchange === 'bithumb'
         ? { bid: (takerBookRaw as any).bid, ask: (takerBookRaw as any).ask, askQty: (takerBookRaw as any).askQty }
-        : normalizeUpbit(takerBookRaw as OrderbookTop);
+        : takerExchange === 'coinone'
+          ? { bid: (takerBookRaw as any).bid, ask: (takerBookRaw as any).ask }
+          : normalizeUpbit(takerBookRaw as OrderbookTop);
 
     if (isBookDataSuspect(makerBook.bid, takerBook.bid, bot.id)) return;
 
@@ -577,9 +597,11 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     // 거래소 클라이언트 확보
     let upbitClient: { upbit: UpbitService; cache: BalanceCache } | null = null;
     let bithumbClient: BithumbClient | null = null;
+    let coinoneClient: CoinoneClient | null = null;
 
     const needsUpbit = makerExchange === 'upbit' || takerExchange === 'upbit';
     const needsBithumb = makerExchange === 'bithumb' || takerExchange === 'bithumb';
+    const needsCoinone = makerExchange === 'coinone' || takerExchange === 'coinone';
 
     if (needsUpbit) {
       try {
@@ -599,15 +621,28 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       }
     }
 
+    if (needsCoinone) {
+      try {
+        coinoneClient = await this.getCoinoneClientFor(bot.userId);
+      } catch (err: any) {
+        console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} Coinone credential:`, err.message);
+        return;
+      }
+    }
+
     // ExchangeLeg 생성
     const makerLeg =
       makerExchange === 'bithumb'
         ? new BithumbLeg(bithumbClient!)
-        : new UpbitLeg(upbitClient!.upbit);
+        : makerExchange === 'coinone'
+          ? new CoinoneLeg(coinoneClient!)
+          : new UpbitLeg(upbitClient!.upbit);
     const takerLeg =
       takerExchange === 'bithumb'
         ? new BithumbLeg(bithumbClient!)
-        : new UpbitLeg(upbitClient!.upbit);
+        : takerExchange === 'coinone'
+          ? new CoinoneLeg(coinoneClient!)
+          : new UpbitLeg(upbitClient!.upbit);
 
     // 잔고 사전 체크 (pending 없을 때만)
     let preCheckOk = true;
@@ -715,6 +750,46 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             }
           }
         }
+      } else if (preCheckOk && needsCoinone && coinoneClient) {
+        // Coinone 관련 봇 잔고 사전 체크
+        let coinoneAvail: Record<string, number> = {};
+        try {
+          coinoneAvail = await this.getCoinoneAvailableBalances(bot.userId, coinoneClient);
+        } catch (err: any) {
+          console.error(`[MakerTakerSimulatorAgent] bot ${bot.id} Coinone 잔고 fetch 실패:`, err.message);
+          preCheckOk = false;
+        }
+
+        if (preCheckOk) {
+          if ((direction === 'TAKER_SELL_FIRST' || direction === 'MAKER_SELL_FIRST') && makerExchange === 'coinone') {
+            const available = coinoneAvail[bot.makerCoin] ?? 0;
+            if (available < Number(bot.quantity)) {
+              console.log(
+                `[MakerTakerSimulatorAgent] bot ${bot.id} Coinone ${direction} 잔고 부족: ${bot.makerCoin} available=${available.toFixed(4)} < quantity=${bot.quantity}`,
+              );
+              preCheckOk = false;
+            }
+          } else if (direction === 'MAKER_BUY_FIRST' && makerExchange === 'coinone') {
+            const krwAvail = coinoneAvail['KRW'] ?? 0;
+            const requiredKrw = makerBook.ask * Number(bot.quantity) * 1.01;
+            if (krwAvail < requiredKrw) {
+              console.log(
+                `[MakerTakerSimulatorAgent] bot ${bot.id} Coinone MAKER_BUY_FIRST KRW 부족: available=${krwAvail.toFixed(0)} < required=${requiredKrw.toFixed(0)}`,
+              );
+              preCheckOk = false;
+            }
+            if (preCheckOk) {
+              const takerCoinAvail =
+                takerExchange === 'coinone' ? (coinoneAvail[bot.takerCoin] ?? 0) : 0;
+              if (takerExchange === 'coinone' && takerCoinAvail < Number(bot.quantity)) {
+                console.log(
+                  `[MakerTakerSimulatorAgent] bot ${bot.id} Coinone MAKER_BUY_FIRST takerCoin 잔고 부족: ${bot.takerCoin} available=${takerCoinAvail.toFixed(4)} < quantity=${bot.quantity}`,
+                );
+                preCheckOk = false;
+              }
+            }
+          }
+        }
       }
     }
 
@@ -757,6 +832,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     }
     if (invalidatesBalance) {
       this.bithumbBalanceCaches.delete(bot.userId);
+      this.coinoneBalanceCaches.delete(bot.userId);
     }
 
     await this.persistLiveResult(bot, pending, result);
@@ -1006,6 +1082,38 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     return out;
   }
 
+  private async getCoinoneClientFor(userId: number): Promise<CoinoneClient> {
+    const existing = this.coinoneClients.get(userId);
+    if (existing) return existing;
+
+    const credential = await mainPrisma.credential.findFirst({
+      where: { userId, exchange: 'coinone' as any },
+    });
+    if (!credential) throw new Error(`Coinone credential not found for userId=${userId}`);
+
+    const client = new CoinoneClient({
+      accessKey: decrypt(credential.apiKey),
+      secretKey: decrypt(credential.secretKey),
+    });
+    this.coinoneClients.set(userId, client);
+    return client;
+  }
+
+  private async getCoinoneAvailableBalances(
+    userId: number,
+    client: CoinoneClient,
+  ): Promise<Record<string, number>> {
+    const TTL_MS = 5_000;
+    const cached = this.coinoneBalanceCaches.get(userId);
+    if (cached && Date.now() - cached.at < TTL_MS) return cached.data;
+
+    const full = await client.getBalances();
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(full)) out[k] = v.available;
+    this.coinoneBalanceCaches.set(userId, { data: out, at: Date.now() });
+    return out;
+  }
+
   /**
    * 호가 stale 등으로 정상 경로가 막혔을 때 만료된 pending trade를 강제 EXPIRED로 전환.
    * 주문 취소 후 DB 업데이트. 체결 race condition은 무시 (stale 상황이므로 안전 우선).
@@ -1033,6 +1141,10 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       if (cancelOnExchange === 'upbit') {
         const c = await this.getUpbitClientFor(bot.userId);
         await c.upbit.cancelOrder(pending.makerOrderUuid);
+      } else if (cancelOnExchange === 'coinone') {
+        const c = await this.getCoinoneClientFor(bot.userId);
+        const cancelCoin = legOrder === 'TAKER_SELL_FIRST' ? bot.takerCoin : bot.makerCoin;
+        await c.cancelOrder(pending.makerOrderUuid, cancelCoin);
       } else {
         const c = await this.getBithumbClientFor(bot.userId);
         await c.cancelOrder(pending.makerOrderUuid);

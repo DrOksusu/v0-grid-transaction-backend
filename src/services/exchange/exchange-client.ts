@@ -24,7 +24,7 @@ export interface BalanceEntry {
 }
 
 export interface ExchangeClient {
-  exchangeName: 'upbit' | 'bithumb';
+  exchangeName: 'upbit' | 'bithumb' | 'coinone';
 
   /** 단일 코인 최우선 호가 + 수량 조회. 실패 시 null */
   getOrderbookTop(symbol: string): Promise<OrderbookTop | null>;
