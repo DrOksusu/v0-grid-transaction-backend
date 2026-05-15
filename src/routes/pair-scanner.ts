@@ -135,7 +135,7 @@ router.patch(
     try {
       const userId = req.userId!;
       const id = parseInt(req.params.id, 10);
-      const { enabled, killSwitch, minSpreadBps, live, bidOffsetKrw, makerExchange, takerExchange, sellStrategy } = req.body;
+      const { enabled, killSwitch, minSpreadBps, takerUpgradeBps, live, bidOffsetKrw, makerExchange, takerExchange, sellStrategy } = req.body;
 
       const existing = await stablecoinPrisma.makerTakerSimBot.findFirst({ where: { id, userId } });
       if (!existing) {
@@ -148,6 +148,7 @@ router.patch(
       if (enabled !== undefined) patch.enabled = Boolean(enabled);
       if (killSwitch !== undefined) patch.killSwitch = Boolean(killSwitch);
       if (minSpreadBps !== undefined) patch.minSpreadBps = Number(minSpreadBps);
+      if ('takerUpgradeBps' in req.body) patch.takerUpgradeBps = takerUpgradeBps === null ? null : Number(takerUpgradeBps);
       if (live !== undefined) patch.live = Boolean(live);
       if (bidOffsetKrw !== undefined) patch.bidOffsetKrw = Number(bidOffsetKrw);
       if (makerExchange !== undefined) patch.makerExchange = String(makerExchange);

@@ -166,6 +166,12 @@ export const patchMakerBot = async (req: AuthRequest, res: Response, next: NextF
       if (!Number.isInteger(body.minSpreadBps) || body.minSpreadBps < 0) throw new AppError('Invalid body: minSpreadBps must be non-negative integer', 400);
       patch.minSpreadBps = body.minSpreadBps;
     }
+    if ('takerUpgradeBps' in body) {
+      if (body.takerUpgradeBps !== null && (!Number.isInteger(body.takerUpgradeBps) || body.takerUpgradeBps < 0)) {
+        throw new AppError('Invalid body: takerUpgradeBps must be null or non-negative integer', 400);
+      }
+      patch.takerUpgradeBps = body.takerUpgradeBps;
+    }
 
     const bot = await arbService.patchMakerBot(id, userId, patch);
     res.json(serializeMakerBot(bot));
