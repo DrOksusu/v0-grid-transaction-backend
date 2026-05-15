@@ -733,6 +733,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       cancelBelowBps: (bot.makerFeeBps ?? 5) + (bot.takerFeeBps ?? 5),
       takerFeeBps: bot.takerFeeBps ?? 5,
       sellStrategy: bot.sellStrategy ?? 'TAKER_SELL_FIRST',
+      takerUpgradeBps: (bot as any).takerUpgradeBps ?? null,
     };
 
     const result = await runLiveExecutor({

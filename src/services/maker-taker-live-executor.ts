@@ -38,6 +38,8 @@ export type LiveBotInput = {
   takerFeeBps: number;
   /** 봇별 매도 전략. TAKER_SELL_FIRST(기본) | MAKER_SELL_FIRST(지정가 ASK 대기) */
   sellStrategy: string;
+  /** PENDING 중 spread >= 이 값(bp)이면 maker 취소 후 즉시 taker IOC 매수. null=비활성 */
+  takerUpgradeBps: number | null;
 };
 
 /** 현재 PENDING 트레이드 스냅샷 */
@@ -557,6 +559,75 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
   }
 
   // 하위 상태 B: PENDING — maker BID 대기 중
+
+  // takerUpgrade: 현재 시장 스프레드가 threshold 이상이면 maker 취소 후 즉시 taker IOC 매수
+  // 예) USDS ask=1474, USDC bid=1480 → spread=(1480/1474-1)*10000≈40bp ≥ takerUpgradeBps=20 → 업그레이드
+  if (bot.takerUpgradeBps !== null && bot.takerUpgradeBps > 0 && makerBook.ask > 0) {
+    const upgradeSpreadBps = Math.floor((takerBook.bid / makerBook.ask - 1) * 10000);
+    if (upgradeSpreadBps >= bot.takerUpgradeBps) {
+      console.log(
+        `[LiveExecutor] bot ${bot.id} takerUpgrade: spread=${upgradeSpreadBps}bp >= threshold=${bot.takerUpgradeBps}bp — cancelling maker, buying via IOC (makerAsk=${makerBook.ask}, takerBid=${takerBook.bid})`,
+      );
+      try {
+        await makerLeg.cancelOrder(pending.makerOrderUuid);
+      } catch {
+        // 취소 직전 체결됐을 수 있음 — 폴링으로 확인
+      }
+      const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid);
+      if (postCancelPoll.filled && postCancelPoll.grossKrw > 0) {
+        // 레이스: 취소 시도 중 maker 체결 — 기존 race fill 경로 재사용
+        const raceAvgPrice = postCancelPoll.grossKrw / postCancelPoll.filledQty;
+        const raceAskPrice = calcTakerAskPrice(raceAvgPrice, takerBook.bid, bot.minSpreadBps);
+        console.log(
+          `[LiveExecutor] bot ${bot.id} takerUpgrade race: maker filled, taker ask @ ${raceAskPrice}`,
+        );
+        const raceTakerOrderId = await takerLeg.placeMakerAsk(bot.takerCoin, raceAskPrice, postCancelPoll.filledQty);
+        if (!raceTakerOrderId) {
+          return {
+            kind: 'partial_hold',
+            pendingId: pending.id,
+            reason: 'takerUpgrade race: maker filled but placeMakerAsk failed',
+          };
+        }
+        return {
+          kind: 'taker_placed',
+          pendingId: pending.id,
+          takerOrderUuid: raceTakerOrderId,
+          makerFilledQty: postCancelPoll.filledQty,
+          makerGrossKrw: postCancelPoll.grossKrw,
+          makerFeeKrw: postCancelPoll.feeKrw,
+          takerAskPrice: raceAskPrice,
+        };
+      }
+      // 취소 성공 — 현재 ask 가격으로 IOC 매수
+      const buyResult = await makerLeg.buyIoc(bot.makerCoin, bot.quantity, makerBook.ask);
+      if (!buyResult) {
+        // IOC 매수 실패 (유동성 없음) — spread_cancelled로 PENDING row 취소
+        return { kind: 'spread_cancelled', pendingId: pending.id };
+      }
+      // IOC 매수 성공 — taker ASK 배치
+      const upgradeAvgPrice = buyResult.grossKrw / buyResult.filledQty;
+      const upgradeAskPrice = calcTakerAskPrice(upgradeAvgPrice, takerBook.bid, bot.minSpreadBps);
+      const upgradeTakerOrderId = await takerLeg.placeMakerAsk(bot.takerCoin, upgradeAskPrice, buyResult.filledQty);
+      if (!upgradeTakerOrderId) {
+        return {
+          kind: 'partial_hold',
+          pendingId: pending.id,
+          reason: 'takerUpgrade: buyIoc succeeded but placeMakerAsk failed',
+        };
+      }
+      return {
+        kind: 'taker_placed',
+        pendingId: pending.id,
+        takerOrderUuid: upgradeTakerOrderId,
+        makerFilledQty: buyResult.filledQty,
+        makerGrossKrw: buyResult.grossKrw,
+        makerFeeKrw: buyResult.feeKrw,
+        takerAskPrice: upgradeAskPrice,
+      };
+    }
+  }
+
   // 스프레드 감시: 현재 스프레드가 수수료 손익분기 미만이면 취소
   if (bot.cancelBelowBps > 0 && pending.makerOrderPrice > 0) {
     const currentSpreadBps = Math.floor((takerBook.bid / pending.makerOrderPrice - 1) * 10000);

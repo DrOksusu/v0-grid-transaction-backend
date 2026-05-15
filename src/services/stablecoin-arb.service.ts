@@ -270,6 +270,7 @@ export type CreateMakerBotInput = {
   makerFeeBps?: number;
   takerFeeBps?: number;
   minSpreadBps?: number;
+  takerUpgradeBps?: number | null;
 };
 
 /**
@@ -291,6 +292,7 @@ export async function createMakerBot(input: CreateMakerBotInput) {
       makerFeeBps: input.makerFeeBps ?? 5,
       takerFeeBps: input.takerFeeBps ?? 5,
       ...(input.minSpreadBps !== undefined && { minSpreadBps: input.minSpreadBps }),
+      ...(input.takerUpgradeBps !== undefined && { takerUpgradeBps: input.takerUpgradeBps }),
     },
   });
 }
@@ -307,6 +309,7 @@ export type PatchMakerBotInput = Partial<{
   makerFeeBps: number;
   takerFeeBps: number;
   minSpreadBps: number;
+  takerUpgradeBps: number | null;
   lastResumeAt: Date;
 }>;
 

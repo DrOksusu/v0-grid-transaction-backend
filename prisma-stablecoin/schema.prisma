@@ -157,6 +157,8 @@ model MakerTakerSimBot {
   minSpreadBps Int       @default(20)  // cross 스프레드(bp) >= 이 값일 때만 placement
   lastResumeAt DateTime?               // enabled false→true 전환 시각 (canary T_start)
 
+  takerUpgradeBps Int?                 // PENDING 중 spread >= 이 값(bp)이면 maker 취소 후 taker IOC 매수. null=비활성
+
   // 매도 전략 — 봇별 구성. TAKER_SELL_FIRST: IOC 즉시 매도, MAKER_SELL_FIRST: 지정가 ASK 대기
   sellStrategy String @default("TAKER_SELL_FIRST") // TAKER_SELL_FIRST | MAKER_SELL_FIRST
 
