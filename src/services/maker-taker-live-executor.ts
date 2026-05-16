@@ -195,8 +195,10 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       return { kind: 'noop' };
     }
 
-    // gate 시점 ask 가격으로 지정가 BID — IOC 대신 체결될 때까지 대기 (슬리피지 방지)
-    const orderId = await takerLeg.placeMakerBid(bot.takerCoin, takerBook.ask, sellResult.filledQty);
+    // IOC 체결 단가 기반 BID 상한 적용: avgIocPrice 미만에서만 takerCoin을 매수해야 gross ≥ 0 보장
+    // 예) IOC 1488 체결 → BID 1489 금지, BID 1488 or 하한에 걸어야 gross ≥ 0
+    const safeBidPrice = Math.min(takerBook.ask, Math.floor(avgIocPrice));
+    const orderId = await takerLeg.placeMakerBid(bot.takerCoin, safeBidPrice, sellResult.filledQty);
     if (!orderId) {
       console.error(
         `[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: makerCoin 매도 후 takerCoin 지정가 BID 실패 — KRW 손실 가능`,
@@ -207,7 +209,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     return {
       kind: 'placed',
       makerOrderUuid: orderId,
-      makerOrderPrice: takerBook.ask,
+      makerOrderPrice: safeBidPrice,
       legOrder: 'TAKER_SELL_FIRST',
       takerFirstCostKrw: sellResult.grossKrw,
       takerFirstFeeKrw: sellResult.feeKrw,
