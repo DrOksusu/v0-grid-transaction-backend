@@ -38,7 +38,7 @@ export class CoinoneClient implements ExchangeClient {
     const bodyStr = JSON.stringify(body);
     const payload = Buffer.from(bodyStr).toString('base64');
     const signature = crypto
-      .createHmac('sha512', this.creds.secretKey.toUpperCase())
+      .createHmac('sha512', this.creds.secretKey)
       .update(payload)
       .digest('hex')
       .toUpperCase();
