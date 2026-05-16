@@ -394,3 +394,51 @@ export const testBithumbConnection = async (
     );
   }
 };
+
+// 코인원 API 연결 테스트 (잔고 조회로 인증 검증)
+export const testCoinoneConnection = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+
+    const credential = await prisma.credential.findFirst({
+      where: { userId, exchange: 'coinone' as any },
+    });
+
+    if (!credential) {
+      return errorResponse(res, 'CREDENTIAL_NOT_FOUND', '코인원 인증 정보를 찾을 수 없습니다', 404);
+    }
+
+    const { CoinoneClient } = await import('../services/exchange/coinone-client');
+    const client = new CoinoneClient({
+      accessKey: decrypt(credential.apiKey).trim(),
+      secretKey: decrypt(credential.secretKey).trim(),
+    });
+
+    const balances = await client.getBalances();
+    const krw = balances['KRW'];
+
+    await prisma.credential.update({
+      where: { id: credential.id },
+      data: { isValid: true, lastValidatedAt: new Date() },
+    });
+
+    return successResponse(res, {
+      connected: true,
+      krwAvailable: krw?.available ?? 0,
+      krwLocked: krw?.locked ?? 0,
+      lastValidatedAt: new Date(),
+    }, '코인원 연결 성공');
+  } catch (error: any) {
+    console.error('Coinone connection test error:', error);
+    return errorResponse(
+      res,
+      'COINONE_API_ERROR',
+      error.message || '코인원 API 연결 실패',
+      500
+    );
+  }
+};

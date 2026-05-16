@@ -8,6 +8,7 @@ import {
   testUpbitApiKey,
   getUpbitBalance,
   testBithumbConnection,
+  testCoinoneConnection,
 } from '../controllers/credential.controller';
 import { authenticate } from '../middlewares/auth';
 
@@ -19,6 +20,7 @@ router.post('/', createCredential);
 router.get('/', getAllCredentials);
 router.get('/test/upbit', testUpbitApiKey);
 router.get('/test/bithumb', testBithumbConnection);
+router.get('/test/coinone', testCoinoneConnection);
 router.get('/upbit/balance', getUpbitBalance);
 router.get('/:exchange', getCredentialByExchange);
 router.put('/:exchange', updateCredential);
