@@ -35,12 +35,11 @@ export class CoinoneClient implements ExchangeClient {
     // 서명할 JSON 문자열 고정 — axios가 재직렬화해도 서명과 불일치 없음
     const bodyStr = JSON.stringify(body);
     const payload = Buffer.from(bodyStr).toString('base64');
-    // 코인원 V2.1: HMAC 키는 secretKey 대문자, hex 결과도 대문자
+    // 코인원 V2.1: HMAC 키는 secretKey 대문자, hex는 소문자
     const signature = crypto
       .createHmac('sha512', this.creds.secretKey.toUpperCase())
       .update(payload)
-      .digest('hex')
-      .toUpperCase();
+      .digest('hex');
 
     try {
       const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, bodyStr, {
