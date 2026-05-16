@@ -3,7 +3,7 @@
 // 코인원 REST API V2.1 클라이언트.
 //
 // 인증: X-COINONE-PAYLOAD = base64(JSON body)
-//       X-COINONE-SIGNATURE = HMAC-SHA512(payload, secretKey) hex
+//       X-COINONE-SIGNATURE = HMAC-SHA512(payload, upper(secretKey)) 대문자 hex
 
 import axios from 'axios';
 import crypto from 'crypto';
@@ -15,17 +15,6 @@ const TIMEOUT_MS = 5000;
 export interface CoinoneCreds {
   accessKey: string; // access_token
   secretKey: string; // HMAC 서명 키
-}
-
-function generateHeaders(secretKey: string, body: Record<string, unknown>): Record<string, string> {
-  const payload = Buffer.from(JSON.stringify(body)).toString('base64');
-  // 코인원 V2.1: 서명 키는 secretKey 대문자 변환
-  const signature = crypto.createHmac('sha512', secretKey.toUpperCase()).update(payload).digest('hex');
-  return {
-    'X-COINONE-PAYLOAD': payload,
-    'X-COINONE-SIGNATURE': signature,
-    'Content-Type': 'application/json; charset=utf-8',
-  };
 }
 
 export class CoinoneClient implements ExchangeClient {
@@ -43,9 +32,23 @@ export class CoinoneClient implements ExchangeClient {
 
   private async apiPost<T = any>(endpoint: string, extra: Record<string, unknown> = {}): Promise<T> {
     const body = this.buildBody(extra);
+    // 서명할 JSON 문자열 고정 — axios가 재직렬화해도 서명과 불일치 없음
+    const bodyStr = JSON.stringify(body);
+    const payload = Buffer.from(bodyStr).toString('base64');
+    // 코인원 V2.1: HMAC 키는 secretKey 대문자, hex 결과도 대문자
+    const signature = crypto
+      .createHmac('sha512', this.creds.secretKey.toUpperCase())
+      .update(payload)
+      .digest('hex')
+      .toUpperCase();
+
     try {
-      const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, body, {
-        headers: generateHeaders(this.creds.secretKey, body),
+      const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, bodyStr, {
+        headers: {
+          'X-COINONE-PAYLOAD': payload,
+          'X-COINONE-SIGNATURE': signature,
+          'Content-Type': 'application/json; charset=utf-8',
+        },
         timeout: TIMEOUT_MS,
       });
       const d = res.data as any;
