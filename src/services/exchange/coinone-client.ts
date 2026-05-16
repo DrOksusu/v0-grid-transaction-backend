@@ -34,10 +34,9 @@ export class CoinoneClient implements ExchangeClient {
   constructor(private creds: CoinoneCreds) {}
 
   private buildBody(extra: Record<string, unknown> = {}): Record<string, unknown> {
-    // 코인원 V2.1: nonce는 단조 증가 정수(밀리초 타임스탬프)
     return {
       access_token: this.creds.accessKey,
-      nonce: Date.now(),
+      nonce: crypto.randomUUID(),
       ...extra,
     };
   }
