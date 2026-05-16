@@ -349,10 +349,15 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
         }
         // killSwitch 꺼져 있으면 같은 목표가에 BID 재주문 (수익선 포기 없이 대기)
         if (!bot.killSwitch && pending.takerAskPrice) {
+          // Leg1 실제 체결 수량 역산: makerFilledGrossKrw / makerOrderPrice ≈ makerFilledQty
+          // bot.quantity 하드코딩 금지 — Leg1 부분체결 시 초과 매수 손실 발생
+          const requeueQty = (pending.makerFilledGrossKrw ?? 0) > 0 && pending.makerOrderPrice > 0
+            ? (pending.makerFilledGrossKrw ?? 0) / pending.makerOrderPrice
+            : bot.quantity;
           const newOrderId = await takerLeg.placeMakerBid(
             bot.takerCoin,
             pending.takerAskPrice,
-            bot.quantity,
+            requeueQty,
           );
           if (newOrderId) {
             return {
@@ -540,10 +545,15 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       }
       // 부분체결 없고 killSwitch 꺼져 있으면 원래 가격에 재주문 (봇 삭제 전까지 무한 반복)
       if (!bot.killSwitch && pending.takerAskPrice) {
+        // Leg1 실제 체결 수량 역산: makerFilledGrossKrw / makerOrderPrice ≈ makerFilledQty
+        // bot.quantity 하드코딩 금지 — Leg1 부분체결 시 초과 매도 손실 발생
+        const requeueQty = (pending.makerFilledGrossKrw ?? 0) > 0 && pending.makerOrderPrice > 0
+          ? (pending.makerFilledGrossKrw ?? 0) / pending.makerOrderPrice
+          : bot.quantity;
         const newOrderId = await takerLeg.placeMakerAsk(
           bot.takerCoin,
           pending.takerAskPrice,
-          bot.quantity,
+          requeueQty,
         );
         if (newOrderId) {
           return {
