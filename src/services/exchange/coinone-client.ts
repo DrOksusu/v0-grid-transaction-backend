@@ -19,7 +19,8 @@ export interface CoinoneCreds {
 
 function generateHeaders(secretKey: string, body: Record<string, unknown>): Record<string, string> {
   const payload = Buffer.from(JSON.stringify(body)).toString('base64');
-  const signature = crypto.createHmac('sha512', secretKey).update(payload).digest('hex');
+  // 코인원 V2.1: 서명 키는 secretKey 대문자 변환
+  const signature = crypto.createHmac('sha512', secretKey.toUpperCase()).update(payload).digest('hex');
   return {
     'X-COINONE-PAYLOAD': payload,
     'X-COINONE-SIGNATURE': signature,
@@ -33,9 +34,10 @@ export class CoinoneClient implements ExchangeClient {
   constructor(private creds: CoinoneCreds) {}
 
   private buildBody(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    // 코인원 V2.1: nonce는 단조 증가 정수(밀리초 타임스탬프)
     return {
       access_token: this.creds.accessKey,
-      nonce: crypto.randomUUID(),
+      nonce: Date.now(),
       ...extra,
     };
   }
