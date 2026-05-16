@@ -2,8 +2,11 @@
 //
 // 코인원 REST API V2.1 클라이언트.
 //
-// 인증: X-COINONE-PAYLOAD = base64(JSON body)
-//       X-COINONE-SIGNATURE = HMAC-SHA512(payload, upper(secretKey)) 대문자 hex
+// 인증 (CCXT 기준):
+//   payload = base64(JSON body)
+//   X-COINONE-PAYLOAD = payload
+//   X-COINONE-SIGNATURE = HMAC-SHA512(payload, upper(secretKey)) lowercase hex
+//   request body = payload (base64 문자열, raw JSON 아님)
 
 import axios from 'axios';
 import crypto from 'crypto';
@@ -32,21 +35,21 @@ export class CoinoneClient implements ExchangeClient {
 
   private async apiPost<T = any>(endpoint: string, extra: Record<string, unknown> = {}): Promise<T> {
     const body = this.buildBody(extra);
-    // 서명할 JSON 문자열 고정 — axios가 재직렬화해도 서명과 불일치 없음
     const bodyStr = JSON.stringify(body);
+    // CCXT 기준: payload = base64(JSON), body로도 전송
     const payload = Buffer.from(bodyStr).toString('base64');
-    // 코인원 V2.1: HMAC 키는 secretKey 대문자, hex는 소문자
     const signature = crypto
       .createHmac('sha512', this.creds.secretKey.toUpperCase())
       .update(payload)
       .digest('hex');
 
     try {
-      const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, bodyStr, {
+      // body = payload (base64 문자열) — CCXT 패턴
+      const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, payload, {
         headers: {
           'X-COINONE-PAYLOAD': payload,
           'X-COINONE-SIGNATURE': signature,
-          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Type': 'application/json',
         },
         timeout: TIMEOUT_MS,
       });
