@@ -36,17 +36,24 @@ export class CoinoneClient implements ExchangeClient {
   private async apiPost<T = any>(endpoint: string, extra: Record<string, unknown> = {}): Promise<T> {
     const body = this.buildBody(extra);
     const bodyStr = JSON.stringify(body);
-    // CCXT 기준: payload = base64(JSON), body로도 전송
     const payload = Buffer.from(bodyStr).toString('base64');
-    // 코인원 V2.1: hex는 대문자 (소문자 시 107 파라미터 에러 발생)
     const signature = crypto
       .createHmac('sha512', this.creds.secretKey.toUpperCase())
       .update(payload)
       .digest('hex')
       .toUpperCase();
 
+    // 디버그: 실제 전송 값 확인 (키는 마스킹)
+    const accessKeyMasked = this.creds.accessKey.slice(0, 6) + '...' + this.creds.accessKey.slice(-4);
+    const secretKeyMasked = this.creds.secretKey.slice(0, 4) + '...' + this.creds.secretKey.slice(-4);
+    console.log(`[CoinoneDebug] endpoint=${endpoint}`);
+    console.log(`[CoinoneDebug] accessKey=${accessKeyMasked} len=${this.creds.accessKey.length}`);
+    console.log(`[CoinoneDebug] secretKey=${secretKeyMasked} len=${this.creds.secretKey.length}`);
+    console.log(`[CoinoneDebug] bodyStr=${bodyStr}`);
+    console.log(`[CoinoneDebug] payload(base64)=${payload.slice(0, 30)}...`);
+    console.log(`[CoinoneDebug] signature=${signature.slice(0, 20)}...`);
+
     try {
-      // body = payload (base64 문자열) — CCXT 패턴
       const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, payload, {
         headers: {
           'X-COINONE-PAYLOAD': payload,
