@@ -38,10 +38,12 @@ export class CoinoneClient implements ExchangeClient {
     const bodyStr = JSON.stringify(body);
     // CCXT 기준: payload = base64(JSON), body로도 전송
     const payload = Buffer.from(bodyStr).toString('base64');
+    // 코인원 V2.1: hex는 대문자 (소문자 시 107 파라미터 에러 발생)
     const signature = crypto
       .createHmac('sha512', this.creds.secretKey.toUpperCase())
       .update(payload)
-      .digest('hex');
+      .digest('hex')
+      .toUpperCase();
 
     try {
       // body = payload (base64 문자열) — CCXT 패턴
