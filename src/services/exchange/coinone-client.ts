@@ -47,7 +47,8 @@ export class CoinoneClient implements ExchangeClient {
     const signature = crypto
       .createHmac('sha512', this.creds.secretKey)
       .update(payload)
-      .digest('hex');
+      .digest('hex')
+      .toUpperCase();
 
     try {
       // Buffer.from으로 전송: axios가 Content-Type:application/json일 때
