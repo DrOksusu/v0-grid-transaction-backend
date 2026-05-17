@@ -49,7 +49,7 @@ export class CoinoneClient implements ExchangeClient {
     // 변형 3: 하이픈 제거 후 hex 디코딩 16바이트 키
     const sig3 = crypto.createHmac('sha512', hexDecodedKey).update(payload).digest('hex').toUpperCase();
 
-    const signature = sig2;  // 하이픈 없는 32자 hex 키로 서명
+    const signature = sig3;  // hex 디코딩 16바이트 키로 서명
 
     const accessKeyMasked = this.creds.accessKey.slice(0, 6) + '...' + this.creds.accessKey.slice(-4);
     const secretKeyMasked = this.creds.secretKey.slice(0, 4) + '...' + this.creds.secretKey.slice(-4);
