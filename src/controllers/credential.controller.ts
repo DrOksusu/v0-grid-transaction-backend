@@ -406,7 +406,9 @@ export const testCoinoneConnection = async (
 
     const credential = await prisma.credential.findFirst({
       where: { userId, exchange: 'coinone' as any },
+      orderBy: { createdAt: 'desc' },
     });
+    console.log(`[COINONE-DEBUG] credential id=${credential?.id} createdAt=${credential?.createdAt?.toISOString()}`);
 
     if (!credential) {
       return errorResponse(res, 'CREDENTIAL_NOT_FOUND', '코인원 인증 정보를 찾을 수 없습니다', 404);
