@@ -50,6 +50,12 @@ export class CoinoneClient implements ExchangeClient {
       .digest('hex')
       .toUpperCase();
 
+    // [COINONE-DEBUG] 서명 디버그 로그 — 인증 문제 해결 후 제거
+    console.log(`[COINONE-DEBUG] endpoint=${endpoint}`);
+    console.log(`[COINONE-DEBUG] bodyStr=${bodyStr}`);
+    console.log(`[COINONE-DEBUG] payload(base64)=${payload}`);
+    console.log(`[COINONE-DEBUG] sig(first16)=${signature.substring(0, 16)}... len=${signature.length}`);
+
     try {
       // Buffer.from으로 전송: axios가 Content-Type:application/json일 때
       // string body를 JSON.stringify해 따옴표를 추가하는 문제 방지
@@ -63,12 +69,14 @@ export class CoinoneClient implements ExchangeClient {
       });
       const d = res.data as any;
       if (d?.result === 'error') {
+        console.log(`[COINONE-DEBUG] error response: ${JSON.stringify(d)}`);
         throw new Error(`Coinone ${endpoint} 오류 (${d.error_code}): ${d.error_msg ?? ''}`);
       }
       return d;
     } catch (err: any) {
       const d = err?.response?.data;
       if (d?.result === 'error') {
+        console.log(`[COINONE-DEBUG] error response: ${JSON.stringify(d)}`);
         throw new Error(`Coinone ${endpoint} 오류 (${d.error_code}): ${d.error_msg ?? ''}`);
       }
       throw new Error(`Coinone ${endpoint} 실패: ${err.message}`);
