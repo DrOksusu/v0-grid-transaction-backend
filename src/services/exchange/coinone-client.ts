@@ -33,16 +33,21 @@ export class CoinoneClient implements ExchangeClient {
     };
   }
 
+  // Coinone V2.1은 Python json.dumps() 기본 포맷(": ", ", " 구분자)으로 서명
+  private toCoinoneJson(obj: Record<string, unknown>): string {
+    const parts = Object.entries(obj).map(([k, v]) => `"${k}": ${JSON.stringify(v)}`);
+    return '{' + parts.join(', ') + '}';
+  }
+
   private async apiPost<T = any>(endpoint: string, extra: Record<string, unknown> = {}): Promise<T> {
     const body = this.buildBody(extra);
-    const bodyStr = JSON.stringify(body);
+    const bodyStr = this.toCoinoneJson(body);
     const payload = Buffer.from(bodyStr).toString('base64');
 
     const signature = crypto
       .createHmac('sha512', this.creds.secretKey)
       .update(payload)
-      .digest('hex')
-      .toUpperCase();
+      .digest('hex');
 
     try {
       // Buffer.from으로 전송: axios가 Content-Type:application/json일 때
