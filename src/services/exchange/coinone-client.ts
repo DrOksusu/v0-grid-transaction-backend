@@ -37,24 +37,37 @@ export class CoinoneClient implements ExchangeClient {
     const body = this.buildBody(extra);
     const bodyStr = JSON.stringify(body);
     const payload = Buffer.from(bodyStr).toString('base64');
-    const signature = crypto
+
+    // payload 기반 서명 (CCXT 방식)
+    const sigOnPayload = crypto
       .createHmac('sha512', this.creds.secretKey)
       .update(payload)
       .digest('hex')
       .toUpperCase();
 
-    // 디버그: 실제 전송 값 확인 (키는 마스킹)
+    // bodyStr 기반 서명 (대안 방식)
+    const sigOnBody = crypto
+      .createHmac('sha512', this.creds.secretKey)
+      .update(bodyStr)
+      .digest('hex')
+      .toUpperCase();
+
+    const signature = sigOnPayload;
+
     const accessKeyMasked = this.creds.accessKey.slice(0, 6) + '...' + this.creds.accessKey.slice(-4);
     const secretKeyMasked = this.creds.secretKey.slice(0, 4) + '...' + this.creds.secretKey.slice(-4);
     console.log(`[CoinoneDebug] endpoint=${endpoint}`);
     console.log(`[CoinoneDebug] accessKey=${accessKeyMasked} len=${this.creds.accessKey.length}`);
     console.log(`[CoinoneDebug] secretKey=${secretKeyMasked} len=${this.creds.secretKey.length}`);
     console.log(`[CoinoneDebug] bodyStr=${bodyStr}`);
-    console.log(`[CoinoneDebug] payload(base64)=${payload.slice(0, 30)}...`);
-    console.log(`[CoinoneDebug] signature=${signature.slice(0, 20)}...`);
+    console.log(`[CoinoneDebug] payload(full)=${payload}`);
+    console.log(`[CoinoneDebug] sigOnPayload=${sigOnPayload.slice(0, 20)}...`);
+    console.log(`[CoinoneDebug] sigOnBody=${sigOnBody.slice(0, 20)}...`);
 
     try {
-      const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, payload, {
+      // Buffer.from으로 전송: axios가 Content-Type:application/json일 때
+      // string body를 JSON.stringify해 따옴표를 추가하는 문제 방지
+      const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, Buffer.from(payload, 'utf8'), {
         headers: {
           'X-COINONE-PAYLOAD': payload,
           'X-COINONE-SIGNATURE': signature,
