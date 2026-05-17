@@ -38,21 +38,18 @@ export class CoinoneClient implements ExchangeClient {
     const bodyStr = JSON.stringify(body);
     const payload = Buffer.from(bodyStr).toString('base64');
 
-    // payload 기반 서명 (CCXT 방식)
-    const sigOnPayload = crypto
-      .createHmac('sha512', this.creds.secretKey)
-      .update(payload)
-      .digest('hex')
-      .toUpperCase();
+    const rawKey = this.creds.secretKey;
+    const noHyphenKey = rawKey.replace(/-/g, '');           // 32자 hex 문자열
+    const hexDecodedKey = Buffer.from(noHyphenKey, 'hex');  // 16바이트 Buffer
 
-    // bodyStr 기반 서명 (대안 방식)
-    const sigOnBody = crypto
-      .createHmac('sha512', this.creds.secretKey)
-      .update(bodyStr)
-      .digest('hex')
-      .toUpperCase();
+    // 변형 1: 원래 UUID 문자열 키 (현재 방식)
+    const sig1 = crypto.createHmac('sha512', rawKey).update(payload).digest('hex').toUpperCase();
+    // 변형 2: 하이픈 제거 32자 hex 문자열 키
+    const sig2 = crypto.createHmac('sha512', noHyphenKey).update(payload).digest('hex').toUpperCase();
+    // 변형 3: 하이픈 제거 후 hex 디코딩 16바이트 키
+    const sig3 = crypto.createHmac('sha512', hexDecodedKey).update(payload).digest('hex').toUpperCase();
 
-    const signature = sigOnPayload;
+    const signature = sig2;  // 하이픈 없는 32자 hex 키로 서명
 
     const accessKeyMasked = this.creds.accessKey.slice(0, 6) + '...' + this.creds.accessKey.slice(-4);
     const secretKeyMasked = this.creds.secretKey.slice(0, 4) + '...' + this.creds.secretKey.slice(-4);
@@ -61,8 +58,9 @@ export class CoinoneClient implements ExchangeClient {
     console.log(`[CoinoneDebug] secretKey=${secretKeyMasked} len=${this.creds.secretKey.length}`);
     console.log(`[CoinoneDebug] bodyStr=${bodyStr}`);
     console.log(`[CoinoneDebug] payload(full)=${payload}`);
-    console.log(`[CoinoneDebug] sigOnPayload=${sigOnPayload.slice(0, 20)}...`);
-    console.log(`[CoinoneDebug] sigOnBody=${sigOnBody.slice(0, 20)}...`);
+    console.log(`[CoinoneDebug] sig1_rawKey=${sig1.slice(0, 20)}...`);
+    console.log(`[CoinoneDebug] sig2_noHyphen=${sig2.slice(0, 20)}...`);
+    console.log(`[CoinoneDebug] sig3_hexDecoded=${sig3.slice(0, 20)}...`);
 
     try {
       // Buffer.from으로 전송: axios가 Content-Type:application/json일 때
