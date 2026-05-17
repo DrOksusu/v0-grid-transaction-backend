@@ -47,8 +47,7 @@ export class CoinoneClient implements ExchangeClient {
     const signature = crypto
       .createHmac('sha512', this.creds.secretKey)
       .update(payload)
-      .digest('hex')
-      .toUpperCase();
+      .digest('hex'); // 공식 docs: .hexdigest() = 소문자
 
     // [COINONE-DEBUG] 서명 디버그 로그 — 인증 문제 해결 후 제거
     const sk = this.creds.secretKey;
