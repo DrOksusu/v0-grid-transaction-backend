@@ -97,7 +97,7 @@ export const getAllCredentials = async (
         _id: cred.id.toString(),
         exchange: cred.exchange,
         apiKey: maskApiKey(decryptedApiKey),
-        secretKey: cred.secretKey ? 'SAVED' : null, // Secret Key 존재 여부만 표시
+        secretKey: cred.secretKey ? '****' + decrypt(cred.secretKey).trim().slice(-4) : null,
         ipWhitelist: cred.ipWhitelist,
         isValid: cred.isValid,
         lastValidatedAt: cred.lastValidatedAt,
