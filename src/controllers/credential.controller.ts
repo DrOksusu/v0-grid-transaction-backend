@@ -395,6 +395,35 @@ export const testBithumbConnection = async (
   }
 };
 
+// 코인원 API 직접 연결 테스트 (DB 우회 — 키 입력값 직접 사용)
+export const testCoinoneConnectionDirect = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { accessKey, secretKey } = req.body;
+    if (!accessKey || !secretKey) {
+      return errorResponse(res, 'VALIDATION_ERROR', 'accessKey, secretKey 필드가 필요합니다', 400);
+    }
+
+    const { CoinoneClient } = await import('../services/exchange/coinone-client');
+    const client = new CoinoneClient({ accessKey: accessKey.trim(), secretKey: secretKey.trim() });
+
+    const balances = await client.getBalances();
+    const krw = balances['KRW'];
+
+    return successResponse(res, {
+      connected: true,
+      krwAvailable: krw?.available ?? 0,
+      krwLocked: krw?.locked ?? 0,
+      note: 'DB 우회 직접 테스트 성공',
+    }, '코인원 직접 연결 성공');
+  } catch (error: any) {
+    return errorResponse(res, 'COINONE_API_ERROR', error.message || '코인원 API 연결 실패', 500);
+  }
+};
+
 // 코인원 API 연결 테스트 (잔고 조회로 인증 검증)
 export const testCoinoneConnection = async (
   req: AuthRequest,
