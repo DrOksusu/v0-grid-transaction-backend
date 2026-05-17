@@ -44,7 +44,7 @@ export class CoinoneClient implements ExchangeClient {
       .toUpperCase();
 
     try {
-      const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, Buffer.from(payload, 'utf8'), {
+      const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, payload, {
         headers: {
           'X-COINONE-PAYLOAD': payload,
           'X-COINONE-SIGNATURE': signature,
