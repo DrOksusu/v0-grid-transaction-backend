@@ -33,16 +33,9 @@ export class CoinoneClient implements ExchangeClient {
     };
   }
 
-  // Coinone V2.1은 Python json.dumps() 기본 포맷(": ", ", " 구분자)으로 서명
-  private toCoinoneJson(obj: Record<string, unknown>): string {
-    const parts = Object.entries(obj).map(([k, v]) => `"${k}": ${JSON.stringify(v)}`);
-    return '{' + parts.join(', ') + '}';
-  }
-
   private async apiPost<T = any>(endpoint: string, extra: Record<string, unknown> = {}): Promise<T> {
     const body = this.buildBody(extra);
-    const bodyStr = this.toCoinoneJson(body);
-    const payload = Buffer.from(bodyStr).toString('base64');
+    const payload = Buffer.from(JSON.stringify(body)).toString('base64');
 
     const signature = crypto
       .createHmac('sha512', this.creds.secretKey)
@@ -50,17 +43,7 @@ export class CoinoneClient implements ExchangeClient {
       .digest('hex')
       .toUpperCase();
 
-    // [COINONE-DEBUG] 서명 디버그 로그 — 인증 문제 해결 후 제거
-    const sk = this.creds.secretKey;
-    console.log(`[COINONE-DEBUG] endpoint=${endpoint}`);
-    console.log(`[COINONE-DEBUG] bodyStr=${bodyStr}`);
-    console.log(`[COINONE-DEBUG] payload(base64)=${payload}`);
-    console.log(`[COINONE-DEBUG] sig(first16)=${signature.substring(0, 16)}... len=${signature.length}`);
-    console.log(`[COINONE-DEBUG] sk_len=${sk.length} sk_first4=${sk.substring(0, 4)} sk_last4=${sk.substring(sk.length - 4)} sk_hasNewline=${sk.includes('\n')} sk_hasSpace=${sk.includes(' ')}`);
-
     try {
-      // Buffer.from으로 전송: axios가 Content-Type:application/json일 때
-      // string body를 JSON.stringify해 따옴표를 추가하는 문제 방지
       const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, Buffer.from(payload, 'utf8'), {
         headers: {
           'X-COINONE-PAYLOAD': payload,
@@ -71,14 +54,12 @@ export class CoinoneClient implements ExchangeClient {
       });
       const d = res.data as any;
       if (d?.result === 'error') {
-        console.log(`[COINONE-DEBUG] error response: ${JSON.stringify(d)}`);
         throw new Error(`Coinone ${endpoint} 오류 (${d.error_code}): ${d.error_msg ?? ''}`);
       }
       return d;
     } catch (err: any) {
       const d = err?.response?.data;
       if (d?.result === 'error') {
-        console.log(`[COINONE-DEBUG] error response: ${JSON.stringify(d)}`);
         throw new Error(`Coinone ${endpoint} 오류 (${d.error_code}): ${d.error_msg ?? ''}`);
       }
       throw new Error(`Coinone ${endpoint} 실패: ${err.message}`);
