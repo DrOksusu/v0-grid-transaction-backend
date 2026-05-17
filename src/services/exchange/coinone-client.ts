@@ -45,15 +45,15 @@ export class CoinoneClient implements ExchangeClient {
 
     let res;
     try {
-      // Buffer로 전송: axios가 string + application/json 조합 시 JSON.stringify를 적용해
-      // payload에 따옴표를 추가할 수 있어 서명 불일치 발생 가능
-      res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, Buffer.from(payload, 'utf8'), {
+      // transformRequest로 axios 기본 직렬화 완전 차단: payload base64 문자열을 그대로 전송
+      res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, payload, {
         headers: {
           'X-COINONE-PAYLOAD': payload,
           'X-COINONE-SIGNATURE': signature,
           'Content-Type': 'application/json',
         },
         timeout: TIMEOUT_MS,
+        transformRequest: [() => payload],
       });
     } catch (err: any) {
       const d = err?.response?.data;
