@@ -43,8 +43,11 @@ export class CoinoneClient implements ExchangeClient {
       .digest('hex')
       .toUpperCase();
 
+    let res;
     try {
-      const res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, payload, {
+      // Buffer로 전송: axios가 string + application/json 조합 시 JSON.stringify를 적용해
+      // payload에 따옴표를 추가할 수 있어 서명 불일치 발생 가능
+      res = await axios.post<T>(`${COINONE_BASE_URL}${endpoint}`, Buffer.from(payload, 'utf8'), {
         headers: {
           'X-COINONE-PAYLOAD': payload,
           'X-COINONE-SIGNATURE': signature,
@@ -52,11 +55,6 @@ export class CoinoneClient implements ExchangeClient {
         },
         timeout: TIMEOUT_MS,
       });
-      const d = res.data as any;
-      if (d?.result === 'error') {
-        throw new Error(`Coinone ${endpoint} 오류 (${d.error_code}): ${d.error_msg ?? ''}`);
-      }
-      return d;
     } catch (err: any) {
       const d = err?.response?.data;
       if (d?.result === 'error') {
@@ -64,6 +62,12 @@ export class CoinoneClient implements ExchangeClient {
       }
       throw new Error(`Coinone ${endpoint} 실패: ${err.message}`);
     }
+
+    const d = res.data as any;
+    if (d?.result === 'error') {
+      throw new Error(`Coinone ${endpoint} 오류 (${d.error_code}): ${d.error_msg ?? ''}`);
+    }
+    return d;
   }
 
   /** 단일 코인 최우선 호가. Public REST. */
