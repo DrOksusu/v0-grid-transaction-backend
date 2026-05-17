@@ -2,10 +2,10 @@
 //
 // 코인원 REST API V2.1 클라이언트.
 //
-// 인증 (CCXT 기준):
+// 인증:
 //   payload = base64(JSON body)
 //   X-COINONE-PAYLOAD = payload
-//   X-COINONE-SIGNATURE = HMAC-SHA512(payload, upper(secretKey)) lowercase hex
+//   X-COINONE-SIGNATURE = HMAC-SHA512(payload, secretKey).toUpperCase()  // 대문자 hex 필수
 //   request body = payload (base64 문자열, raw JSON 아님)
 
 import axios from 'axios';
@@ -38,29 +38,11 @@ export class CoinoneClient implements ExchangeClient {
     const bodyStr = JSON.stringify(body);
     const payload = Buffer.from(bodyStr).toString('base64');
 
-    const rawKey = this.creds.secretKey;
-    const noHyphenKey = rawKey.replace(/-/g, '');           // 32자 hex 문자열
-    const hexDecodedKey = Buffer.from(noHyphenKey, 'hex');  // 16바이트 Buffer
-
-    // 변형 1: 원래 UUID 문자열 키 (현재 방식)
-    const sig1 = crypto.createHmac('sha512', rawKey).update(payload).digest('hex').toUpperCase();
-    // 변형 2: 하이픈 제거 32자 hex 문자열 키
-    const sig2 = crypto.createHmac('sha512', noHyphenKey).update(payload).digest('hex').toUpperCase();
-    // 변형 3: 하이픈 제거 후 hex 디코딩 16바이트 키
-    const sig3 = crypto.createHmac('sha512', hexDecodedKey).update(payload).digest('hex').toUpperCase();
-
-    const signature = sig3;  // hex 디코딩 16바이트 키로 서명
-
-    const accessKeyMasked = this.creds.accessKey.slice(0, 6) + '...' + this.creds.accessKey.slice(-4);
-    const secretKeyMasked = this.creds.secretKey.slice(0, 4) + '...' + this.creds.secretKey.slice(-4);
-    console.log(`[CoinoneDebug] endpoint=${endpoint}`);
-    console.log(`[CoinoneDebug] accessKey=${accessKeyMasked} len=${this.creds.accessKey.length}`);
-    console.log(`[CoinoneDebug] secretKey=${secretKeyMasked} len=${this.creds.secretKey.length}`);
-    console.log(`[CoinoneDebug] bodyStr=${bodyStr}`);
-    console.log(`[CoinoneDebug] payload(full)=${payload}`);
-    console.log(`[CoinoneDebug] sig1_rawKey=${sig1.slice(0, 20)}...`);
-    console.log(`[CoinoneDebug] sig2_noHyphen=${sig2.slice(0, 20)}...`);
-    console.log(`[CoinoneDebug] sig3_hexDecoded=${sig3.slice(0, 20)}...`);
+    const signature = crypto
+      .createHmac('sha512', this.creds.secretKey)
+      .update(payload)
+      .digest('hex')
+      .toUpperCase();
 
     try {
       // Buffer.from으로 전송: axios가 Content-Type:application/json일 때
