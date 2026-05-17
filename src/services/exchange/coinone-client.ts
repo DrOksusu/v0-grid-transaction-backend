@@ -51,10 +51,12 @@ export class CoinoneClient implements ExchangeClient {
       .toUpperCase();
 
     // [COINONE-DEBUG] 서명 디버그 로그 — 인증 문제 해결 후 제거
+    const sk = this.creds.secretKey;
     console.log(`[COINONE-DEBUG] endpoint=${endpoint}`);
     console.log(`[COINONE-DEBUG] bodyStr=${bodyStr}`);
     console.log(`[COINONE-DEBUG] payload(base64)=${payload}`);
     console.log(`[COINONE-DEBUG] sig(first16)=${signature.substring(0, 16)}... len=${signature.length}`);
+    console.log(`[COINONE-DEBUG] sk_len=${sk.length} sk_first4=${sk.substring(0, 4)} sk_last4=${sk.substring(sk.length - 4)} sk_hasNewline=${sk.includes('\n')} sk_hasSpace=${sk.includes(' ')}`);
 
     try {
       // Buffer.from으로 전송: axios가 Content-Type:application/json일 때
