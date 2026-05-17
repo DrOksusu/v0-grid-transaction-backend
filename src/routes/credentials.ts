@@ -10,6 +10,7 @@ import {
   testBithumbConnection,
   testCoinoneConnection,
   testCoinoneConnectionDirect,
+  debugCoinoneSignature,
 } from '../controllers/credential.controller';
 import { authenticate } from '../middlewares/auth';
 
@@ -23,6 +24,7 @@ router.get('/test/upbit', testUpbitApiKey);
 router.get('/test/bithumb', testBithumbConnection);
 router.get('/test/coinone', testCoinoneConnection);
 router.post('/test/coinone/direct', testCoinoneConnectionDirect);
+router.post('/debug/coinone/signature', debugCoinoneSignature);
 router.get('/upbit/balance', getUpbitBalance);
 router.get('/:exchange', getCredentialByExchange);
 router.put('/:exchange', updateCredential);

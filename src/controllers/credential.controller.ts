@@ -395,6 +395,37 @@ export const testBithumbConnection = async (
   }
 };
 
+// 코인원 서명 계산값 디버그 (Coinone 호출 없음, 고정 nonce로 계산값만 반환)
+export const debugCoinoneSignature = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const crypto = await import('crypto');
+    const { accessKey, secretKey } = req.body;
+    if (!accessKey || !secretKey) {
+      return errorResponse(res, 'VALIDATION_ERROR', 'accessKey, secretKey 필드가 필요합니다', 400);
+    }
+    const FIXED_NONCE = 'debug-fixed-nonce-12345678';
+    const body = { access_token: accessKey.trim(), nonce: FIXED_NONCE };
+    const bodyStr = JSON.stringify(body);
+    const payload = Buffer.from(bodyStr).toString('base64');
+    const signature = crypto.default.createHmac('sha512', secretKey.trim()).update(payload).digest('hex').toUpperCase();
+    return successResponse(res, {
+      bodyStr,
+      payload,
+      signatureFirst32: signature.substring(0, 32),
+      signatureLength: signature.length,
+      secretKeyLength: secretKey.trim().length,
+      secretKeyFirst4: secretKey.trim().substring(0, 4),
+      secretKeyLast4: secretKey.trim().slice(-4),
+    });
+  } catch (error: any) {
+    next(error);
+  }
+};
+
 // 코인원 API 직접 연결 테스트 (DB 우회 — 키 입력값 직접 사용)
 export const testCoinoneConnectionDirect = async (
   req: AuthRequest,
