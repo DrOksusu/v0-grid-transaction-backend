@@ -5,7 +5,7 @@
 // 인증:
 //   payload = base64(JSON body)
 //   X-COINONE-PAYLOAD = payload
-//   X-COINONE-SIGNATURE = HMAC-SHA512(payload, secretKey).toUpperCase()  // 대문자 hex 필수
+//   X-COINONE-SIGNATURE = HMAC-SHA512(payload, secretKey).hex  // 소문자 hex (대문자 X)
 //   request body = payload (base64 문자열, raw JSON 아님)
 
 import axios from 'axios';
@@ -40,8 +40,7 @@ export class CoinoneClient implements ExchangeClient {
     const signature = crypto
       .createHmac('sha512', this.creds.secretKey)
       .update(payload)
-      .digest('hex')
-      .toUpperCase();
+      .digest('hex');
 
     let res;
     try {
