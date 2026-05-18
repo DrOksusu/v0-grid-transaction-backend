@@ -13,6 +13,8 @@ import { getAllCoinoneStablecoinOrderbooks, subscribeCoinoneStablecoinOrderbooks
 subscribeCoinoneStablecoinOrderbooks();
 import { BithumbClient } from '../services/exchange/bithumb-client';
 import { UpbitService } from '../services/upbit.service';
+import { CoinoneClient } from '../services/exchange/coinone-client';
+import { getCoinoneStablecoinOrderbook } from '../services/coinone-stablecoin-price-manager';
 import { decrypt } from '../utils/encryption';
 
 // ===== Maker bot CRUD (Admin 전용) =====
@@ -239,6 +241,7 @@ const _balanceCache = new Map<
     data: {
       bithumbBalances: Record<string, { available: number; locked: number }>;
       upbitBalances: Record<string, { available: number; locked: number }>;
+      coinoneBalances: Record<string, { available: number; locked: number }>;
     };
     at: number;
   }
@@ -279,11 +282,13 @@ export const getBalanceRequirements = async (
 
     let bithumbBalances: Record<string, { available: number; locked: number }> = {};
     let upbitBalances: Record<string, { available: number; locked: number }> = {};
+    let coinoneBalances: Record<string, { available: number; locked: number }> = {};
 
     const cached = _balanceCache.get(cacheKey);
     if (cached && now - cached.at < BALANCE_CACHE_TTL) {
       bithumbBalances = cached.data.bithumbBalances;
       upbitBalances = cached.data.upbitBalances;
+      coinoneBalances = cached.data.coinoneBalances;
     } else {
       // 각 userId별 크레덴셜로 잔고 조회 후 합산
       for (const userId of userIds) {
@@ -332,10 +337,32 @@ export const getBalanceRequirements = async (
         } catch {
           // 크레덴셜 없거나 조회 실패 시 빈 객체 유지
         }
+
+        // Coinone 잔고 조회
+        try {
+          const coinoneCred = await mainPrisma.credential.findFirst({
+            where: { userId, exchange: 'coinone' },
+          });
+          if (coinoneCred) {
+            const accessKey = decrypt(coinoneCred.apiKey);
+            const secretKey = decrypt(coinoneCred.secretKey);
+            const client = new CoinoneClient({ accessKey, secretKey });
+            const balances = await client.getBalances();
+            for (const [coin, entry] of Object.entries(balances)) {
+              if (!coinoneBalances[coin]) {
+                coinoneBalances[coin] = { available: 0, locked: 0 };
+              }
+              coinoneBalances[coin].available += entry.available;
+              coinoneBalances[coin].locked += entry.locked;
+            }
+          }
+        } catch {
+          // 크레덴셜 없거나 조회 실패 시 빈 객체 유지
+        }
       }
 
       _balanceCache.set(cacheKey, {
-        data: { bithumbBalances, upbitBalances },
+        data: { bithumbBalances, upbitBalances, coinoneBalances },
         at: now,
       });
     }
@@ -343,6 +370,7 @@ export const getBalanceRequirements = async (
     // 3. 거래소별 perCoinRequired / krwRequired 집계
     const bithumbPerCoin: Record<string, { qty: number; botIds: number[] }> = {};
     const upbitPerCoin: Record<string, { qty: number; botIds: number[] }> = {};
+    const coinonePerCoin: Record<string, { qty: number; botIds: number[] }> = {};
     const bithumbKrwBotIds: number[] = [];
     const upbitKrwBotIds: number[] = [];
     let bithumbKrwTotal = 0;
@@ -367,17 +395,23 @@ export const getBalanceRequirements = async (
       const qty = Number(bot.quantity);
       const makerExchange = bot.makerExchange ?? 'upbit';
 
-      // KRW 요건 계산 (현재 WS 가격 사용)
+      // KRW 요건 계산 (현재 WS 가격 사용) — coinone은 코인→코인 스왑이라 KRW 불필요
       let askPrice: number;
+      let krwRequired: number;
       if (makerExchange === 'bithumb') {
         const ob = getBithumbStablecoinOrderbook(bot.makerCoin);
         askPrice = ob?.ask ?? 1500;
+        krwRequired = Math.ceil(qty * askPrice * 1.01);
+      } else if (makerExchange === 'coinone') {
+        const ob = getCoinoneStablecoinOrderbook(bot.makerCoin);
+        askPrice = ob?.ask ?? 1500;
+        krwRequired = 0; // coinone 코인→코인 스왑은 KRW 불필요
       } else {
         const upbitBooks = getAllStablecoinOrderbooks();
         const upbitOb = upbitBooks.get(`KRW-${bot.makerCoin}`);
         askPrice = upbitOb?.ask?.price ?? 1500;
+        krwRequired = Math.ceil(qty * askPrice * 1.01);
       }
-      const krwRequired = Math.ceil(qty * askPrice * 1.01);
 
       // perCoinRequired 집계 (enabled=true & killSwitch=false 봇만 — 충전 필요 판단 기준)
       if (bot.enabled && !bot.killSwitch) {
@@ -390,6 +424,12 @@ export const getBalanceRequirements = async (
 
           bithumbKrwTotal += krwRequired;
           bithumbKrwBotIds.push(bot.id);
+        } else if (makerExchange === 'coinone') {
+          if (!coinonePerCoin[bot.makerCoin]) {
+            coinonePerCoin[bot.makerCoin] = { qty: 0, botIds: [] };
+          }
+          coinonePerCoin[bot.makerCoin].qty += qty;
+          coinonePerCoin[bot.makerCoin].botIds.push(bot.id);
         } else {
           if (!upbitPerCoin[bot.makerCoin]) {
             upbitPerCoin[bot.makerCoin] = { qty: 0, botIds: [] };
@@ -406,11 +446,15 @@ export const getBalanceRequirements = async (
       const makerCoinAvail =
         makerExchange === 'bithumb'
           ? (bithumbBalances[bot.makerCoin]?.available ?? 0)
-          : (upbitBalances[bot.makerCoin]?.available ?? 0);
+          : makerExchange === 'coinone'
+            ? (coinoneBalances[bot.makerCoin]?.available ?? 0)
+            : (upbitBalances[bot.makerCoin]?.available ?? 0);
       const krwAvail =
         makerExchange === 'bithumb'
           ? (bithumbBalances['KRW']?.available ?? 0)
-          : (upbitBalances['KRW']?.available ?? 0);
+          : makerExchange === 'coinone'
+            ? 0 // coinone은 KRW 불필요
+            : (upbitBalances['KRW']?.available ?? 0);
 
       const insufficientCoin = makerCoinAvail < qty;
       const insufficientKrw = krwAvail < krwRequired;
@@ -459,6 +503,11 @@ export const getBalanceRequirements = async (
             total: upbitKrwTotal,
             botIds: [...new Set(upbitKrwBotIds)],
           },
+        },
+        coinone: {
+          balances: coinoneBalances,
+          perCoinRequired: coinonePerCoin,
+          krwRequired: { total: 0, botIds: [] },
         },
       },
       bots: botStatuses,
