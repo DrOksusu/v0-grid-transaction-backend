@@ -40,6 +40,7 @@ import {
   subscribeCoinoneStablecoinOrderbooks,
   unsubscribeCoinoneStablecoinOrderbooks,
   getCoinoneOrderbookForTrading,
+  getCoinoneStablecoinOrderbook,
 } from '../services/coinone-stablecoin-price-manager';
 import { decrypt } from '../utils/encryption';
 import { isMakerBookSpreadProfitable, isCrossSpreadProfitable, calcCrossSpreadBps } from '../services/maker-taker-spread-gate';
@@ -230,9 +231,21 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
       return;
     }
 
-    // 시뮬 모드: 업비트 호가로 판정 (크로스 거래소 시뮬은 추후 개선)
-    const makerBook = upbitBooks.get(`KRW-${bot.makerCoin}`);
-    const takerBook = upbitBooks.get(`KRW-${bot.takerCoin}`);
+    // 시뮬 모드: 거래소별 호가로 판정
+    const makerExchangeSim: string = bot.makerExchange ?? 'upbit';
+    const takerExchangeSim: string = bot.takerExchange ?? 'upbit';
+
+    const rawToUpbitFormat = (ex: string, coin: string): OrderbookTop | null => {
+      if (ex === 'coinone') {
+        const cb = getCoinoneStablecoinOrderbook(coin);
+        if (!cb) return null;
+        return { bid: { price: cb.bid, size: 1e6 }, ask: { price: cb.ask, size: 1e6 } } as any;
+      }
+      return upbitBooks.get(`KRW-${coin}`) ?? null;
+    };
+
+    const makerBook = rawToUpbitFormat(makerExchangeSim, bot.makerCoin);
+    const takerBook = rawToUpbitFormat(takerExchangeSim, bot.takerCoin);
     if (!makerBook || !takerBook) return;
 
     const makerNorm = normalizeUpbit(makerBook);
@@ -461,23 +474,28 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
 
     const makerBookRaw = makerExchange === 'bithumb'
       ? getBithumbStablecoinOrderbook(bot.makerCoin)
-      : upbitBooks.get(`KRW-${bot.makerCoin}`);
+      : makerExchange === 'coinone'
+        ? getCoinoneStablecoinOrderbook(bot.makerCoin)
+        : upbitBooks.get(`KRW-${bot.makerCoin}`);
     const takerBookRaw = takerExchange === 'bithumb'
       ? getBithumbStablecoinOrderbook(bot.takerCoin)
-      : upbitBooks.get(`KRW-${bot.takerCoin}`);
+      : takerExchange === 'coinone'
+        ? getCoinoneStablecoinOrderbook(bot.takerCoin)
+        : upbitBooks.get(`KRW-${bot.takerCoin}`);
 
     if (!makerBookRaw || !takerBookRaw) return Infinity;
 
-    const makerBid = makerExchange === 'bithumb'
+    const isFlatBook = (ex: string) => ex === 'bithumb' || ex === 'coinone';
+    const makerBid = isFlatBook(makerExchange)
       ? (makerBookRaw as any).bid
       : (makerBookRaw as OrderbookTop).bid.price;
-    const makerAsk = makerExchange === 'bithumb'
+    const makerAsk = isFlatBook(makerExchange)
       ? (makerBookRaw as any).ask
       : (makerBookRaw as OrderbookTop).ask.price;
-    const takerBid = takerExchange === 'bithumb'
+    const takerBid = isFlatBook(takerExchange)
       ? (takerBookRaw as any).bid
       : (takerBookRaw as OrderbookTop).bid.price;
-    const takerAsk = takerExchange === 'bithumb'
+    const takerAsk = isFlatBook(takerExchange)
       ? (takerBookRaw as any).ask
       : (takerBookRaw as OrderbookTop).ask.price;
 
@@ -495,6 +513,10 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
 
     if (buyExchange === 'upbit') {
       return this.upbitClients.get(bot.userId)?.cache.peek()?.[buyCoin] ?? Infinity;
+    } else if (buyExchange === 'coinone') {
+      const cache = this.coinoneBalanceCaches.get(bot.userId);
+      if (!cache) return Infinity;
+      return cache.data[buyCoin] ?? 0;
     } else {
       const cache = this.bithumbBalanceCaches.get(bot.userId);
       if (!cache) return Infinity;

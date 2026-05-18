@@ -11,7 +11,7 @@ import axios from 'axios';
 
 const COINONE_TICKER_URL = 'https://api.coinone.co.kr/public/v2/ticker_new/KRW';
 
-export const COINONE_STABLECOIN_SYMBOLS = ['USDT', 'USDC', 'USD1', 'USDS', 'USDE'] as const;
+export const COINONE_STABLECOIN_SYMBOLS = ['USDT', 'USDC', 'RLUSD', 'USD1', 'USDS', 'USDE'] as const;
 export type CoinoneStablecoin = typeof COINONE_STABLECOIN_SYMBOLS[number];
 
 const CACHE_TTL_MS = 30_000;
