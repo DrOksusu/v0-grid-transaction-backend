@@ -15,6 +15,11 @@ import {
   getAllBithumbStablecoinOrderbooks,
   isBithumbStablecoinWsConnected,
 } from './bithumb-stablecoin-ws-manager';
+import {
+  subscribeCoinoneStablecoinOrderbooks,
+  unsubscribeCoinoneStablecoinOrderbooks,
+  getCoinoneStablecoinOrderbook,
+} from './coinone-stablecoin-price-manager';
 
 // ─────────────────────────────────────────────────────────────
 // 타입 정의
@@ -34,7 +39,7 @@ export interface PairConfig {
   /** taker 수수료율 (예: 0.0005 = 0.05%) */
   takerFeeRate: number;
   /** 거래소 구분 (기본값: 'upbit') */
-  exchange?: 'upbit' | 'bithumb';
+  exchange?: 'upbit' | 'bithumb' | 'coinone';
 }
 
 export interface PairStats {
@@ -98,6 +103,11 @@ class PairScannerService {
   private bithumbSubscribed = false;
   private static readonly BITHUMB_REFRESH_INTERVAL = 2000;
 
+  // 코인원 주기적 갱신
+  private coinoneRefreshTimer: NodeJS.Timeout | null = null;
+  private coinoneSubscribed = false;
+  private static readonly COINONE_REFRESH_INTERVAL = 3000;
+
   // ───────────────────────────────────────────────
   // public API
   // ───────────────────────────────────────────────
@@ -122,6 +132,11 @@ class PairScannerService {
       this.ensureBithumbSubscribed();
     }
     this.startBithumbRefresh();
+
+    if (this.hasCoinonePairs()) {
+      this.ensureCoinoneSubscribed();
+    }
+    this.startCoinoneRefresh();
   }
 
   /**
@@ -144,6 +159,11 @@ class PairScannerService {
     if (this.bithumbSubscribed) {
       unsubscribeBithumbStablecoinOrderbooks();
       this.bithumbSubscribed = false;
+    }
+    this.stopCoinoneRefresh();
+    if (this.coinoneSubscribed) {
+      unsubscribeCoinoneStablecoinOrderbooks();
+      this.coinoneSubscribed = false;
     }
     this.closeWs();
   }
@@ -185,6 +205,8 @@ class PairScannerService {
     if (this.isActive) {
       if (exch === 'bithumb') {
         this.ensureBithumbSubscribed();
+      } else if (exch === 'coinone') {
+        this.ensureCoinoneSubscribed();
       } else {
         this.updateWsSubscription();
       }
@@ -211,6 +233,10 @@ class PairScannerService {
       if (!this.hasBithumbPairs() && this.bithumbSubscribed) {
         unsubscribeBithumbStablecoinOrderbooks();
         this.bithumbSubscribed = false;
+      }
+      if (!this.hasCoinonePairs() && this.coinoneSubscribed) {
+        unsubscribeCoinoneStablecoinOrderbooks();
+        this.coinoneSubscribed = false;
       }
     }
 
@@ -303,6 +329,70 @@ class PairScannerService {
   }
 
   // ───────────────────────────────────────────────
+  // 코인원 갱신 (private)
+  // ───────────────────────────────────────────────
+
+  private hasCoinonePairs(): boolean {
+    for (const config of this.pairs.values()) {
+      if (config.exchange === 'coinone') return true;
+    }
+    return false;
+  }
+
+  private ensureCoinoneSubscribed(): void {
+    if (!this.coinoneSubscribed) {
+      subscribeCoinoneStablecoinOrderbooks();
+      this.coinoneSubscribed = true;
+    }
+  }
+
+  private startCoinoneRefresh(): void {
+    if (this.coinoneRefreshTimer) return;
+    this.coinoneRefreshTimer = setInterval(() => {
+      this.refreshCoinoneStats();
+    }, PairScannerService.COINONE_REFRESH_INTERVAL);
+  }
+
+  private stopCoinoneRefresh(): void {
+    if (this.coinoneRefreshTimer) {
+      clearInterval(this.coinoneRefreshTimer);
+      this.coinoneRefreshTimer = null;
+    }
+  }
+
+  private refreshCoinoneStats(): void {
+    let updated = false;
+
+    for (const config of this.pairs.values()) {
+      if (config.exchange !== 'coinone') continue;
+
+      const makerBook = getCoinoneStablecoinOrderbook(config.makerCoin);
+      const takerBook = getCoinoneStablecoinOrderbook(config.takerCoin);
+      if (!makerBook || !takerBook) continue;
+
+      const makerTop: OrderbookTop = {
+        market: `COINONE-${config.makerCoin.toUpperCase()}`,
+        bid: { price: makerBook.bid, size: 1e6 },
+        ask: { price: makerBook.ask, size: 1e6 },
+        timestamp: makerBook.timestamp,
+      };
+      const takerTop: OrderbookTop = {
+        market: `COINONE-${config.takerCoin.toUpperCase()}`,
+        bid: { price: takerBook.bid, size: 1e6 },
+        ask: { price: takerBook.ask, size: 1e6 },
+        timestamp: takerBook.timestamp,
+      };
+
+      this.updateStats(config, makerTop, takerTop);
+      updated = true;
+    }
+
+    if (updated) {
+      this.scheduleEmit();
+    }
+  }
+
+  // ───────────────────────────────────────────────
   // WS 관리 (private)
   // ───────────────────────────────────────────────
 
@@ -312,6 +402,7 @@ class PairScannerService {
   private getRequiredMarkets(): string[] {
     const markets = new Set<string>();
     for (const config of this.pairs.values()) {
+      if (config.exchange === 'bithumb' || config.exchange === 'coinone') continue;
       markets.add(`KRW-${config.makerCoin.toUpperCase()}`);
       markets.add(`KRW-${config.takerCoin.toUpperCase()}`);
     }

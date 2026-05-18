@@ -24,14 +24,21 @@ class SocketService {
   private generalArbSubscribers: Set<string> = new Set(); // 일반 아비트리지 스캐너 구독자 socket ids
 
   initialize(httpServer: HttpServer) {
-    // CORS 설정: 쉼표로 구분된 여러 도메인 허용
-    const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
+    // CORS 설정: 쉼표로 구분된 여러 도메인 + Vercel 프리뷰 패턴 허용
+    const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http://localhost:3009,https://v0-grid-transaction.vercel.app')
       .split(',')
       .map(origin => origin.trim());
+    const vercelPreviewPattern = /^https:\/\/v0-grid-transaction.*\.vercel\.app$/;
 
     this.io = new SocketServer(httpServer, {
       cors: {
-        origin: allowedOrigins,
+        origin: (origin, callback) => {
+          if (!origin) return callback(null, true);
+          if (allowedOrigins.includes(origin) || vercelPreviewPattern.test(origin)) {
+            return callback(null, true);
+          }
+          callback(new Error('CORS not allowed'));
+        },
         methods: ['GET', 'POST'],
         credentials: true,
       },
