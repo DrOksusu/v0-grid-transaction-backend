@@ -16,7 +16,7 @@ router.get('/pairs', (_req, res: Response) => {
 
 // POST /api/pair-scanner/pairs
 router.post('/pairs', (req, res: Response) => {
-  const { name, makerCoin, takerCoin, qty, makerFeeRate, takerFeeRate, exchange } = req.body as Partial<PairConfig>;
+  const { name, makerCoin, takerCoin, qty, makerFeeRate, takerFeeRate, exchange, makerExchange, takerExchange } = req.body as Partial<PairConfig>;
 
   if (!name || !makerCoin || !takerCoin || qty == null || makerFeeRate == null || takerFeeRate == null) {
     res.status(400).json({ success: false, error: '필수 필드 누락: name, makerCoin, takerCoin, qty, makerFeeRate, takerFeeRate' });
@@ -29,6 +29,8 @@ router.post('/pairs', (req, res: Response) => {
     makerFeeRate: Number(makerFeeRate),
     takerFeeRate: Number(takerFeeRate),
     ...(exchange && { exchange }),
+    ...(makerExchange && { makerExchange }),
+    ...(takerExchange && { takerExchange }),
   });
 
   if (!result.success) {
