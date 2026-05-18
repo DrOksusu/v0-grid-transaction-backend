@@ -95,7 +95,7 @@ export class CoinoneClient implements ExchangeClient {
 
   /** 전체 잔고. POST /v2.1/account/balance */
   async getBalances(): Promise<Record<string, BalanceEntry>> {
-    const res = await this.apiPost<any>('/v2.1/account/balance');
+    const res = await this.apiPost<any>('/v2.1/account/balance/all');
     const out: Record<string, BalanceEntry> = {};
     for (const item of res.balances ?? []) {
       const sym = String(item.currency ?? item.target_currency ?? '').toUpperCase();
