@@ -96,7 +96,11 @@ router.post(
       }
 
       const existing = await stablecoinPrisma.makerTakerSimBot.findFirst({
-        where: { userId, makerCoin, takerCoin },
+        where: {
+          userId, makerCoin, takerCoin,
+          makerExchange: makerExchange ?? 'upbit',
+          takerExchange: takerExchange ?? 'upbit',
+        },
       });
       if (existing) {
         res.status(409).json({ success: false, error: '이미 존재하는 페어입니다', data: existing });
