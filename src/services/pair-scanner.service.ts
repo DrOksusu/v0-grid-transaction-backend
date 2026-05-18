@@ -40,6 +40,10 @@ export interface PairConfig {
   takerFeeRate: number;
   /** 거래소 구분 (기본값: 'upbit') */
   exchange?: 'upbit' | 'bithumb' | 'coinone';
+  /** 크로스 거래소 페어용: maker 코인을 구매할 거래소 (exchange보다 우선) */
+  makerExchange?: 'upbit' | 'bithumb' | 'coinone';
+  /** 크로스 거래소 페어용: taker 코인을 판매할 거래소 (exchange보다 우선) */
+  takerExchange?: 'upbit' | 'bithumb' | 'coinone';
 }
 
 export interface PairStats {
@@ -178,9 +182,11 @@ class PairScannerService {
       return { success: false, error: `페어 '${config.name}'이 이미 존재합니다` };
     }
 
-    // makerCoin === takerCoin 검사
-    if (config.makerCoin.toUpperCase() === config.takerCoin.toUpperCase()) {
-      return { success: false, error: 'makerCoin과 takerCoin은 달라야 합니다' };
+    // makerCoin === takerCoin 검사 (크로스 거래소 페어는 동일 코인 허용)
+    const isCross = (config.makerExchange || config.takerExchange) &&
+      (config.makerExchange ?? config.exchange ?? 'upbit') !== (config.takerExchange ?? config.exchange ?? 'upbit');
+    if (!isCross && config.makerCoin.toUpperCase() === config.takerCoin.toUpperCase()) {
+      return { success: false, error: '단일 거래소 페어는 makerCoin과 takerCoin이 달라야 합니다' };
     }
 
     // qty 검사
@@ -199,17 +205,16 @@ class PairScannerService {
     }
 
     this.pairs.set(config.name, { ...config });
-    const exch = config.exchange ?? 'upbit';
-    console.log(`[PairScanner] 페어 추가: ${config.name} (${exch} maker: ${config.makerCoin.toUpperCase()}, taker: ${config.takerCoin.toUpperCase()})`);
+    const makerEx = config.makerExchange ?? (config.exchange ?? 'upbit');
+    const takerEx = config.takerExchange ?? (config.exchange ?? 'upbit');
+    const crossLabel = makerEx !== takerEx ? `크로스(${makerEx}→${takerEx})` : makerEx;
+    console.log(`[PairScanner] 페어 추가: ${config.name} (${crossLabel} maker: ${config.makerCoin.toUpperCase()}, taker: ${config.takerCoin.toUpperCase()})`);
 
     if (this.isActive) {
-      if (exch === 'bithumb') {
-        this.ensureBithumbSubscribed();
-      } else if (exch === 'coinone') {
-        this.ensureCoinoneSubscribed();
-      } else {
-        this.updateWsSubscription();
-      }
+      // 크로스 페어는 양쪽 거래소 모두 구독 처리
+      if (makerEx === 'bithumb' || takerEx === 'bithumb') this.ensureBithumbSubscribed();
+      if (makerEx === 'coinone' || takerEx === 'coinone') this.ensureCoinoneSubscribed();
+      if (makerEx === 'upbit' || takerEx === 'upbit') this.updateWsSubscription();
     }
 
     return { success: true };
@@ -269,7 +274,7 @@ class PairScannerService {
 
   private hasBithumbPairs(): boolean {
     for (const config of this.pairs.values()) {
-      if (config.exchange === 'bithumb') return true;
+      if (this.getEffectiveMakerExchange(config) === 'bithumb' || this.getEffectiveTakerExchange(config) === 'bithumb') return true;
     }
     return false;
   }
@@ -326,6 +331,8 @@ class PairScannerService {
     if (updated) {
       this.scheduleEmit();
     }
+    // 크로스 페어도 갱신 (bithumb 데이터가 업데이트됐을 때)
+    this.refreshCrossStats();
   }
 
   // ───────────────────────────────────────────────
@@ -334,7 +341,7 @@ class PairScannerService {
 
   private hasCoinonePairs(): boolean {
     for (const config of this.pairs.values()) {
-      if (config.exchange === 'coinone') return true;
+      if (this.getEffectiveMakerExchange(config) === 'coinone' || this.getEffectiveTakerExchange(config) === 'coinone') return true;
     }
     return false;
   }
@@ -390,6 +397,8 @@ class PairScannerService {
     if (updated) {
       this.scheduleEmit();
     }
+    // 크로스 페어도 갱신 (coinone 데이터가 업데이트됐을 때)
+    this.refreshCrossStats();
   }
 
   // ───────────────────────────────────────────────
@@ -402,9 +411,12 @@ class PairScannerService {
   private getRequiredMarkets(): string[] {
     const markets = new Set<string>();
     for (const config of this.pairs.values()) {
-      if (config.exchange === 'bithumb' || config.exchange === 'coinone') continue;
-      markets.add(`KRW-${config.makerCoin.toUpperCase()}`);
-      markets.add(`KRW-${config.takerCoin.toUpperCase()}`);
+      const makerEx = this.getEffectiveMakerExchange(config);
+      const takerEx = this.getEffectiveTakerExchange(config);
+      // maker가 upbit이면 makerCoin 마켓 구독
+      if (makerEx === 'upbit') markets.add(`KRW-${config.makerCoin.toUpperCase()}`);
+      // taker가 upbit이면 takerCoin 마켓 구독
+      if (takerEx === 'upbit') markets.add(`KRW-${config.takerCoin.toUpperCase()}`);
     }
     return Array.from(markets);
   }
@@ -615,6 +627,8 @@ class PairScannerService {
       if (updated) {
         this.scheduleEmit();
       }
+      // 5. 크로스 페어도 갱신 (upbit 데이터가 업데이트됐을 때)
+      this.refreshCrossStats();
     } catch (err) {
       console.error('[PairScanner] 메시지 파싱 에러:', err);
     }
@@ -655,6 +669,82 @@ class PairScannerService {
       freqPercent,
       lastUpdatedAt: Date.now(),
     });
+  }
+
+  // ───────────────────────────────────────────────
+  // 크로스 거래소 헬퍼 (private)
+  // ───────────────────────────────────────────────
+
+  /**
+   * 거래소와 코인명으로 OrderbookTop을 반환.
+   * upbit은 orderbookCache, bithumb/coinone은 각 매니저에서 조회.
+   */
+  private getOrderbookTop(exchange: 'upbit' | 'bithumb' | 'coinone', coin: string): OrderbookTop | null {
+    if (exchange === 'upbit') {
+      return this.orderbookCache.get(`KRW-${coin.toUpperCase()}`) ?? null;
+    }
+    if (exchange === 'bithumb') {
+      const books = getAllBithumbStablecoinOrderbooks();
+      const book = books.get(coin.toUpperCase());
+      if (!book) return null;
+      return {
+        market: `BITHUMB-${coin.toUpperCase()}`,
+        bid: { price: book.bid, size: 0 },
+        ask: { price: book.ask, size: 0 },
+        timestamp: book.timestamp,
+      };
+    }
+    // coinone
+    const book = getCoinoneStablecoinOrderbook(coin);
+    if (!book) return null;
+    return {
+      market: `COINONE-${coin.toUpperCase()}`,
+      bid: { price: book.bid, size: 1e6 },
+      ask: { price: book.ask, size: 1e6 },
+      timestamp: book.timestamp,
+    };
+  }
+
+  /**
+   * 페어 설정에서 실효 maker 거래소를 반환.
+   * makerExchange가 있으면 우선 사용, 없으면 exchange, 둘 다 없으면 'upbit'.
+   */
+  private getEffectiveMakerExchange(config: PairConfig): 'upbit' | 'bithumb' | 'coinone' {
+    return config.makerExchange ?? (config.exchange ?? 'upbit');
+  }
+
+  /**
+   * 페어 설정에서 실효 taker 거래소를 반환.
+   * takerExchange가 있으면 우선 사용, 없으면 exchange, 둘 다 없으면 'upbit'.
+   */
+  private getEffectiveTakerExchange(config: PairConfig): 'upbit' | 'bithumb' | 'coinone' {
+    return config.takerExchange ?? (config.exchange ?? 'upbit');
+  }
+
+  /**
+   * maker 거래소와 taker 거래소가 서로 다른 크로스 페어 여부 반환.
+   */
+  private isCrossPair(config: PairConfig): boolean {
+    return this.getEffectiveMakerExchange(config) !== this.getEffectiveTakerExchange(config);
+  }
+
+  /**
+   * 크로스 거래소 페어들의 spread 통계를 갱신.
+   * bithumb/coinone/upbit 캐시가 업데이트될 때마다 호출.
+   */
+  private refreshCrossStats(): void {
+    let updated = false;
+    for (const config of this.pairs.values()) {
+      if (!this.isCrossPair(config)) continue;
+      const makerEx = this.getEffectiveMakerExchange(config);
+      const takerEx = this.getEffectiveTakerExchange(config);
+      const makerBook = this.getOrderbookTop(makerEx, config.makerCoin);
+      const takerBook = this.getOrderbookTop(takerEx, config.takerCoin);
+      if (!makerBook || !takerBook) continue;
+      this.updateStats(config, makerBook, takerBook);
+      updated = true;
+    }
+    if (updated) this.scheduleEmit();
   }
 
   // ───────────────────────────────────────────────
