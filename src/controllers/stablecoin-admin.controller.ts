@@ -644,23 +644,32 @@ export const getCoinoneOrderbooks = async (req: AuthRequest, res: Response, next
   }
 };
 
-/** GET /api/admin/stablecoin/cross-exchange-latest — 업비트↔빗썸 실시간 스프레드 */
+/** GET /api/admin/stablecoin/cross-exchange-latest — 업비트/빗썸/코인원 실시간 크로스 스프레드 */
 export const getCrossExchangeLatest = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const upbitAll = getAllStablecoinOrderbooks();
     const bithumbAll = getAllBithumbStablecoinOrderbooks();
-    const coins = ['USDT', 'USDC', 'USD1', 'USDS', 'USDE'];
+    const coinoneAll = getAllCoinoneStablecoinOrderbooks();
+    const coins = ['USDT', 'USDC', 'USD1', 'USDS', 'USDE', 'RLUSD'];
     const snapshots = [];
     for (const coin of coins) {
       const ub = upbitAll.get(`KRW-${coin}`);
       const bh = bithumbAll.get(coin);
-      if (!ub || !bh) continue;
-      const upbitBid = ub.bid.price;
-      const upbitAsk = ub.ask.price;
-      const bithumbBid = bh.bid;
-      const bithumbAsk = bh.ask;
-      const ubSpreadBps = bithumbBid > 0 ? Math.round(((upbitBid - bithumbAsk) / bithumbAsk) * 10000) : 0;
-      const buSpreadBps = upbitAsk > 0 ? Math.round(((bithumbBid - upbitAsk) / upbitAsk) * 10000) : 0;
+      const co = coinoneAll.get(coin);
+      if (!ub && !bh && !co) continue;
+      const upbitBid = ub?.bid.price ?? 0;
+      const upbitAsk = ub?.ask.price ?? 0;
+      const bithumbBid = bh?.bid ?? 0;
+      const bithumbAsk = bh?.ask ?? 0;
+      const coinoneBid = co?.bid ?? 0;
+      const coinoneAsk = co?.ask ?? 0;
+      const ubSpreadBps = (upbitBid > 0 && bithumbAsk > 0) ? Math.round(((upbitBid - bithumbAsk) / bithumbAsk) * 10000) : 0;
+      const buSpreadBps = (bithumbBid > 0 && upbitAsk > 0) ? Math.round(((bithumbBid - upbitAsk) / upbitAsk) * 10000) : 0;
+      const ucSpreadBps = (upbitBid > 0 && coinoneAsk > 0) ? Math.round(((upbitBid - coinoneAsk) / coinoneAsk) * 10000) : 0;
+      const cuSpreadBps = (coinoneBid > 0 && upbitAsk > 0) ? Math.round(((coinoneBid - upbitAsk) / upbitAsk) * 10000) : 0;
+      const bcSpreadBps = (bithumbBid > 0 && coinoneAsk > 0) ? Math.round(((bithumbBid - coinoneAsk) / coinoneAsk) * 10000) : 0;
+      const cbSpreadBps = (coinoneBid > 0 && bithumbAsk > 0) ? Math.round(((coinoneBid - bithumbAsk) / bithumbAsk) * 10000) : 0;
+      const maxSpreadBps = Math.max(ubSpreadBps, buSpreadBps, ucSpreadBps, cuSpreadBps, bcSpreadBps, cbSpreadBps);
       snapshots.push({
         id: coin,
         market: coin,
@@ -668,9 +677,11 @@ export const getCrossExchangeLatest = async (req: AuthRequest, res: Response, ne
         upbitAsk: String(upbitAsk),
         bithumbBid: String(bithumbBid),
         bithumbAsk: String(bithumbAsk),
+        coinoneBid: String(coinoneBid),
+        coinoneAsk: String(coinoneAsk),
         ubSpreadBps: String(ubSpreadBps),
         buSpreadBps: String(buSpreadBps),
-        maxSpreadBps: String(Math.max(ubSpreadBps, buSpreadBps)),
+        maxSpreadBps: String(maxSpreadBps),
         timestamp: new Date().toISOString(),
       });
     }
