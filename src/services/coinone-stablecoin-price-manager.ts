@@ -41,7 +41,9 @@ async function fetchAndUpdate(): Promise<void> {
       const bid = parseFloat(ticker.best_bids?.[0]?.price ?? '0');
       const ask = parseFloat(ticker.best_asks?.[0]?.price ?? '0');
       if (bid > 0 && ask > 0) {
-        cache.set(sym, { symbol: sym, bid, ask, timestamp: ticker.timestamp });
+        // ticker.timestamp = 코인원 마지막 체결 시각 (저유동성 코인은 수십 초 이상 오래됨)
+        // 신선도 게이트를 "우리가 fetch한 시각" 기준으로 판단하기 위해 Date.now() 사용
+        cache.set(sym, { symbol: sym, bid, ask, timestamp: Date.now() });
       }
     }
   } catch (e: any) {
