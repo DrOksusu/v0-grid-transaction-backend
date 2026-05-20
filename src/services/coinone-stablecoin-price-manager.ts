@@ -2,8 +2,8 @@
  * 코인원 스테이블코인 REST 폴링 매니저
  *
  * GET https://api.coinone.co.kr/public/v2/ticker_new/KRW 를 5초 주기로 폴링하여
- * 유동성 있는 3종 스테이블코인(USDT, USDC, RLUSD)의 최우선 bid/ask를 캐싱.
- * USD1, USDS, USDE는 코인원 상장은 되어 있으나 유동성 부족으로 제외.
+ * 6종 스테이블코인(USDT, USDC, RLUSD, USDS, USDE, USD1)의 최우선 bid/ask를 캐싱.
+ * 유동성 부족 코인은 bid/ask가 0이므로 캐시에 저장되지 않음 (fetchAndUpdate 조건 참조).
  *
  * 빗썸(WS delta)과 달리 코인원은 REST만 사용. 모니터링 전용이므로 거래 신선도 체크 없음.
  */
@@ -12,7 +12,7 @@ import axios from 'axios';
 
 const COINONE_TICKER_URL = 'https://api.coinone.co.kr/public/v2/ticker_new/KRW';
 
-export const COINONE_STABLECOIN_SYMBOLS = ['USDT', 'USDC', 'RLUSD'] as const;
+export const COINONE_STABLECOIN_SYMBOLS = ['USDT', 'USDC', 'RLUSD', 'USDS', 'USDE', 'USD1'] as const;
 export type CoinoneStablecoin = typeof COINONE_STABLECOIN_SYMBOLS[number];
 
 const CACHE_TTL_MS = 30_000;

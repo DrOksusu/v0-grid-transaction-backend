@@ -626,11 +626,11 @@ export const getBithumbOrderbooks = async (req: AuthRequest, res: Response, next
   }
 };
 
-/** GET /api/admin/stablecoin/coinone-orderbooks — 코인원 스테이블코인 5종 실시간 호가 */
+/** GET /api/admin/stablecoin/coinone-orderbooks — 코인원 스테이블코인 6종 실시간 호가 */
 export const getCoinoneOrderbooks = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const all = getAllCoinoneStablecoinOrderbooks();
-    const coins = ['USDT', 'USDC', 'USD1', 'USDS', 'USDE'] as const;
+    const coins = ['USDT', 'USDC', 'RLUSD', 'USD1', 'USDS', 'USDE'] as const;
     const books: Record<string, any> = {};
     for (const coin of coins) {
       const top = all.get(coin);
