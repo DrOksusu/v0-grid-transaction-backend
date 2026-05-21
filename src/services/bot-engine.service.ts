@@ -32,7 +32,7 @@ class BotEngine {
   private pendingCacheRefreshInterval: NodeJS.Timeout | null = null;
   private isCheckingCross: boolean = false;
   private readonly CROSS_COOLDOWN_MS = 3000; // gridId별 쿨다운 3초
-  private readonly PENDING_CACHE_REFRESH_MS = 5000; // 캐시 갱신 5초
+  private readonly PENDING_CACHE_REFRESH_MS = 15000; // 캐시 갱신 15초 (이전 5초 → DB 부하 감소)
 
   // 가격 리스너 (바인딩된 참조를 유지해야 해제 가능)
   private boundOnPriceUpdate = this.onPriceUpdate.bind(this);

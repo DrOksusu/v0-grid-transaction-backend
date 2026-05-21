@@ -598,11 +598,10 @@ export class TradingService {
           }
 
           // ===== 2단계: 오래된 pending을 orderId로 직접 배치 조회 (누락 방지) =====
-          // pending 수에 비례하여 배치 크기 동적 조정 (stale starvation 방지)
-          const STALE_THRESHOLD = 10 * 60 * 1000; // 10분 (이전 30분 → 단축)
-          const pendingCount = grids.length;
-          // pending 10% 혹은 최소 50, 최대 300
-          const MAX_STALE_CHECK_PER_USER = Math.min(300, Math.max(50, Math.ceil(pendingCount * 0.1)));
+          const STALE_THRESHOLD = 10 * 60 * 1000; // 10분
+          // 빗썸: 순차 개별 API 호출(300-500ms/건)이라 10건 상한 → 이벤트 루프 블로킹 방지
+          // 업비트: 배치 API라 높은 한도 허용
+          const MAX_STALE_CHECK_PER_USER = exchange === 'bithumb' ? 10 : Math.min(300, Math.max(50, Math.ceil(grids.length * 0.1)));
           const now = Date.now();
 
           const staleGrids = grids
@@ -611,6 +610,7 @@ export class TradingService {
               !processedGridIds.has(g.id) &&
               (now - new Date(g.updatedAt).getTime()) > STALE_THRESHOLD
             )
+            .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()) // 가장 오래된 것 우선
             .slice(0, MAX_STALE_CHECK_PER_USER);
 
           if (staleGrids.length > 0) {
