@@ -181,9 +181,13 @@ export class BithumbLeg implements ExchangeLeg {
     quantity: number,
     _priceHint?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
+    // 빗썸 최소 주문금액 5000 KRW 체크 — 미달 시 즉시 skip (400 under_min_total_ask 방지)
+    const BITHUMB_MIN_ORDER_KRW = 5000;
+    if (_priceHint && quantity * _priceHint < BITHUMB_MIN_ORDER_KRW) {
+      console.log(`[BithumbLeg.sellIoc] ${symbol} qty=${quantity} est=${(quantity * _priceHint).toFixed(0)} KRW < ${BITHUMB_MIN_ORDER_KRW} 최소주문금액 — 호가 잔량 부족 skip`);
+      return null;
+    }
     const placed = await this.client.placeMarketOrder('sell', symbol, quantity);
-    console.log(`[BithumbLeg.sellIoc] ${symbol} qty=${quantity} orderId=${placed.orderId || '(empty)'}`);
-    if (!placed.orderId) return null;
 
     // 빗썸 시장가 매도는 거의 즉시 체결되나 polling 필요
     for (let i = 0; i < 6; i++) {
@@ -215,6 +219,11 @@ export class BithumbLeg implements ExchangeLeg {
     const estimatedKrw = Math.ceil(quantity * priceHint);
     const krwAmount = maxKrwBudget != null ? Math.min(estimatedKrw, maxKrwBudget) : estimatedKrw;
     if (krwAmount <= 0) return null;
+    // 빗썸 최소 주문금액 5000 KRW 체크
+    if (krwAmount < 5000) {
+      console.log(`[BithumbLeg.buyIoc] ${symbol} krw=${krwAmount} < 5000 최소주문금액 — 호가 잔량 부족 skip`);
+      return null;
+    }
     const placed = await this.client.placeMarketBuyKrw(symbol, krwAmount);
     if (!placed.orderId) return null;
 
