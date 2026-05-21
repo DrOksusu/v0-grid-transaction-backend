@@ -70,6 +70,11 @@ export class UpbitLeg implements ExchangeLeg {
     quantity: number,
     _priceHint?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
+    // 업비트 최소 주문금액 5000 KRW 체크 — 미달 시 즉시 skip (호가 얇을 때 에러 방지)
+    const UPBIT_MIN_ORDER_KRW = 5000;
+    if (_priceHint && quantity * _priceHint < UPBIT_MIN_ORDER_KRW) {
+      return null;
+    }
     const resp = await this.upbit.placeBestIoc(`KRW-${symbol}`, 'ask', {
       volume: String(quantity),
     });
@@ -105,6 +110,10 @@ export class UpbitLeg implements ExchangeLeg {
     // 팔린 수량만큼 그대로 매수 — 버퍼 없이 quantity × priceHint KRW 전달
     const estimatedKrw = Math.ceil(quantity * priceHint);
     const krwAmount = maxKrwBudget != null ? Math.min(estimatedKrw, maxKrwBudget) : estimatedKrw;
+    if (krwAmount < 5000) {
+      console.log(`[UpbitLeg.buyIoc] ${symbol} krw=${krwAmount} < 5000 최소주문금액 — skip`);
+      return null;
+    }
     const resp = await this.upbit.placeBestIoc(`KRW-${symbol}`, 'bid', {
       price: String(krwAmount),
     });
