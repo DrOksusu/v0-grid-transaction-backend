@@ -55,6 +55,9 @@ class MetricsService {
   // 과부하 알림 쿨다운 (alertType → 마지막 발송 시각)
   private lastAlertAt: Map<string, number> = new Map();
 
+  // 일일 리포트 마지막 발송 날짜 (YYYY-MM-DD KST)
+  private lastDailyReportDate: string = '';
+
   constructor() {
     this.setupEventLoopMonitor();
   }
@@ -153,6 +156,57 @@ class MetricsService {
 
     // 과부하 알림 체크
     this.checkOverload();
+
+    // 일일 리포트 체크 (오전 9시 KST)
+    this.checkDailyReport();
+  }
+
+  /** 매일 오전 9시 KST 서버 상태 리포트 발송 */
+  private checkDailyReport(): void {
+    // KST = UTC+9
+    const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const hourKst = nowKst.getUTCHours();
+    const dateKst = nowKst.toISOString().slice(0, 10); // YYYY-MM-DD
+
+    // 오전 9시 (09:00~09:59) + 오늘 아직 발송 안 됨
+    if (hourKst !== 9) return;
+    if (this.lastDailyReportDate === dateKst) return;
+    this.lastDailyReportDate = dateKst;
+
+    const sys = this.getSystemMetrics();
+    const biz = this.getBusinessMetrics();
+
+    const uptimeSec = Math.floor((Date.now() - this.serverStartTime) / 1000);
+    const days = Math.floor(uptimeSec / 86400);
+    const hours = Math.floor((uptimeSec % 86400) / 3600);
+    const mins = Math.floor((uptimeSec % 3600) / 60);
+    const uptimeStr = days > 0 ? `${days}일 ${hours}시간` : hours > 0 ? `${hours}시간 ${mins}분` : `${mins}분`;
+
+    const memPercent = ((sys.memory.used / sys.memory.total) * 100).toFixed(1);
+    const heapMb = (sys.memory.heapUsed / 1024 / 1024).toFixed(0);
+
+    const statusLine = (
+      sys.cpu.usage < 70 &&
+      parseFloat(memPercent) < 85 &&
+      sys.eventLoop.lag < 50
+    ) ? '✅ 정상' : '⚠️ 주의 필요';
+
+    const msg =
+      `[서버 일일 리포트 - ${dateKst}]\n` +
+      `상태: ${statusLine}\n` +
+      `업타임: ${uptimeStr}\n` +
+      `CPU: ${sys.cpu.usage.toFixed(1)}%\n` +
+      `메모리: ${memPercent}%\n` +
+      `Heap: ${heapMb}MB\n` +
+      `이벤트 루프: ${sys.eventLoop.lag.toFixed(1)}ms\n` +
+      `WS 연결: ${biz.websocket.totalConnections}명\n` +
+      `DB 쿼리(평균): ${biz.database.avgQueryTime}ms\n` +
+      `https://v0-grid-transaction.vercel.app/admin`;
+
+    kakaoNotifyService.sendToMe(msg).catch((e: any) =>
+      console.error('[Metrics] 일일 리포트 카카오 알림 실패:', e.message)
+    );
+    console.log(`[Metrics] 일일 리포트 발송: ${dateKst}`);
   }
 
   /** 임계치 초과 시 카카오 알림 (1시간 쿨다운) */
