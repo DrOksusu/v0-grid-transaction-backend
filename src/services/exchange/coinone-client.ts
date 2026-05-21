@@ -7,6 +7,8 @@
 //   X-COINONE-PAYLOAD = payload
 //   X-COINONE-SIGNATURE = HMAC-SHA512(payload, secretKey).hex  // 소문자 hex (대문자 X)
 //   request body = payload (base64 문자열, raw JSON 아님)
+//
+// 주문 side: V2.1은 BID/ASK 대신 BUY/SELL 사용 (BID/ASK는 error 107)
 
 import axios from 'axios';
 import crypto from 'crypto';
@@ -125,7 +127,7 @@ export class CoinoneClient implements ExchangeClient {
       quote_currency: 'KRW',
       target_currency: symbol.toUpperCase(),
       type: 'MARKET',
-      side: side === 'buy' ? 'BID' : 'ASK',
+      side: side === 'buy' ? 'BUY' : 'SELL',
     };
     if (side === 'sell') {
       extra.qty = String(quantity);
@@ -142,7 +144,7 @@ export class CoinoneClient implements ExchangeClient {
       quote_currency: 'KRW',
       target_currency: symbol.toUpperCase(),
       type: 'MARKET',
-      side: 'BID',
+      side: 'BUY',
       amount: String(Math.round(krwAmount)),
     });
     return { orderId: res.order_id ?? '', status: 'pending', filledQty: 0, avgFillPrice: 0, totalFeeKrw: 0 };
@@ -189,9 +191,10 @@ export class CoinoneClient implements ExchangeClient {
       quote_currency: 'KRW',
       target_currency: symbol.toUpperCase(),
       type: 'LIMIT',
-      side: 'BID',
+      side: 'BUY',
       price: String(Math.round(price)),
       qty: String(qty),
+      post_only: false,
     });
   }
 
@@ -201,9 +204,10 @@ export class CoinoneClient implements ExchangeClient {
       quote_currency: 'KRW',
       target_currency: symbol.toUpperCase(),
       type: 'LIMIT',
-      side: 'ASK',
+      side: 'SELL',
       price: String(Math.round(price)),
       qty: String(qty),
+      post_only: false,
     });
   }
 }
