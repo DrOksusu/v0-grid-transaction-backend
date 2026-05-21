@@ -182,17 +182,17 @@ export class BithumbLeg implements ExchangeLeg {
     _priceHint?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
     // 빗썸 최소 주문금액 5000 KRW 체크 — 미달 시 즉시 skip (400 under_min_total_ask 방지)
+    // quantity는 effectiveQty = min(bot.quantity, bidQty, takerAskQty)이므로 부분 수량도 허용됨
     const BITHUMB_MIN_ORDER_KRW = 5000;
     if (_priceHint && quantity * _priceHint < BITHUMB_MIN_ORDER_KRW) {
-      console.log(`[BithumbLeg.sellIoc] ${symbol} qty=${quantity} est=${(quantity * _priceHint).toFixed(0)} KRW < ${BITHUMB_MIN_ORDER_KRW} 최소주문금액 — 호가 잔량 부족 skip`);
       return null;
     }
     const placed = await this.client.placeMarketOrder('sell', symbol, quantity);
+    if (!placed.orderId) return null;
 
     // 빗썸 시장가 매도는 거의 즉시 체결되나 polling 필요
     for (let i = 0; i < 6; i++) {
       const order = await this.client.getOrder(placed.orderId);
-      console.log(`[BithumbLeg.sellIoc] poll[${i}] ${symbol} status=${order.status} filledQty=${order.filledQty}`);
       if (order.status === 'filled' && order.filledQty > 0) {
         return {
           filledQty: order.filledQty,
@@ -203,7 +203,6 @@ export class BithumbLeg implements ExchangeLeg {
       if (order.status === 'cancelled' || order.status === 'failed') return null;
       await new Promise((r) => setTimeout(r, 500));
     }
-    console.log(`[BithumbLeg.sellIoc] ${symbol} 6회 폴링 완료 후 미체결 — timeout null`);
     return null;
   }
 
