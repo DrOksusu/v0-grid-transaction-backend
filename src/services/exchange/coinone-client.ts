@@ -35,6 +35,9 @@ export class CoinoneClient implements ExchangeClient {
 
   private async apiPost<T = any>(endpoint: string, extra: Record<string, unknown> = {}): Promise<T> {
     const body = this.buildBody(extra);
+    if (endpoint === '/v2.1/order') {
+      console.log(`[CoinoneClient] 주문 요청 body:`, JSON.stringify({ ...body, access_token: '***' }));
+    }
     const payload = Buffer.from(JSON.stringify(body)).toString('base64');
 
     const signature = crypto
