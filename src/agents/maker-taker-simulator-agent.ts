@@ -731,8 +731,10 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
           );
           preCheckOk = false;
         }
-      } else if (preCheckOk && needsBithumb && bithumbClient) {
-        // Bithumb 관련 봇 (단독 또는 크로스 거래소) 잔고 사전 체크
+      }
+
+      // Bithumb 관련 봇 잔고 사전 체크 (upbit 블록과 독립 실행 — 크로스 거래소 봇도 양쪽 다 체크)
+      if (preCheckOk && needsBithumb && bithumbClient) {
         let bithumbAvail: Record<string, number> = {};
         try {
           bithumbAvail = await this.getBithumbAvailableBalances(bot.userId, bithumbClient);
@@ -772,8 +774,10 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             }
           }
         }
-      } else if (preCheckOk && needsCoinone && coinoneClient) {
-        // Coinone 관련 봇 잔고 사전 체크
+      }
+
+      // Coinone 관련 봇 잔고 사전 체크 (bithumb 블록과 독립 실행 — 크로스 거래소 봇도 양쪽 다 체크)
+      if (preCheckOk && needsCoinone && coinoneClient) {
         let coinoneAvail: Record<string, number> = {};
         try {
           coinoneAvail = await this.getCoinoneAvailableBalances(bot.userId, coinoneClient);
