@@ -28,7 +28,7 @@ export class CoinoneClient implements ExchangeClient {
   private buildBody(extra: Record<string, unknown> = {}): Record<string, unknown> {
     return {
       access_token: this.creds.accessKey,
-      nonce: crypto.randomUUID(),
+      nonce: Date.now(),
       ...extra,
     };
   }
