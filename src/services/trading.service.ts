@@ -622,11 +622,11 @@ export class TradingService {
                 for (const grid of staleGrids) {
                   try {
                     const order = await (upbit as any).getOrder(grid.orderId!);
-                    if (order.state === 'done') {
+                    if (order.status === 'filled') {
                       console.log(`[Trading] User ${userId}: 오래된 체결 감지 (빗썸) - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
                       await this.processFilledOrder(grid, order, upbit, userId, exchange);
                       totalFilledCount++;
-                    } else if (order.state === 'cancel') {
+                    } else if (order.status === 'cancelled') {
                       await prisma.gridLevel.update({ where: { id: grid.id }, data: { status: 'available', orderId: null, filledAt: null } });
                     }
                   } catch { /* 개별 조회 실패는 무시 */ }
@@ -831,9 +831,13 @@ export class TradingService {
 
     if (grid.type === 'sell' && grid.buyPrice) {
       const buyPrice = grid.buyPrice;
-      // order.avg_price가 실제 평균 체결가
-      const sellPrice = order.avg_price ? parseFloat(order.avg_price) : parseFloat(order.price);
-      const volume = parseFloat(order.executed_volume);
+      // PlacedOrder(avgFillPrice/filledQty) 또는 raw API(avg_price/executed_volume) 모두 지원
+      const sellPrice = order.avgFillPrice != null
+        ? order.avgFillPrice
+        : (order.avg_price ? parseFloat(order.avg_price) : parseFloat(order.price ?? '0'));
+      const volume = order.filledQty != null
+        ? order.filledQty
+        : parseFloat(order.executed_volume ?? '0');
 
       const buyAmount = volume * buyPrice;
       const buyFee = buyAmount * feeRate;
