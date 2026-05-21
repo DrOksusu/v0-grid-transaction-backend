@@ -338,6 +338,11 @@ export class TradingService {
             balanceErrorCooldownMap.set(botId, Date.now() + BALANCE_ERROR_COOLDOWN_MS);
             console.log(`[Trading] Bot ${botId}: 잔고 부족 → 매수 5분 쿨다운 설정`);
 
+            // 원거리 pending 매수 주문 취소하여 잔고 확보 (백그라운드 실행)
+            TradingService.trimBuyOrdersOnInsufficientBalance(upbit, botId, bot.ticker, 7, botExchange).catch(
+              (e: any) => console.error(`[Trading] Bot ${botId}: 원거리 주문 정리 실패 - ${e.message}`)
+            );
+
             // 에러 메시지 저장 + 소켓 알림 (1회만)
             await prisma.bot.update({
               where: { id: botId },
@@ -1221,11 +1226,11 @@ export class TradingService {
           if (grid.orderId) {
             await upbit.cancelOrder(grid.orderId);
 
-            // 그리드 상태를 inactive로 변경 (다음에 다시 주문 가능)
+            // 그리드 상태를 available로 변경 (가격이 내려오면 다시 주문 가능)
             await prisma.gridLevel.update({
               where: { id: grid.id },
               data: {
-                status: 'inactive',
+                status: 'available',
                 orderId: null,
               },
             });
