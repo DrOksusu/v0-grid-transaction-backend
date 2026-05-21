@@ -28,7 +28,7 @@ export class CoinoneClient implements ExchangeClient {
   private buildBody(extra: Record<string, unknown> = {}): Record<string, unknown> {
     return {
       access_token: this.creds.accessKey,
-      nonce: Date.now(),
+      nonce: crypto.randomUUID(),
       ...extra,
     };
   }
@@ -57,6 +57,7 @@ export class CoinoneClient implements ExchangeClient {
     } catch (err: any) {
       const d = err?.response?.data;
       if (d?.result === 'error') {
+        console.error(`[CoinoneClient] ${endpoint} 에러 응답 전체:`, JSON.stringify(d));
         throw new Error(`Coinone ${endpoint} 오류 (${d.error_code}): ${d.error_msg ?? ''}`);
       }
       throw new Error(`Coinone ${endpoint} 실패: ${err.message}`);
@@ -64,6 +65,7 @@ export class CoinoneClient implements ExchangeClient {
 
     const d = res.data as any;
     if (d?.result === 'error') {
+      console.error(`[CoinoneClient] ${endpoint} 에러 응답 전체:`, JSON.stringify(d));
       throw new Error(`Coinone ${endpoint} 오류 (${d.error_code}): ${d.error_msg ?? ''}`);
     }
     return d;
