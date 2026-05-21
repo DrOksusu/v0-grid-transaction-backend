@@ -3,6 +3,7 @@ import { parse as parseHtml } from 'node-html-parser';
 import { Prisma } from '@prisma/client';
 import prisma from '../config/database';
 import { listingAutoTraderService } from './listing-auto-trader.service';
+import { kakaoNotifyService } from './kakao-notify.service';
 
 // 상장 공지 인터페이스
 export interface UpbitNotice {
@@ -393,6 +394,17 @@ class UpbitListingMonitorService {
     });
 
     if (ticker) {
+      // 카카오 알림 발송 (비동기, 실패해도 계속)
+      const kakaoMsg =
+        `[업비트 신규 상장 공지]\n` +
+        `티커: ${ticker}\n` +
+        `제목: ${notice.title}\n` +
+        `공지: ${notice.url}\n` +
+        `https://v0-grid-transaction.vercel.app/admin/upbit-listings`;
+      kakaoNotifyService.sendToMe(kakaoMsg).catch(e =>
+        console.error('[ListingMonitor] 카카오 알림 실패:', e.message)
+      );
+
       // 자동매수 + 공지 시점 스냅샷 병렬 실행 (속도 우선)
       await Promise.all([
         listingAutoTraderService.executeBuy(announcement.id, ticker).catch(e =>
@@ -419,6 +431,15 @@ class UpbitListingMonitorService {
       where: { id: announcement.id },
       data: { listedAt, status: 'listed' },
     });
+
+    // 카카오 알림 — 실제 거래 시작 시점
+    const kakaoMsg =
+      `[업비트 상장 완료 - 거래 시작]\n` +
+      `티커: ${ticker}\n` +
+      `https://upbit.com/exchange?code=CRIX.UPBIT.KRW-${ticker}`;
+    kakaoNotifyService.sendToMe(kakaoMsg).catch(e =>
+      console.error('[ListingMonitor] 카카오 상장완료 알림 실패:', e.message)
+    );
 
     // 상장 시점 스냅샷
     await this.captureSnapshots(announcement.id, ticker, 'listed');
@@ -669,6 +690,15 @@ class UpbitListingMonitorService {
 
     this.seenNoticeIds.add(syntheticNoticeId);
 
+    // 카카오 알림
+    const kakaoMsg =
+      `[업비트 신규 상장 공지 - 트위터]\n` +
+      `티커: ${ticker}\n` +
+      `https://v0-grid-transaction.vercel.app/admin/upbit-listings`;
+    kakaoNotifyService.sendToMe(kakaoMsg).catch(e =>
+      console.error('[ListingMonitor] 카카오 알림 실패:', e.message)
+    );
+
     await Promise.all([
       listingAutoTraderService.executeBuy(announcement.id, ticker).catch((e: Error) =>
         console.error('[ListingMonitor] 트위터 자동매수 오류:', e)
@@ -731,6 +761,15 @@ class UpbitListingMonitorService {
     });
 
     this.seenNoticeIds.add(syntheticNoticeId);
+
+    // 카카오 알림
+    const kakaoMsg =
+      `[업비트 신규 상장 공지 - 텔레그램]\n` +
+      `티커: ${ticker}\n` +
+      `https://v0-grid-transaction.vercel.app/admin/upbit-listings`;
+    kakaoNotifyService.sendToMe(kakaoMsg).catch(e =>
+      console.error('[ListingMonitor] 카카오 알림 실패:', e.message)
+    );
 
     await Promise.all([
       listingAutoTraderService.executeBuy(announcement.id, ticker).catch((e: Error) =>
