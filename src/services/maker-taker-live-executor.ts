@@ -181,8 +181,12 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       makerBook.bidQty ?? bot.quantity,
       takerBook.askQty ?? bot.quantity,
     );
+    console.log(`[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: sellIoc 호출 ${bot.makerCoin} qty=${effectiveQty} (bidQty=${makerBook.bidQty}, takerAskQty=${takerBook.askQty})`);
     const sellResult = await makerLeg.sellIoc(bot.makerCoin, effectiveQty, makerBook.bid);
-    if (!sellResult) return { kind: 'noop' };
+    if (!sellResult) {
+      console.log(`[LiveExecutor] bot ${bot.id} TAKER_SELL_FIRST: sellIoc null → noop`);
+      return { kind: 'noop' };
+    }
 
     // 비정상 저가 체결만 abort — 부분체결(정상 단가)은 filledQty 기반 BID로 처리
     // 예) 10 units @ 886 KRW → 단가=886 < 1472*0.9=1325 → abort

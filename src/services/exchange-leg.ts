@@ -182,11 +182,13 @@ export class BithumbLeg implements ExchangeLeg {
     _priceHint?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
     const placed = await this.client.placeMarketOrder('sell', symbol, quantity);
+    console.log(`[BithumbLeg.sellIoc] ${symbol} qty=${quantity} orderId=${placed.orderId || '(empty)'}`);
     if (!placed.orderId) return null;
 
     // 빗썸 시장가 매도는 거의 즉시 체결되나 polling 필요
     for (let i = 0; i < 6; i++) {
       const order = await this.client.getOrder(placed.orderId);
+      console.log(`[BithumbLeg.sellIoc] poll[${i}] ${symbol} status=${order.status} filledQty=${order.filledQty}`);
       if (order.status === 'filled' && order.filledQty > 0) {
         return {
           filledQty: order.filledQty,
@@ -197,6 +199,7 @@ export class BithumbLeg implements ExchangeLeg {
       if (order.status === 'cancelled' || order.status === 'failed') return null;
       await new Promise((r) => setTimeout(r, 500));
     }
+    console.log(`[BithumbLeg.sellIoc] ${symbol} 6회 폴링 완료 후 미체결 — timeout null`);
     return null;
   }
 
