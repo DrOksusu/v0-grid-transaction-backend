@@ -148,7 +148,7 @@ async function initFromRest(): Promise<void> {
         const { price: ask, qty: askQty } = bestAsk(book.asks);
         if (bid > 0 && ask > 0) {
           cache.set(symbol, { symbol, bid, bidQty, ask, askQty, timestamp: Date.now() });
-          console.log(`[BithumbStablecoinWs] REST 초기화: ${symbol} bid=${bid} bidQty=${bidQty} ask=${ask} askQty=${askQty}`);
+          console.log(`[BithumbStablecoinWs] REST 갱신: ${symbol} bid=${bid} ask=${ask}`);
         }
       } catch {
         // 개별 코인 실패는 무시
