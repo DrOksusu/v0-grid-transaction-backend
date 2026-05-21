@@ -37,8 +37,8 @@ export interface ExchangeLeg {
   /** 지정가 maker BID 주문. null = 주문 실패 */
   placeMakerBid(symbol: string, price: number, quantity: number): Promise<string | null>;
 
-  /** 주문 현황 조회 (polling용) */
-  pollOrder(orderId: string): Promise<{
+  /** 주문 현황 조회 (polling용). symbol: 코인원은 재시작 후 Map 복구용 */
+  pollOrder(orderId: string, symbol?: string): Promise<{
     filled: boolean;
     filledQty: number;
     grossKrw: number;
@@ -48,8 +48,8 @@ export interface ExchangeLeg {
   /** 지정가 ASK(매도) 주문. TAKER_PENDING 단계에서 사용. null = 주문 실패 */
   placeMakerAsk(symbol: string, price: number, quantity: number): Promise<string | null>;
 
-  /** 주문 취소 */
-  cancelOrder(orderId: string): Promise<void>;
+  /** 주문 취소. symbol: 코인원은 재시작 후 Map 복구용 */
+  cancelOrder(orderId: string, symbol?: string): Promise<void>;
 }
 
 /** Upbit 응답에서 KRW 금액 추출 (executed_funds 우선, trades fallback) */
@@ -141,6 +141,7 @@ export class UpbitLeg implements ExchangeLeg {
 
   async pollOrder(
     orderId: string,
+    _symbol?: string,
   ): Promise<{ filled: boolean; filledQty: number; grossKrw: number; feeKrw: number }> {
     try {
       const status: any = await this.upbit.getOrder(orderId);
@@ -166,7 +167,7 @@ export class UpbitLeg implements ExchangeLeg {
     return resp.uuid || null;
   }
 
-  async cancelOrder(orderId: string): Promise<void> {
+  async cancelOrder(orderId: string, _symbol?: string): Promise<void> {
     await this.upbit.cancelOrder(orderId);
   }
 }
@@ -236,6 +237,7 @@ export class BithumbLeg implements ExchangeLeg {
 
   async pollOrder(
     orderId: string,
+    _symbol?: string,
   ): Promise<{ filled: boolean; filledQty: number; grossKrw: number; feeKrw: number }> {
     try {
       const order = await this.client.getOrder(orderId);
@@ -258,7 +260,7 @@ export class BithumbLeg implements ExchangeLeg {
     return resp?.uuid ?? null;
   }
 
-  async cancelOrder(orderId: string): Promise<void> {
+  async cancelOrder(orderId: string, _symbol?: string): Promise<void> {
     await this.client.cancelOrder(orderId);
   }
 }
@@ -343,10 +345,11 @@ export class CoinoneLeg implements ExchangeLeg {
 
   async pollOrder(
     orderId: string,
+    symbol?: string,
   ): Promise<{ filled: boolean; filledQty: number; grossKrw: number; feeKrw: number }> {
     try {
-      const symbol = this.orderSymbolMap.get(orderId);
-      const order = await this.client.getOrder(orderId, symbol);
+      const sym = this.orderSymbolMap.get(orderId) ?? symbol;
+      const order = await this.client.getOrder(orderId, sym);
       const filled = order.status === 'filled' && order.filledQty > 0;
       return {
         filled,
@@ -367,9 +370,9 @@ export class CoinoneLeg implements ExchangeLeg {
     return orderId;
   }
 
-  async cancelOrder(orderId: string): Promise<void> {
-    const symbol = this.orderSymbolMap.get(orderId);
-    await this.client.cancelOrder(orderId, symbol);
+  async cancelOrder(orderId: string, symbol?: string): Promise<void> {
+    const sym = this.orderSymbolMap.get(orderId) ?? symbol;
+    await this.client.cancelOrder(orderId, sym);
     this.orderSymbolMap.delete(orderId);
   }
 }

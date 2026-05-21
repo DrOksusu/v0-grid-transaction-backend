@@ -225,7 +225,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
 
   // TAKER_SELL_FIRST: pending 주문 = takerCoin BID on takerLeg
   if (pending.legOrder === 'TAKER_SELL_FIRST') {
-    const poll = await takerLeg.pollOrder(pending.makerOrderUuid);
+    const poll = await takerLeg.pollOrder(pending.makerOrderUuid, bot.takerCoin);
 
     if (poll.filled) {
       if (poll.grossKrw === 0) {
@@ -288,7 +288,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
   if (pending.legOrder === 'MAKER_SELL_FIRST') {
     // 하위 상태 A: TAKER_PENDING — Leg1 체결 완료, Leg2 지정가 BID 대기 중
     if (pending.status === 'TAKER_PENDING' && pending.takerOrderUuid) {
-      const takerPoll = await takerLeg.pollOrder(pending.takerOrderUuid);
+      const takerPoll = await takerLeg.pollOrder(pending.takerOrderUuid, bot.takerCoin);
 
       if (takerPoll.filled) {
         if (takerPoll.grossKrw === 0) {
@@ -335,9 +335,9 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       const takerElapsed = Date.now() - (pending.makerFilledAt ?? pending.createdAt).getTime();
       if (takerElapsed > bot.maxPendingMs) {
         try {
-          await takerLeg.cancelOrder(pending.takerOrderUuid);
+          await takerLeg.cancelOrder(pending.takerOrderUuid, bot.takerCoin);
         } catch {}
-        const finalPoll = await takerLeg.pollOrder(pending.takerOrderUuid);
+        const finalPoll = await takerLeg.pollOrder(pending.takerOrderUuid, bot.takerCoin);
         if (finalPoll.filledQty > 0 && finalPoll.grossKrw > 0) {
           return {
             kind: 'taker_expired',
@@ -383,11 +383,11 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
           `[LiveExecutor] bot ${bot.id} MAKER_SELL_FIRST spread_cancelled: currentSpread=${currentSpreadBps}bp < cancelBelow=${bot.cancelBelowBps}bp (takerAsk=${takerBook.ask}, makerOrderPrice=${pending.makerOrderPrice})`,
         );
         try {
-          await makerLeg.cancelOrder(pending.makerOrderUuid);
+          await makerLeg.cancelOrder(pending.makerOrderUuid, bot.makerCoin);
         } catch {
           // 취소 직전 체결됐을 수 있음 — 폴링으로 확인
         }
-        const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid);
+        const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid, bot.makerCoin);
         if (postCancelPoll.filled && postCancelPoll.grossKrw > 0) {
           // 레이스: 취소 시도 중 이미 체결 — Leg2 지정가 BID 강제 집행
           console.warn(
@@ -422,7 +422,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       }
     }
 
-    const poll = await makerLeg.pollOrder(pending.makerOrderUuid);
+    const poll = await makerLeg.pollOrder(pending.makerOrderUuid, bot.makerCoin);
 
     if (poll.filled) {
       if (poll.grossKrw === 0) {
@@ -465,7 +465,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
 
     if (elapsed > bot.maxPendingMs) {
       try {
-        await makerLeg.cancelOrder(pending.makerOrderUuid);
+        await makerLeg.cancelOrder(pending.makerOrderUuid, bot.makerCoin);
       } catch {
         // 취소 직전 체결됐을 수 있음
       }
@@ -479,7 +479,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
 
   // 하위 상태 A: TAKER_PENDING — maker 체결 완료, taker ASK 대기 중
   if (pending.status === 'TAKER_PENDING' && pending.takerOrderUuid) {
-    const takerPoll = await takerLeg.pollOrder(pending.takerOrderUuid);
+    const takerPoll = await takerLeg.pollOrder(pending.takerOrderUuid, bot.takerCoin);
 
     if (takerPoll.filled) {
       if (takerPoll.grossKrw === 0) {
@@ -528,12 +528,12 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
     const takerElapsed = Date.now() - (pending.makerFilledAt ?? pending.createdAt).getTime();
     if (takerElapsed > bot.maxPendingMs) {
       try {
-        await takerLeg.cancelOrder(pending.takerOrderUuid);
+        await takerLeg.cancelOrder(pending.takerOrderUuid, bot.takerCoin);
       } catch {
         // 취소 직전 체결됐거나 이미 취소된 주문일 수 있음
       }
       // 취소 후 부분체결 여부 확인 — 실제 수령한 KRW를 기록하기 위해
-      const finalPoll = await takerLeg.pollOrder(pending.takerOrderUuid);
+      const finalPoll = await takerLeg.pollOrder(pending.takerOrderUuid, bot.takerCoin);
       if (finalPoll.filledQty > 0 && finalPoll.grossKrw > 0) {
         return {
           kind: 'taker_expired',
@@ -581,11 +581,11 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
         `[LiveExecutor] bot ${bot.id} takerUpgrade: spread=${upgradeSpreadBps}bp >= threshold=${bot.takerUpgradeBps}bp — cancelling maker, buying via IOC (makerAsk=${makerBook.ask}, takerBid=${takerBook.bid})`,
       );
       try {
-        await makerLeg.cancelOrder(pending.makerOrderUuid);
+        await makerLeg.cancelOrder(pending.makerOrderUuid, bot.makerCoin);
       } catch {
         // 취소 직전 체결됐을 수 있음 — 폴링으로 확인
       }
-      const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid);
+      const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid, bot.makerCoin);
       if (postCancelPoll.filled && postCancelPoll.grossKrw > 0) {
         // 레이스: 취소 시도 중 maker 체결 — 기존 race fill 경로 재사용
         const raceAvgPrice = postCancelPoll.grossKrw / postCancelPoll.filledQty;
@@ -648,11 +648,11 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
         `[LiveExecutor] bot ${bot.id} spread_cancelled: currentSpread=${currentSpreadBps}bp < cancelBelow=${bot.cancelBelowBps}bp (takerBid=${takerBook.bid}, makerOrderPrice=${pending.makerOrderPrice})`,
       );
       try {
-        await makerLeg.cancelOrder(pending.makerOrderUuid);
+        await makerLeg.cancelOrder(pending.makerOrderUuid, bot.makerCoin);
       } catch {
         // 취소 직전 체결됐을 수 있음 — 폴링으로 확인
       }
-      const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid);
+      const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid, bot.makerCoin);
       if (postCancelPoll.filled && postCancelPoll.grossKrw > 0) {
         // 취소 시도 중 체결 — taker 집행 전 spread 재검증 (이미 역전됐을 수 있음)
         const makerAvgPrice = postCancelPoll.grossKrw / postCancelPoll.filledQty;
@@ -687,7 +687,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
   }
 
   // maker 주문 폴링
-  const poll = await makerLeg.pollOrder(pending.makerOrderUuid);
+  const poll = await makerLeg.pollOrder(pending.makerOrderUuid, bot.makerCoin);
 
   if (poll.filled) {
     if (poll.grossKrw === 0) {
@@ -728,11 +728,11 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
 
   if (elapsed > bot.maxPendingMs) {
     try {
-      await makerLeg.cancelOrder(pending.makerOrderUuid);
+      await makerLeg.cancelOrder(pending.makerOrderUuid, bot.makerCoin);
     } catch {
       // 취소 직전 체결됐을 수 있음 — 폴링으로 확인
     }
-    const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid);
+    const postCancelPoll = await makerLeg.pollOrder(pending.makerOrderUuid, bot.makerCoin);
     if (postCancelPoll.filled && postCancelPoll.grossKrw > 0) {
       // 만료 취소 중 체결 — taker 집행 전 spread 재검증
       const expiredMakerAvgPrice = postCancelPoll.grossKrw / postCancelPoll.filledQty;
