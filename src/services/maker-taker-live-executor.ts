@@ -181,7 +181,7 @@ export async function processLiveBot(input: ProcessLiveInput): Promise<LiveExecu
       makerBook.bidQty ?? bot.quantity,
       takerBook.askQty ?? bot.quantity,
     );
-    const sellResult = await makerLeg.sellIoc(bot.makerCoin, effectiveQty);
+    const sellResult = await makerLeg.sellIoc(bot.makerCoin, effectiveQty, makerBook.bid);
     if (!sellResult) return { kind: 'noop' };
 
     // 비정상 저가 체결만 abort — 부분체결(정상 단가)은 filledQty 기반 BID로 처리

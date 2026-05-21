@@ -11,10 +11,14 @@ import type { CoinoneClient } from './exchange/coinone-client';
 
 /** 거래소별 주문 수행 어댑터 */
 export interface ExchangeLeg {
-  /** IOC 시장가 매도. 즉시 처리. null = 체결 없음 */
+  /**
+   * IOC 매도. 즉시 처리. null = 체결 없음.
+   * @param priceHint 지정가 매도 지원 거래소(코인원)에서 사용할 ASK 가격(KRW). 미지정 시 마켓 매도.
+   */
   sellIoc(
     symbol: string,
     quantity: number,
+    priceHint?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null>;
 
   /**
@@ -64,6 +68,7 @@ export class UpbitLeg implements ExchangeLeg {
   async sellIoc(
     symbol: string,
     quantity: number,
+    _priceHint?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
     const resp = await this.upbit.placeBestIoc(`KRW-${symbol}`, 'ask', {
       volume: String(quantity),
@@ -173,6 +178,7 @@ export class BithumbLeg implements ExchangeLeg {
   async sellIoc(
     symbol: string,
     quantity: number,
+    _priceHint?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
     const placed = await this.client.placeMarketOrder('sell', symbol, quantity);
     if (!placed.orderId) return null;
@@ -266,13 +272,20 @@ export class CoinoneLeg implements ExchangeLeg {
   async sellIoc(
     symbol: string,
     quantity: number,
+    priceHint?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
-    const placed = await this.client.placeMarketOrder('sell', symbol, quantity);
-    if (!placed.orderId) return null;
-    this.orderSymbolMap.set(placed.orderId, symbol);
+    // 코인원은 시장가 매도(MARKET ASK) error 107 → 지정가 ASK (bid 가격)로 즉시 체결 처리
+    if (!priceHint || priceHint <= 0) {
+      console.error(`[CoinoneLeg] sellIoc: priceHint 없음 — ${symbol} 주문 불가`);
+      return null;
+    }
+    const res = await this.client.sellLimit(symbol, priceHint, quantity);
+    const orderId: string = res?.order_id ?? '';
+    if (!orderId) return null;
+    this.orderSymbolMap.set(orderId, symbol);
 
     for (let i = 0; i < 6; i++) {
-      const order = await this.client.getOrder(placed.orderId, symbol);
+      const order = await this.client.getOrder(orderId, symbol);
       if (order.status === 'filled' && order.filledQty > 0) {
         return {
           filledQty: order.filledQty,
@@ -282,6 +295,12 @@ export class CoinoneLeg implements ExchangeLeg {
       }
       if (order.status === 'cancelled' || order.status === 'failed') return null;
       await new Promise((r) => setTimeout(r, 500));
+    }
+    // 3초 미체결 → 취소
+    try {
+      await this.client.cancelOrder(orderId, symbol);
+    } catch (err: any) {
+      console.warn(`[CoinoneLeg] sellIoc 취소 실패 ${symbol}:`, err.message);
     }
     return null;
   }
