@@ -17,6 +17,17 @@ import {
 import { socketService } from './socket.service';
 import { botEngine } from './bot-engine.service';
 import { whaleAlertService } from './whale-alert.service';
+import { kakaoNotifyService } from './kakao-notify.service';
+
+// 과부하 알림 임계치
+const ALERT_THRESHOLDS = {
+  cpuDanger: 90,       // CPU % 이상
+  memoryDanger: 95,    // 서버 메모리 % 이상
+  containerDanger: 90, // 컨테이너 메모리 % 이상
+  eventLoopDanger: 100, // 이벤트 루프 지연 ms 이상
+  errorRateDanger: 5,  // API 에러율 % 이상
+};
+const ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 1시간 — 같은 항목 중복 알림 방지
 
 class MetricsService {
   // 설정
@@ -40,6 +51,9 @@ class MetricsService {
 
   // CPU 측정용
   private lastCpuInfo: { idle: number; total: number } | null = null;
+
+  // 과부하 알림 쿨다운 (alertType → 마지막 발송 시각)
+  private lastAlertAt: Map<string, number> = new Map();
 
   constructor() {
     this.setupEventLoopMonitor();
@@ -136,6 +150,73 @@ class MetricsService {
     this.aggregatedHistory = this.aggregatedHistory.filter(
       (a) => a.timestamp > historyCutoff
     );
+
+    // 과부하 알림 체크
+    this.checkOverload();
+  }
+
+  /** 임계치 초과 시 카카오 알림 (1시간 쿨다운) */
+  private checkOverload(): void {
+    const sys = this.getSystemMetrics();
+    const memPercent = (sys.memory.used / sys.memory.total) * 100;
+    const containerPercent = sys.memory.container?.available
+      ? (sys.memory.container.used / sys.memory.container.limit) * 100
+      : 0;
+
+    const recentMetrics = this.rawMetrics.filter((m) => m.timestamp > Date.now() - 60000);
+    const errorRate = recentMetrics.length > 0
+      ? (recentMetrics.filter((m) => m.statusCode >= 400).length / recentMetrics.length) * 100
+      : 0;
+
+    const checks: Array<{ key: string; triggered: boolean; label: string; value: string }> = [
+      {
+        key: 'cpu',
+        triggered: sys.cpu.usage >= ALERT_THRESHOLDS.cpuDanger,
+        label: 'CPU 과부하',
+        value: `${sys.cpu.usage.toFixed(1)}% (임계치: ${ALERT_THRESHOLDS.cpuDanger}%)`,
+      },
+      {
+        key: 'memory',
+        triggered: memPercent >= ALERT_THRESHOLDS.memoryDanger,
+        label: '서버 메모리 부족',
+        value: `${memPercent.toFixed(1)}% (임계치: ${ALERT_THRESHOLDS.memoryDanger}%)`,
+      },
+      {
+        key: 'container',
+        triggered: containerPercent >= ALERT_THRESHOLDS.containerDanger,
+        label: '컨테이너 메모리 부족',
+        value: `${containerPercent.toFixed(1)}% (임계치: ${ALERT_THRESHOLDS.containerDanger}%)`,
+      },
+      {
+        key: 'eventloop',
+        triggered: sys.eventLoop.lag >= ALERT_THRESHOLDS.eventLoopDanger,
+        label: '이벤트 루프 지연',
+        value: `${sys.eventLoop.lag.toFixed(1)}ms (임계치: ${ALERT_THRESHOLDS.eventLoopDanger}ms)`,
+      },
+      {
+        key: 'errorrate',
+        triggered: errorRate >= ALERT_THRESHOLDS.errorRateDanger,
+        label: 'API 에러율 급증',
+        value: `${errorRate.toFixed(1)}% (임계치: ${ALERT_THRESHOLDS.errorRateDanger}%)`,
+      },
+    ];
+
+    for (const check of checks) {
+      if (!check.triggered) continue;
+      const lastSent = this.lastAlertAt.get(check.key) ?? 0;
+      if (Date.now() - lastSent < ALERT_COOLDOWN_MS) continue;
+
+      this.lastAlertAt.set(check.key, Date.now());
+      const msg =
+        `[서버 과부하 경고]\n` +
+        `항목: ${check.label}\n` +
+        `현재값: ${check.value}\n` +
+        `https://v0-grid-transaction.vercel.app/admin`;
+      kakaoNotifyService.sendToMe(msg).catch((e: any) =>
+        console.error(`[Metrics] 과부하 카카오 알림 실패(${check.key}):`, e.message)
+      );
+      console.warn(`[Metrics] 과부하 알림 발송: ${check.label} — ${check.value}`);
+    }
   }
 
   /**
