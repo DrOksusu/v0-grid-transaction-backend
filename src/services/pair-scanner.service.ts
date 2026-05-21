@@ -19,6 +19,7 @@ import {
   subscribeCoinoneStablecoinOrderbooks,
   unsubscribeCoinoneStablecoinOrderbooks,
   getCoinoneStablecoinOrderbook,
+  isCoinoneStablecoinPolling,
 } from './coinone-stablecoin-price-manager';
 
 // ─────────────────────────────────────────────────────────────
@@ -69,6 +70,7 @@ export interface PairScannerSnapshot {
   stats: PairStats[];
   wsConnected: boolean;
   bithumbWsConnected: boolean;
+  coinoneWsConnected: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -265,6 +267,7 @@ class PairScannerService {
       stats: this.getStats(),
       wsConnected: this.ws !== null && this.ws.readyState === WebSocket.OPEN,
       bithumbWsConnected: isBithumbStablecoinWsConnected(),
+      coinoneWsConnected: isCoinoneStablecoinPolling(),
     };
   }
 
