@@ -133,19 +133,19 @@ async function initFromRest(): Promise<void> {
         );
         const data = res.data?.data;
         if (!data) return;
-        if (!localBooks.has(symbol)) {
-          localBooks.set(symbol, { bids: new Map(), asks: new Map(), lastUpdated: Date.now() });
-        }
-        const book = localBooks.get(symbol)!;
+        // REST 스냅샷으로 완전 교체: WS 재연결 후 stale 델타 항목 제거
+        const newBids = new Map<string, number>();
+        const newAsks = new Map<string, number>();
         for (const row of (data.bids ?? [])) {
-          book.bids.set(String(row.price), parseFloat(row.quantity));
+          newBids.set(String(row.price), parseFloat(row.quantity));
         }
         for (const row of (data.asks ?? [])) {
-          book.asks.set(String(row.price), parseFloat(row.quantity));
+          newAsks.set(String(row.price), parseFloat(row.quantity));
         }
-        book.lastUpdated = Date.now();
-        const { price: bid, qty: bidQty } = bestBid(book.bids);
-        const { price: ask, qty: askQty } = bestAsk(book.asks);
+        const newBook = { bids: newBids, asks: newAsks, lastUpdated: Date.now() };
+        localBooks.set(symbol, newBook);
+        const { price: bid, qty: bidQty } = bestBid(newBook.bids);
+        const { price: ask, qty: askQty } = bestAsk(newBook.asks);
         if (bid > 0 && ask > 0) {
           cache.set(symbol, { symbol, bid, bidQty, ask, askQty, timestamp: Date.now() });
           console.log(`[BithumbStablecoinWs] REST 갱신: ${symbol} bid=${bid} ask=${ask}`);
