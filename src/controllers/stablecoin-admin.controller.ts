@@ -617,7 +617,7 @@ export const getBithumbOrderbooks = async (req: AuthRequest, res: Response, next
     for (const coin of coins) {
       const top = all.get(coin);
       if (top) {
-        books[coin] = { bid: top.bid, ask: top.ask, timestamp: top.timestamp };
+        books[coin] = { bid: top.bid, bidQty: top.bidQty, ask: top.ask, askQty: top.askQty, timestamp: top.timestamp };
       }
     }
     res.json({ books, fetchedAt: Date.now() });
@@ -635,7 +635,7 @@ export const getCoinoneOrderbooks = async (req: AuthRequest, res: Response, next
     for (const coin of coins) {
       const top = all.get(coin);
       if (top) {
-        books[coin] = { bid: top.bid, ask: top.ask, timestamp: top.timestamp };
+        books[coin] = { bid: top.bid, bidQty: top.bidQty, ask: top.ask, askQty: top.askQty, timestamp: top.timestamp };
       }
     }
     res.json({ books, fetchedAt: Date.now() });

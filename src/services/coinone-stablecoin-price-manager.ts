@@ -29,7 +29,9 @@ const REST_FALLBACK_INTERVAL_MS = 8_000;
 export interface CoinoneOrderbookTop {
   symbol: string;
   bid: number;
+  bidQty: number;
   ask: number;
+  askQty: number;
   timestamp: number;
 }
 
@@ -56,8 +58,10 @@ async function fetchFromRest(): Promise<void> {
 
       const bid = parseFloat(ticker.best_bids?.[0]?.price ?? '0');
       const ask = parseFloat(ticker.best_asks?.[0]?.price ?? '0');
+      const bidQty = parseFloat(ticker.best_bids?.[0]?.qty ?? '0');
+      const askQty = parseFloat(ticker.best_asks?.[0]?.qty ?? '0');
       if (bid > 0 && ask > 0) {
-        cache.set(sym, { symbol: sym, bid, ask, timestamp: Date.now() });
+        cache.set(sym, { symbol: sym, bid, bidQty, ask, askQty, timestamp: Date.now() });
       }
     }
   } catch (e: any) {
@@ -157,8 +161,10 @@ function connectInternal(): void {
       // 코인원 WS는 전체 orderbook 전송 → bids[0] / asks[0]이 최우선 호가
       const bid = parseFloat(d.bids?.[0]?.price ?? '0');
       const ask = parseFloat(d.asks?.[0]?.price ?? '0');
+      const bidQty = parseFloat(d.bids?.[0]?.qty ?? '0');
+      const askQty = parseFloat(d.asks?.[0]?.qty ?? '0');
       if (bid > 0 && ask > 0) {
-        cache.set(sym, { symbol: sym, bid, ask, timestamp: Date.now() });
+        cache.set(sym, { symbol: sym, bid, bidQty, ask, askQty, timestamp: Date.now() });
       }
     } catch (err: any) {
       console.error('[CoinoneStablecoinWs] 메시지 파싱 오류:', err.message);
