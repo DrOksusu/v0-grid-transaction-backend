@@ -13,6 +13,8 @@ import {
   getBithumbOrderbooks,
   getCoinoneOrderbooks,
   getCrossExchangeLatest,
+  clearBotBalanceCooldown,
+  getBalanceCooldowns,
 } from '../controllers/stablecoin-admin.controller';
 
 const router = Router();
@@ -39,5 +41,9 @@ router.get('/orderbooks', getOrderbooks);
 router.get('/bithumb-orderbooks', getBithumbOrderbooks);
 router.get('/coinone-orderbooks', getCoinoneOrderbooks);
 router.get('/cross-exchange-latest', getCrossExchangeLatest);
+
+// 잔고 부족 쿨다운 관리
+router.get('/balance-cooldowns', getBalanceCooldowns);
+router.post('/maker-bots/:id/clear-balance-cooldown', clearBotBalanceCooldown);
 
 export default router;

@@ -65,6 +65,8 @@ function isBookDataSuspect(makerBid: number, takerBid: number, botId: number): b
 
 /** 동일 봇 연속 재발화 방지 쿨다운 (ms) */
 const INSTANT_FILL_COOLDOWN_MS = 10_000;
+/** 잔고 부족 시 재조회 쿨다운 (ms) — 10분 */
+const BALANCE_INSUFFICIENT_COOLDOWN_MS = 10 * 60 * 1000;
 
 export class MakerTakerSimulatorAgent extends BaseAgent {
   private unsubscribe: (() => void) | null = null;
@@ -76,6 +78,8 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   private coinoneBalanceCaches = new Map<number, { data: Record<string, number>; at: number }>();
   /** 연속 재발화 방지: botId → 마지막 발화 시각(ms) */
   private recentlyFiredBots = new Map<number, number>();
+  /** 잔고 부족 쿨다운: botId → 쿨다운 만료 시각(ms) */
+  private balanceCooldownMap = new Map<number, number>();
 
   // Spread 완화 상태 머신
   private lastFilledAt: Date | null = null;
@@ -212,6 +216,10 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             `[MakerTakerSimulatorAgent] bot ${bot.id} processBot 실패:`,
             err.message,
           );
+          // 잔고 부족(error_code 103)으로 실패한 경우 쿨다운 적용
+          if (err.message?.includes('103') || err.message?.toLowerCase().includes('lack of balance') || err.message?.includes('잔고 부족')) {
+            this.setBalanceCooldown(bot.id);
+          }
         }
       }
     } catch (err: any) {
@@ -534,6 +542,12 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
   ): Promise<void> {
     if (bot.killSwitch) return;
 
+    // 잔고 부족 쿨다운 — 10분간 재조회 차단
+    const balanceCooldownExpire = this.balanceCooldownMap.get(bot.id);
+    if (balanceCooldownExpire && Date.now() < balanceCooldownExpire) {
+      return;
+    }
+
     // 10초 쿨다운 — WS 이벤트 연속 발화로 인한 중복 진입 방지
     const lastFired = this.recentlyFiredBots.get(bot.id);
     if (lastFired && Date.now() - lastFired < INSTANT_FILL_COOLDOWN_MS) return;
@@ -731,6 +745,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
             `[MakerTakerSimulatorAgent] bot ${bot.id} ${direction} pre-check: makerCoin 잔고 부족 (${makerCoinBalance} < ${bot.quantity})`,
           );
           preCheckOk = false;
+          this.setBalanceCooldown(bot.id);
         }
       }
 
@@ -752,6 +767,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
                 `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb ${direction} 잔고 부족: ${bot.makerCoin} available=${available.toFixed(4)} < quantity=${bot.quantity}`,
               );
               preCheckOk = false;
+              this.setBalanceCooldown(bot.id);
             }
           } else if (direction === 'MAKER_BUY_FIRST' && makerExchange === 'bithumb') {
             const krwAvail = bithumbAvail['KRW'] ?? 0;
@@ -761,6 +777,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
                 `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb MAKER_BUY_FIRST KRW 부족: available=${krwAvail.toFixed(0)} < required=${requiredKrw.toFixed(0)}`,
               );
               preCheckOk = false;
+              this.setBalanceCooldown(bot.id);
             }
             if (preCheckOk) {
               // takerCoin IOC 매도 사전 확인 (거래소별)
@@ -771,6 +788,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
                   `[MakerTakerSimulatorAgent] bot ${bot.id} Bithumb MAKER_BUY_FIRST takerCoin 잔고 부족: ${bot.takerCoin} available=${takerCoinAvail.toFixed(4)} < quantity=${bot.quantity}`,
                 );
                 preCheckOk = false;
+                this.setBalanceCooldown(bot.id);
               }
             }
           }
@@ -795,6 +813,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
                 `[MakerTakerSimulatorAgent] bot ${bot.id} Coinone ${direction} 잔고 부족: ${bot.makerCoin} available=${available.toFixed(4)} < quantity=${bot.quantity}`,
               );
               preCheckOk = false;
+              this.setBalanceCooldown(bot.id);
             }
           } else if (direction === 'MAKER_BUY_FIRST' && makerExchange === 'coinone') {
             const krwAvail = coinoneAvail['KRW'] ?? 0;
@@ -804,6 +823,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
                 `[MakerTakerSimulatorAgent] bot ${bot.id} Coinone MAKER_BUY_FIRST KRW 부족: available=${krwAvail.toFixed(0)} < required=${requiredKrw.toFixed(0)}`,
               );
               preCheckOk = false;
+              this.setBalanceCooldown(bot.id);
             }
             if (preCheckOk) {
               const takerCoinAvail =
@@ -813,6 +833,7 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
                   `[MakerTakerSimulatorAgent] bot ${bot.id} Coinone MAKER_BUY_FIRST takerCoin 잔고 부족: ${bot.takerCoin} available=${takerCoinAvail.toFixed(4)} < quantity=${bot.quantity}`,
                 );
                 preCheckOk = false;
+                this.setBalanceCooldown(bot.id);
               }
             }
           }
@@ -1187,5 +1208,36 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
         notes: (pending.notes ?? '') + ` | force-expired: stale orderbook after ${Math.floor(elapsed / 60_000)}min`,
       },
     });
+  }
+
+  // ── 잔고 쿨다운 관리 ──────────────────────────────────────────────────────
+
+  private setBalanceCooldown(botId: number): void {
+    const expireAt = Date.now() + BALANCE_INSUFFICIENT_COOLDOWN_MS;
+    this.balanceCooldownMap.set(botId, expireAt);
+    const remainMin = Math.ceil(BALANCE_INSUFFICIENT_COOLDOWN_MS / 60_000);
+    console.log(`[MakerTakerSimulatorAgent] bot ${botId} 잔고 부족 쿨다운 시작 — ${remainMin}분간 스킵`);
+  }
+
+  /** 관리자 수동 쿨다운 해제 */
+  public clearBalanceCooldown(botId: number): void {
+    if (this.balanceCooldownMap.has(botId)) {
+      this.balanceCooldownMap.delete(botId);
+      console.log(`[MakerTakerSimulatorAgent] bot ${botId} 잔고 쿨다운 수동 해제`);
+    }
+  }
+
+  /** 현재 쿨다운 중인 봇 목록 */
+  public getBalanceCooldowns(): { botId: number; expiresAt: number; remainMs: number }[] {
+    const now = Date.now();
+    const result: { botId: number; expiresAt: number; remainMs: number }[] = [];
+    for (const [botId, expiresAt] of this.balanceCooldownMap) {
+      if (now < expiresAt) {
+        result.push({ botId, expiresAt, remainMs: expiresAt - now });
+      } else {
+        this.balanceCooldownMap.delete(botId);
+      }
+    }
+    return result;
   }
 }

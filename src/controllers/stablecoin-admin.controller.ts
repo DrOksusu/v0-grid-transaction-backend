@@ -8,6 +8,8 @@ import { stablecoinPrisma } from '../config/database';
 import mainPrisma from '../config/database';
 import { getBithumbStablecoinOrderbook, getAllBithumbStablecoinOrderbooks } from '../services/bithumb-stablecoin-ws-manager';
 import { getAllCoinoneStablecoinOrderbooks, subscribeCoinoneStablecoinOrderbooks } from '../services/coinone-stablecoin-price-manager';
+import { agentManager } from '../agents/agent-manager';
+import { MakerTakerSimulatorAgent } from '../agents/maker-taker-simulator-agent';
 
 // 코인원 폴링은 컨트롤러 import 시점에 자동 시작 (모니터링 전용)
 subscribeCoinoneStablecoinOrderbooks();
@@ -686,6 +688,47 @@ export const getCrossExchangeLatest = async (req: AuthRequest, res: Response, ne
       });
     }
     res.json({ snapshots, fetchedAt: Date.now() });
+  } catch (e) {
+    next(e);
+  }
+};
+
+// ===== 잔고 쿨다운 관리 =====
+
+function getMakerTakerAgent(): MakerTakerSimulatorAgent | null {
+  const agent = agentManager.getAgent('maker-taker-sim');
+  if (!agent || !(agent instanceof MakerTakerSimulatorAgent)) return null;
+  return agent;
+}
+
+/**
+ * POST /api/admin/stablecoin/maker-bots/:id/clear-balance-cooldown
+ * 잔고 부족 쿨다운을 수동으로 해제하여 즉시 재조회를 허용.
+ */
+export const clearBotBalanceCooldown = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const botId = Number(req.params.id);
+    if (isNaN(botId)) throw new AppError('유효하지 않은 봇 ID', 400);
+
+    const agent = getMakerTakerAgent();
+    if (!agent) throw new AppError('MakerTakerSimulatorAgent 미실행', 503);
+
+    agent.clearBalanceCooldown(botId);
+    res.json({ ok: true, botId });
+  } catch (e) {
+    next(e);
+  }
+};
+
+/**
+ * GET /api/admin/stablecoin/balance-cooldowns
+ * 현재 잔고 쿨다운 중인 봇 목록 조회.
+ */
+export const getBalanceCooldowns = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const agent = getMakerTakerAgent();
+    if (!agent) return res.json({ cooldowns: [] });
+    res.json({ cooldowns: agent.getBalanceCooldowns() });
   } catch (e) {
     next(e);
   }
