@@ -613,14 +613,15 @@ async function refreshStablecoinOrderbooksViaRest(): Promise<void> {
       if (units.length === 0) continue;
       const best = units[0];
       if (!best.bid_price || !best.ask_price) continue;
+      const fetchedAt = Date.now();
       const existing = stablecoinOrderbook.get(item.market);
-      // WS 데이터가 더 최신이면 덮어쓰지 않음
-      if (existing && existing.timestamp > (item.timestamp ?? 0)) continue;
+      // WS 데이터가 REST 폴링 주기보다 최신이면 덮어쓰지 않음
+      if (existing && existing.timestamp > fetchedAt - UPBIT_REST_FALLBACK_INTERVAL_MS) continue;
       const top: OrderbookTop = {
         market: item.market,
         bid: { price: best.bid_price, size: best.bid_size ?? 0 },
         ask: { price: best.ask_price, size: best.ask_size ?? 0 },
-        timestamp: item.timestamp ?? Date.now(),
+        timestamp: fetchedAt,
       };
       stablecoinOrderbook.set(top.market, top);
     }
