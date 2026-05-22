@@ -593,8 +593,71 @@ function scheduleOrderbookReconnect(): void {
  * 여러 에이전트(StablecoinArbAgent, MakerTakerSimulatorAgent 등)가 각자
  * subscribe/unsubscribe를 호출해도 ref count로 안전하게 공유된다.
  */
+// ── REST 주기 폴링 (얇은 시장 KRW-USDE 등 WS 메시지가 오래 안 오는 경우 대비) ──
+const UPBIT_REST_FALLBACK_INTERVAL_MS = 30_000;
+/** 거래 결정에 사용할 최대 허용 stale 시간 (Bithumb 10s보다 완화 — 업비트는 전체 스냅샷) */
+export const UPBIT_TRADING_FRESHNESS_MS = 60_000;
+let upbitRestFallbackTimer: NodeJS.Timeout | null = null;
+
+async function refreshStablecoinOrderbooksViaRest(): Promise<void> {
+  try {
+    const markets = STABLECOIN_MARKETS.join(',');
+    const res = await fetch(
+      `https://api.upbit.com/v1/orderbook?markets=${markets}`,
+      { signal: AbortSignal.timeout(5000) },
+    );
+    if (!res.ok) return;
+    const data = await res.json() as any[];
+    for (const item of data) {
+      const units = item.orderbook_units ?? [];
+      if (units.length === 0) continue;
+      const best = units[0];
+      if (!best.bid_price || !best.ask_price) continue;
+      const existing = stablecoinOrderbook.get(item.market);
+      // WS 데이터가 더 최신이면 덮어쓰지 않음
+      if (existing && existing.timestamp > (item.timestamp ?? 0)) continue;
+      const top: OrderbookTop = {
+        market: item.market,
+        bid: { price: best.bid_price, size: best.bid_size ?? 0 },
+        ask: { price: best.ask_price, size: best.ask_size ?? 0 },
+        timestamp: item.timestamp ?? Date.now(),
+      };
+      stablecoinOrderbook.set(top.market, top);
+    }
+  } catch {
+    // 개별 실패 무시
+  }
+}
+
+function startUpbitRestFallback(): void {
+  if (upbitRestFallbackTimer) return;
+  // 즉시 1회 실행 후 주기 폴링 시작
+  refreshStablecoinOrderbooksViaRest().catch(() => {});
+  upbitRestFallbackTimer = setInterval(() => {
+    refreshStablecoinOrderbooksViaRest().catch(() => {});
+  }, UPBIT_REST_FALLBACK_INTERVAL_MS);
+}
+
+function stopUpbitRestFallback(): void {
+  if (upbitRestFallbackTimer) {
+    clearInterval(upbitRestFallbackTimer);
+    upbitRestFallbackTimer = null;
+  }
+}
+
+/**
+ * trading용 Upbit 호가 조회 — UPBIT_TRADING_FRESHNESS_MS 이내 데이터만 반환
+ */
+export function getUpbitOrderbookForTrading(market: string): OrderbookTop | null {
+  const entry = stablecoinOrderbook.get(market);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > UPBIT_TRADING_FRESHNESS_MS) return null;
+  return entry;
+}
+
 export function subscribeStablecoinOrderbooks(): void {
   orderbookSubscriberCount++;
+  startUpbitRestFallback();
   if (orderbookWs && (orderbookWs.readyState === WebSocket.OPEN || orderbookWs.readyState === WebSocket.CONNECTING)) {
     return; // 이미 연결됐거나 연결 중 → no-op (중복 WS 생성 방지)
   }
@@ -703,6 +766,7 @@ export function unsubscribeStablecoinOrderbooks(): void {
   }
 
   // 마지막 구독자 → 실제 cleanup
+  stopUpbitRestFallback();
   if (orderbookReconnectTimer) {
     clearTimeout(orderbookReconnectTimer);
     orderbookReconnectTimer = null;

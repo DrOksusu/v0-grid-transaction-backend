@@ -4,6 +4,7 @@ import {
   unsubscribeStablecoinOrderbooks,
   getAllStablecoinOrderbooks,
   onStablecoinOrderbookUpdate,
+  getUpbitOrderbookForTrading,
   type OrderbookTop,
 } from '../services/upbit-price-manager';
 import {
@@ -542,19 +543,19 @@ export class MakerTakerSimulatorAgent extends BaseAgent {
     const makerExchange: string = bot.makerExchange ?? 'upbit';
     const takerExchange: string = bot.takerExchange ?? 'upbit';
 
-    // 거래 결정용 호가 조회: Bithumb/Coinone은 10초 freshness 임계 적용 (stale 데이터로 게이트 우회 방지)
+    // 거래 결정용 호가 조회: 거래소별 freshness 임계 적용
     const makerBookRaw =
       makerExchange === 'bithumb'
         ? getBithumbOrderbookForTrading(bot.makerCoin)
         : makerExchange === 'coinone'
           ? getCoinoneOrderbookForTrading(bot.makerCoin)
-          : upbitBooks.get(`KRW-${bot.makerCoin}`);
+          : getUpbitOrderbookForTrading(`KRW-${bot.makerCoin}`);
     const takerBookRaw =
       takerExchange === 'bithumb'
         ? getBithumbOrderbookForTrading(bot.takerCoin)
         : takerExchange === 'coinone'
           ? getCoinoneOrderbookForTrading(bot.takerCoin)
-          : upbitBooks.get(`KRW-${bot.takerCoin}`);
+          : getUpbitOrderbookForTrading(`KRW-${bot.takerCoin}`);
 
     if (!makerBookRaw || !takerBookRaw) {
       if (!makerBookRaw) console.log(`[MakerTakerSimulatorAgent] bot ${bot.id} ${makerExchange} ${bot.makerCoin} 호가 stale — 스킵`);
