@@ -863,9 +863,13 @@ export class TradingService {
     }
 
     // 실제 체결가 및 체결량 추출
-    // order.price는 주문가격, order.avg_price가 실제 평균 체결가
-    const filledPrice = order.avg_price ? parseFloat(order.avg_price) : parseFloat(order.price);
-    const filledVolume = parseFloat(order.executed_volume);
+    // PlacedOrder(avgFillPrice/filledQty) 또는 raw API(avg_price/executed_volume) 모두 지원
+    const filledPrice = order.avgFillPrice != null
+      ? order.avgFillPrice
+      : (order.avg_price ? parseFloat(order.avg_price) : parseFloat(order.price ?? '0'));
+    const filledVolume = order.filledQty != null
+      ? order.filledQty
+      : parseFloat(order.executed_volume ?? '0');
     const filledTotal = filledPrice * filledVolume;
 
     // 거래 기록 업데이트
