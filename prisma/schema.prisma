@@ -126,6 +126,7 @@ model Trade {
   @@index([botId, status, filledAt], map: "idx_trades_botId_status_filledAt")
   @@index([orderId], map: "idx_trades_orderId")
   @@index([ticker])
+  @@index([exchange, type, status, createdAt], map: "idx_trades_exchange_type_status_createdAt")
   @@map("trades")
 }
 
