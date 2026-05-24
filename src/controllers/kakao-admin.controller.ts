@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import { kakaoNotifyService } from '../services/kakao-notify.service';
 import { telegramNotifyService } from '../services/telegram-notify.service';
 import { btcRsiMonitorService } from '../services/btc-rsi-monitor.service';
+import { sendDailyReport } from '../services/daily-report.service';
 
 /** OAuth 인증 URL 반환 */
 export const getAuthUrl = async (_req: Request, res: Response, next: NextFunction) => {
@@ -73,6 +74,16 @@ export const runRsiCheck = async (_req: Request, res: Response, next: NextFuncti
     await btcRsiMonitorService.check();
     const rsi = await btcRsiMonitorService.getCurrentRsi();
     res.json({ ok: true, rsi });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** 일일 수익 리포트 즉시 발송 (테스트용) */
+export const sendDailyReportNow = async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    await sendDailyReport();
+    res.json({ ok: true, message: '일일 수익 리포트 발송 완료' });
   } catch (err) {
     next(err);
   }

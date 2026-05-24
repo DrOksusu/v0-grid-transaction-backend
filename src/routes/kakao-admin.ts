@@ -10,6 +10,7 @@ import {
   getAlertHistory,
   sendTestMessage,
   runRsiCheck,
+  sendDailyReportNow,
 } from '../controllers/kakao-admin.controller';
 
 const router = Router();
@@ -25,6 +26,7 @@ router.get('/kakao/auth-url', getAuthUrl);
 router.get('/kakao/status', getStatus);
 router.get('/rsi/history', getAlertHistory);
 router.post('/kakao/test', sendTestMessage);
+router.post('/kakao/daily-report', sendDailyReportNow);
 router.post('/rsi/check', runRsiCheck);
 
 export default router;
