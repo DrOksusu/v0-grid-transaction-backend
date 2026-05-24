@@ -11,7 +11,7 @@ import { metricsService } from './services/metrics.service';
 import { upbitDonationMonitor } from './services/upbit-donation-monitor.service';
 import { maIndicatorService } from './services/ma-indicator.service';
 import { binancePriceManager } from './services/binance-price-manager';
-import { agentManager, GridAgent, InfiniteBuyAgent, VRAgent, MakerTakerSimulatorAgent, PairScannerAgent, GeneralArbScannerAgent, UpbitListingMonitorAgent, CmeGapAgent, BtcRsiAgent } from './agents';
+import { agentManager, GridAgent, InfiniteBuyAgent, VRAgent, MakerTakerSimulatorAgent, PairScannerAgent, GeneralArbScannerAgent, UpbitListingMonitorAgent, CmeGapAgent, BtcRsiAgent, RebalancerAgent } from './agents';
 import { sendDailyReport } from './services/daily-report.service';
 
 const startServer = async () => {
@@ -94,7 +94,8 @@ const startServer = async () => {
       agentManager.register(new UpbitListingMonitorAgent());
       agentManager.register(new CmeGapAgent());
       agentManager.register(new BtcRsiAgent());
-      console.log('[AgentManager] Agents registered (GridAgent, InfiniteBuyAgent, VRAgent, MakerTakerSimulatorAgent, PairScannerAgent, GeneralArbScannerAgent, UpbitListingMonitorAgent, CmeGapAgent, BtcRsiAgent)');
+      agentManager.register(new RebalancerAgent());
+      console.log('[AgentManager] Agents registered (GridAgent, InfiniteBuyAgent, VRAgent, MakerTakerSimulatorAgent, PairScannerAgent, GeneralArbScannerAgent, UpbitListingMonitorAgent, CmeGapAgent, BtcRsiAgent, RebalancerAgent)');
 
       // 프로덕션 환경에서만 스케줄러 시작 (중복 주문 방지)
       if (config.nodeEnv === 'production') {
