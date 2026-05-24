@@ -11,13 +11,13 @@ router.post('/kakao/send', async (req: Request, res: Response) => {
     return;
   }
 
-  const { message } = req.body as { message?: string };
+  const { message, link } = req.body as { message?: string; link?: string };
   if (!message || typeof message !== 'string' || message.trim().length === 0) {
     res.status(400).json({ error: 'message 필드가 필요합니다' });
     return;
   }
 
-  await kakaoNotifyService.sendToMe(message.trim());
+  await kakaoNotifyService.sendToMe(message.trim(), link);
   res.json({ ok: true });
 });
 
