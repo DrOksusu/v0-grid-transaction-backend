@@ -51,31 +51,37 @@ export async function sendDailyReport(): Promise<void> {
   }
   const userId = adminUser.id;
 
-  // 그리드 봇 ID 목록 (soft delete 포함 — 이번 달/오늘 체결이 있을 수 있음)
-  const botRows = await prisma.bot.findMany({ where: { userId }, select: { id: true } });
-  const botIds = botRows.map(b => b.id);
+  // 그리드 봇 ID 목록 (soft delete 포함, 거래소별 분리)
+  const botRows = await prisma.bot.findMany({ where: { userId }, select: { id: true, exchange: true } });
 
-  // 그리드 수익 집계
-  const [gridDay, gridMonth] = await Promise.all([
-    prisma.trade.aggregate({
-      where: {
-        botId: { in: botIds },
-        type: 'sell', status: 'filled', profit: { not: null },
-        filledAt: { gte: dayRange.start, lte: dayRange.end },
-      },
-      _sum: { profit: true },
-      _count: { id: true },
+  // 거래소별 botId 그룹
+  const exchanges = [...new Set(botRows.map(b => b.exchange))];
+  const botsByExchange: Record<string, number[]> = {};
+  for (const ex of exchanges) {
+    botsByExchange[ex] = botRows.filter(b => b.exchange === ex).map(b => b.id);
+  }
+
+  // 거래소별 일/월 수익 집계
+  const gridExchangeResults = await Promise.all(
+    exchanges.map(async ex => {
+      const ids = botsByExchange[ex];
+      const [dayAgg, monthAgg] = await Promise.all([
+        prisma.trade.aggregate({
+          where: { botId: { in: ids }, type: 'sell', status: 'filled', profit: { not: null }, filledAt: { gte: dayRange.start, lte: dayRange.end } },
+          _sum: { profit: true }, _count: { id: true },
+        }),
+        prisma.trade.aggregate({
+          where: { botId: { in: ids }, type: 'sell', status: 'filled', profit: { not: null }, filledAt: { gte: monthRange.start, lte: monthRange.end } },
+          _sum: { profit: true }, _count: { id: true },
+        }),
+      ]);
+      return { exchange: ex, dayProfit: Math.round(dayAgg._sum.profit ?? 0), dayCount: dayAgg._count.id ?? 0, monthProfit: Math.round(monthAgg._sum.profit ?? 0), monthCount: monthAgg._count.id ?? 0 };
     }),
-    prisma.trade.aggregate({
-      where: {
-        botId: { in: botIds },
-        type: 'sell', status: 'filled', profit: { not: null },
-        filledAt: { gte: monthRange.start, lte: monthRange.end },
-      },
-      _sum: { profit: true },
-      _count: { id: true },
-    }),
-  ]);
+  );
+
+  // 전체 합산
+  const gridDay = { profit: gridExchangeResults.reduce((s, r) => s + r.dayProfit, 0), count: gridExchangeResults.reduce((s, r) => s + r.dayCount, 0) };
+  const gridMonth = { profit: gridExchangeResults.reduce((s, r) => s + r.monthProfit, 0), count: gridExchangeResults.reduce((s, r) => s + r.monthCount, 0) };
 
   // 스테이블코인 MakerTaker 봇 ID
   const makerBotRows = await stablecoinPrisma.makerTakerSimBot.findMany({
@@ -139,10 +145,10 @@ export async function sendDailyReport(): Promise<void> {
       : Promise.resolve({ _sum: { profitKrw: null }, _count: { id: 0 } }),
   ]);
 
-  const gridDayProfit = Math.round(gridDay._sum.profit ?? 0);
-  const gridMonthProfit = Math.round(gridMonth._sum.profit ?? 0);
-  const gridDayCount = gridDay._count.id ?? 0;
-  const gridMonthCount = gridMonth._count.id ?? 0;
+  const gridDayProfit = gridDay.profit;
+  const gridMonthProfit = gridMonth.profit;
+  const gridDayCount = gridDay.count;
+  const gridMonthCount = gridMonth.count;
 
   const stabDayProfit = Math.round(
     Number(makerDay._sum.netProfitKrw ?? 0) + Number(crossDay._sum.profitKrw ?? 0),
@@ -156,10 +162,20 @@ export async function sendDailyReport(): Promise<void> {
   const totalDayProfit = gridDayProfit + stabDayProfit;
   const totalMonthProfit = gridMonthProfit + stabMonthProfit;
 
+  // 거래소 한글명
+  const exLabel: Record<string, string> = { upbit: '업비트', bithumb: '빗썸', binance: '바이낸스', kis: 'KIS' };
+
+  // 거래가 있는 거래소만 표시 (오늘 또는 이번 달 수익 > 0)
+  const activeExchanges = gridExchangeResults.filter(r => r.dayCount > 0 || r.monthCount > 0);
+  const gridExchangeLines = activeExchanges.length > 1
+    ? activeExchanges.map(r => `  [${exLabel[r.exchange] ?? r.exchange}] 오늘 ${fmtKrw(r.dayProfit)}(${r.dayCount}건) / ${month} ${fmtKrw(r.monthProfit)}(${r.monthCount}건)`)
+    : [];
+
   const lines = [
     `📊 ${today} 일일 수익 현황`,
     '',
     `📈 그리드매매`,
+    ...gridExchangeLines,
     `  • 오늘: ${fmtKrw(gridDayProfit)} (${gridDayCount}건)`,
     `  • ${month}: ${fmtKrw(gridMonthProfit)} (${gridMonthCount}건)`,
     '',
