@@ -122,8 +122,9 @@ function scheduleReconnect(): void {
   }, delay);
 }
 
-/** WS 연결 직후 REST 호가로 localBooks와 cache를 초기화 */
-async function initFromRest(): Promise<void> {
+/** WS 연결 직후 REST 호가로 localBooks와 cache를 초기화. 성공한 코인 수를 반환 */
+async function initFromRest(): Promise<number> {
+  let successCount = 0;
   await Promise.all(
     BITHUMB_STABLECOIN_SYMBOLS.map(async (symbol) => {
       try {
@@ -148,13 +149,14 @@ async function initFromRest(): Promise<void> {
         const { price: ask, qty: askQty } = bestAsk(newBook.asks);
         if (bid > 0 && ask > 0) {
           cache.set(symbol, { symbol, bid, bidQty, ask, askQty, timestamp: Date.now() });
-          console.log(`[BithumbStablecoinWs] REST 갱신: ${symbol} bid=${bid} ask=${ask}`);
+          successCount++;
         }
       } catch {
         // 개별 코인 실패는 무시
       }
     }),
   );
+  return successCount;
 }
 
 function connectInternal(): void {
@@ -217,22 +219,36 @@ function connectInternal(): void {
 // ── REST 주기 폴링 (WS 연결 여부와 무관하게 항상 실행) ─────────────────────────
 // WS delta는 호가 변동 시에만 오므로, 얇은 시장(USDS 등)은 10s+ 무업데이트 가능.
 // 10s 주기 REST 폴링으로 TRADING_FRESHNESS_MS(10s) 이내 보장.
+// 연속 실패 시 지수 백오프 (8s → 최대 64s) — 거래소 점검 시간대 과부하 방지
 const REST_FALLBACK_INTERVAL_MS = 8_000;
+const REST_FALLBACK_MAX_MS = 64_000;
 let restFallbackTimer: NodeJS.Timeout | null = null;
+let restConsecutiveFailures = 0;
 
 function startRestFallback(): void {
   if (restFallbackTimer) return;
-  restFallbackTimer = setInterval(async () => {
-    await initFromRest().catch(e =>
-      console.warn('[BithumbStablecoinWs] REST 주기 갱신 실패:', e.message),
-    );
-  }, REST_FALLBACK_INTERVAL_MS);
-  console.log('[BithumbStablecoinWs] REST 주기 폴링 시작 (8s 주기, WS와 병행)');
+
+  const tick = async () => {
+    if (!restFallbackTimer) return; // stopRestFallback() 호출 후 중단
+    const successCount = await initFromRest();
+    if (successCount > 0) {
+      restConsecutiveFailures = 0;
+    } else {
+      restConsecutiveFailures++;
+    }
+    if (!restFallbackTimer) return;
+    const backoff = Math.min(REST_FALLBACK_INTERVAL_MS * (2 ** Math.min(restConsecutiveFailures, 3)), REST_FALLBACK_MAX_MS);
+    restFallbackTimer = setTimeout(tick, backoff);
+  };
+
+  restConsecutiveFailures = 0;
+  restFallbackTimer = setTimeout(tick, REST_FALLBACK_INTERVAL_MS);
+  console.log('[BithumbStablecoinWs] REST 주기 폴링 시작 (8s~64s 백오프, WS와 병행)');
 }
 
 function stopRestFallback(): void {
   if (restFallbackTimer) {
-    clearInterval(restFallbackTimer);
+    clearTimeout(restFallbackTimer);
     restFallbackTimer = null;
     console.log('[BithumbStablecoinWs] REST fallback 폴링 중지');
   }

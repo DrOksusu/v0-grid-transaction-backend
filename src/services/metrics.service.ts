@@ -56,7 +56,7 @@ class MetricsService {
   private lastAlertAt: Map<string, number> = new Map();
 
   // 시작 후 3분간 과부하 알람 억제 (재시작 직후 false positive 방지)
-  private readonly STARTUP_GRACE_MS = 3 * 60 * 1000;
+  private readonly STARTUP_GRACE_MS = 5 * 60 * 1000;
 
   // 일일 리포트 마지막 발송 날짜 (YYYY-MM-DD KST)
   private lastDailyReportDate: string = '';
@@ -224,7 +224,8 @@ class MetricsService {
       : 0;
 
     const recentMetrics = this.rawMetrics.filter((m) => m.timestamp > Date.now() - 60000);
-    const errorRate = recentMetrics.length > 0
+    // 최소 10건 이상일 때만 에러율 계산 — 새벽 저트래픽 시 1/3건 에러가 33%로 오탐 방지
+    const errorRate = recentMetrics.length >= 10
       ? (recentMetrics.filter((m) => m.statusCode >= 400).length / recentMetrics.length) * 100
       : 0;
 

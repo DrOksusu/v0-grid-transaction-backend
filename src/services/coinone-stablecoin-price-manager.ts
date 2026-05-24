@@ -25,6 +25,7 @@ const CACHE_TTL_MS = 30_000;
 const TRADING_FRESHNESS_MS = 10_000;
 const PING_INTERVAL_MS = 25 * 60 * 1000; // 25분 (서버 idle timeout 30분 이전)
 const REST_FALLBACK_INTERVAL_MS = 8_000;
+const REST_FALLBACK_MAX_MS = 64_000;
 
 export interface CoinoneOrderbookTop {
   symbol: string;
@@ -42,16 +43,19 @@ let ws: WebSocket | null = null;
 let pingTimer: NodeJS.Timeout | null = null;
 let reconnectTimer: NodeJS.Timeout | null = null;
 let restFallbackTimer: NodeJS.Timeout | null = null;
+let restConsecutiveFailures = 0;
 let reconnectAttempts = 0;
 let subscriberCount = 0;
 
 // ── REST fallback ──────────────────────────────────────────────────────────────
 
-async function fetchFromRest(): Promise<void> {
+/** REST로 코인원 호가 갱신. 성공한 코인 수를 반환 */
+async function fetchFromRest(): Promise<number> {
   try {
     const res = await axios.get(COINONE_TICKER_URL, { timeout: 6000 });
-    if (res.data?.result !== 'success') return;
+    if (res.data?.result !== 'success') return 0;
 
+    let successCount = 0;
     for (const ticker of res.data.tickers ?? []) {
       const sym = String(ticker.target_currency).toUpperCase();
       if (!(COINONE_STABLECOIN_SYMBOLS as readonly string[]).includes(sym)) continue;
@@ -62,26 +66,40 @@ async function fetchFromRest(): Promise<void> {
       const askQty = parseFloat(ticker.best_asks?.[0]?.qty ?? '0');
       if (bid > 0 && ask > 0) {
         cache.set(sym, { symbol: sym, bid, bidQty, ask, askQty, timestamp: Date.now() });
+        successCount++;
       }
     }
+    return successCount;
   } catch (e: any) {
     console.warn('[CoinoneStablecoinWs] REST fallback 실패:', e.message);
+    return 0;
   }
 }
 
 function startRestFallback(): void {
   if (restFallbackTimer) return;
-  restFallbackTimer = setInterval(async () => {
-    await fetchFromRest().catch(e =>
-      console.warn('[CoinoneStablecoinWs] REST 주기 갱신 실패:', e.message),
-    );
-  }, REST_FALLBACK_INTERVAL_MS);
-  console.log('[CoinoneStablecoinWs] REST fallback 시작 (8s 주기)');
+
+  const tick = async () => {
+    if (!restFallbackTimer) return;
+    const successCount = await fetchFromRest();
+    if (successCount > 0) {
+      restConsecutiveFailures = 0;
+    } else {
+      restConsecutiveFailures++;
+    }
+    if (!restFallbackTimer) return;
+    const backoff = Math.min(REST_FALLBACK_INTERVAL_MS * (2 ** Math.min(restConsecutiveFailures, 3)), REST_FALLBACK_MAX_MS);
+    restFallbackTimer = setTimeout(tick, backoff);
+  };
+
+  restConsecutiveFailures = 0;
+  restFallbackTimer = setTimeout(tick, REST_FALLBACK_INTERVAL_MS);
+  console.log('[CoinoneStablecoinWs] REST fallback 시작 (8s~64s 백오프)');
 }
 
 function stopRestFallback(): void {
   if (restFallbackTimer) {
-    clearInterval(restFallbackTimer);
+    clearTimeout(restFallbackTimer);
     restFallbackTimer = null;
   }
 }
