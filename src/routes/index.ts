@@ -22,6 +22,7 @@ import upbitListingAdminRoutes from './upbit-listing-admin';
 import cmeGapRoutes from './cme-gap';
 import kakaoAdminRoutes from './kakao-admin';
 import transferRoutes from './transfer';
+import internalRoutes from './internal';
 
 const router = Router();
 
@@ -56,5 +57,6 @@ router.use('/admin/upbit-listings', upbitListingAdminRoutes);
 router.use('/admin/cme-gap', cmeGapRoutes);
 router.use('/admin/btc-rsi', kakaoAdminRoutes);
 router.use('/transfer', transferRoutes);
+router.use('/internal', internalRoutes);
 
 export default router;
