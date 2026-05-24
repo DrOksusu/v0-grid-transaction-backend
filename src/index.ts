@@ -1,4 +1,5 @@
 import { createServer } from 'http';
+import cron from 'node-cron';
 import app from './app';
 import { config } from './config/env';
 import prisma, { logPoolStats, poolStats } from './config/database';
@@ -11,6 +12,7 @@ import { upbitDonationMonitor } from './services/upbit-donation-monitor.service'
 import { maIndicatorService } from './services/ma-indicator.service';
 import { binancePriceManager } from './services/binance-price-manager';
 import { agentManager, GridAgent, InfiniteBuyAgent, VRAgent, MakerTakerSimulatorAgent, PairScannerAgent, GeneralArbScannerAgent, UpbitListingMonitorAgent, CmeGapAgent, BtcRsiAgent } from './agents';
+import { sendDailyReport } from './services/daily-report.service';
 
 const startServer = async () => {
   try {
@@ -110,6 +112,16 @@ const startServer = async () => {
         // MA 지표 서비스 시작
         maIndicatorService.start();
         console.log('MA indicator service started');
+
+        // 일일 수익 리포트 — 매일 오전 6시 KST (= UTC 21:00)
+        cron.schedule('0 21 * * *', async () => {
+          try {
+            await sendDailyReport();
+          } catch (err) {
+            console.error('[DailyReport] 발송 실패:', err);
+          }
+        });
+        console.log('[DailyReport] 일일 리포트 스케줄 등록 (매일 06:00 KST)');
       } else {
         console.log('⚠️  Development mode: Schedulers disabled to prevent duplicate orders');
         console.log('   To enable schedulers, set NODE_ENV=production');
