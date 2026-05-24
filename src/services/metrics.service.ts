@@ -55,6 +55,9 @@ class MetricsService {
   // 과부하 알림 쿨다운 (alertType → 마지막 발송 시각)
   private lastAlertAt: Map<string, number> = new Map();
 
+  // 시작 후 3분간 과부하 알람 억제 (재시작 직후 false positive 방지)
+  private readonly STARTUP_GRACE_MS = 3 * 60 * 1000;
+
   // 일일 리포트 마지막 발송 날짜 (YYYY-MM-DD KST)
   private lastDailyReportDate: string = '';
 
@@ -211,6 +214,9 @@ class MetricsService {
 
   /** 임계치 초과 시 카카오 알림 (1시간 쿨다운) */
   private checkOverload(): void {
+    // 시작 직후 false positive 방지
+    if (Date.now() - this.serverStartTime < this.STARTUP_GRACE_MS) return;
+
     const sys = this.getSystemMetrics();
     const memPercent = (sys.memory.used / sys.memory.total) * 100;
     const containerPercent = sys.memory.container?.available
