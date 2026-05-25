@@ -206,22 +206,7 @@ export class RebalancerAgent extends BaseAgent {
       return;
     }
 
-    // 60분 초과 미체결 → 취소 후 재진입
-    const AGE_LIMIT_MS = 60 * 60 * 1000;
-    if (Date.now() - pending.placedAt > AGE_LIMIT_MS) {
-      console.warn(
-        `[RebalancerAgent] Leg-2 주문 60분 초과 — 취소 userId=${userId} ${exchange} ${pending.buyCoin} orderId=${pending.orderId}`,
-      );
-      try {
-        await leg.cancelOrder(pending.orderId, pending.buyCoin);
-      } catch (e: any) {
-        console.warn(`[RebalancerAgent] Leg-2 취소 실패:`, e.message);
-      }
-      this.pendingLeg2Orders.delete(pendingKey);
-      return;
-    }
-
-    // 미체결 지속 — 다음 사이클 재확인
+    // 미체결 지속 — 무기한 대기, 다음 사이클 재확인
     const ageMin = Math.floor((Date.now() - pending.placedAt) / 60_000);
     console.log(
       `[RebalancerAgent] Leg-2 대기 중 userId=${userId} ${exchange} ${pending.buyCoin} (${ageMin}분 경과)`,
