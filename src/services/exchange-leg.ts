@@ -34,6 +34,12 @@ export interface ExchangeLeg {
     maxKrwBudget?: number,
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null>;
 
+  /**
+   * GTC 지정가 매수. 미체결 시 주문 유지. 주문 ID 반환. null = 주문 실패.
+   * @param price 단가(KRW)
+   */
+  buyGtc(symbol: string, quantity: number, price: number): Promise<string | null>;
+
   /** 지정가 maker BID 주문. null = 주문 실패 */
   placeMakerBid(symbol: string, price: number, quantity: number): Promise<string | null>;
 
@@ -137,6 +143,15 @@ export class UpbitLeg implements ExchangeLeg {
       grossKrw: extractKrw(effectiveResp),
       feeKrw: parseFloat(effectiveResp?.paid_fee || '0'),
     };
+  }
+
+  async buyGtc(symbol: string, quantity: number, price: number): Promise<string | null> {
+    const resp = await this.upbit.placeLimitOrder(`KRW-${symbol}`, 'bid', {
+      price: String(Math.floor(price)),
+      volume: String(quantity),
+      postOnly: false,
+    });
+    return resp?.uuid ?? null;
   }
 
   async placeMakerBid(symbol: string, price: number, quantity: number): Promise<string | null> {
@@ -250,6 +265,11 @@ export class BithumbLeg implements ExchangeLeg {
     return null;
   }
 
+  async buyGtc(symbol: string, quantity: number, price: number): Promise<string | null> {
+    const resp = await this.client.buyLimit(`KRW-${symbol}`, price, quantity);
+    return resp?.uuid ?? null;
+  }
+
   async placeMakerBid(symbol: string, price: number, quantity: number): Promise<string | null> {
     const resp = await this.client.buyLimit(`KRW-${symbol}`, price, quantity);
     return resp?.uuid ?? null;
@@ -360,6 +380,13 @@ export class CoinoneLeg implements ExchangeLeg {
       console.warn(`[CoinoneLeg] buyIoc 취소 실패 ${symbol}:`, err.message);
     }
     return null;
+  }
+
+  async buyGtc(symbol: string, quantity: number, price: number): Promise<string | null> {
+    const resp = await this.client.buyLimit(symbol, price, quantity);
+    const orderId: string = resp?.order_id ?? null;
+    if (orderId) this.orderSymbolMap.set(orderId, symbol);
+    return orderId;
   }
 
   async placeMakerBid(symbol: string, price: number, quantity: number): Promise<string | null> {
