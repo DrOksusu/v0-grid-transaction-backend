@@ -6,6 +6,7 @@
 
 import os from 'os';
 import fs from 'fs';
+import { monitorEventLoopDelay } from 'perf_hooks';
 import {
   RequestMetric,
   AggregatedMetrics,
@@ -24,7 +25,7 @@ const ALERT_THRESHOLDS = {
   cpuDanger: 90,       // CPU % 이상
   memoryDanger: 95,    // 서버 메모리 % 이상
   containerDanger: 90, // 컨테이너 메모리 % 이상
-  eventLoopDanger: 100, // 이벤트 루프 지연 ms 이상
+  eventLoopDanger: 200, // 이벤트 루프 지연 ms 이상 (P99 기준, libuv 측정)
   errorRateDanger: 5,  // API 에러율 % 이상
 };
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 1시간 — 같은 항목 중복 알림 방지
@@ -47,7 +48,10 @@ class MetricsService {
 
   // 타이머
   private aggregationTimer: NodeJS.Timeout | null = null;
-  private eventLoopTimer: NodeJS.Timeout | null = null;
+  private eventLoopTimer: NodeJS.Timeout | null = null; // 사용 안 함 (레거시)
+
+  // libuv 기반 이벤트 루프 지연 측정 (GC false positive 없음)
+  private eloopHistogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
 
   // CPU 측정용
   private lastCpuInfo: { idle: number; total: number } | null = null;
@@ -89,26 +93,20 @@ class MetricsService {
       clearInterval(this.aggregationTimer);
       this.aggregationTimer = null;
     }
-    if (this.eventLoopTimer) {
-      clearInterval(this.eventLoopTimer);
-      this.eventLoopTimer = null;
+    if (this.eloopHistogram) {
+      this.eloopHistogram.disable();
+      this.eloopHistogram = null;
     }
     console.log('[Metrics] 모니터링 서비스 중지');
   }
 
   /**
    * 이벤트 루프 지연 모니터링 설정
+   * libuv 기반 측정 — V8 GC로 인한 false positive 없음
    */
   private setupEventLoopMonitor(): void {
-    let lastCheck = process.hrtime.bigint();
-
-    this.eventLoopTimer = setInterval(() => {
-      const now = process.hrtime.bigint();
-      const expected = 1000; // 1초 예상
-      const actual = Number(now - lastCheck) / 1_000_000; // ns to ms
-      this.lastEventLoopLag = Math.max(0, actual - expected);
-      lastCheck = now;
-    }, 1000);
+    this.eloopHistogram = monitorEventLoopDelay({ resolution: 20 });
+    this.eloopHistogram.enable();
   }
 
   /**
@@ -436,7 +434,10 @@ class MetricsService {
         container: containerMem,
       },
       eventLoop: {
-        lag: Math.round(this.lastEventLoopLag * 100) / 100,
+        // P99: 상위 1% 지연 제거 → GC 순간 스파이크 false positive 방지
+        lag: this.eloopHistogram
+          ? Math.round(this.eloopHistogram.percentile(99) / 1_000_000 * 100) / 100
+          : 0,
       },
     };
   }
