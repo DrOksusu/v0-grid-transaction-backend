@@ -13,6 +13,7 @@
 import { BaseAgent } from './base-agent';
 import mainPrisma from '../config/database';
 import { stablecoinPrisma as prisma } from '../config/database';
+import { kakaoNotifyService } from '../services/kakao-notify.service';
 import { UpbitService } from '../services/upbit.service';
 import { BalanceCache } from '../services/upbit-balance-cache';
 import { BithumbClient } from '../services/exchange/bithumb-client';
@@ -159,8 +160,9 @@ export class RebalancerAgent extends BaseAgent {
             `${excessQty}개 | spread=${spreadBps.toFixed(1)}bp (최소 ${minSpreadBps}bp)`,
         );
 
-        await this.executeSwap(userId, exchange, sellCoin, buyCoin, excessQty, sellBid, buyAsk);
-        this.setCooldown(userId, exchange);
+        const swapSucceeded = await this.executeSwap(userId, exchange, sellCoin, buyCoin, excessQty, sellBid, buyAsk);
+        // Leg-2까지 완전 성공했을 때만 쿨다운 — 실패 시 다음 사이클(60초 후) 즉시 재확인
+        if (swapSucceeded) this.setCooldown(userId, exchange);
         break; // 거래소당 1회 스왑 후 다음 사이클
       }
     } catch (err: any) {
@@ -221,6 +223,7 @@ export class RebalancerAgent extends BaseAgent {
     return null;
   }
 
+  /** @returns true = Leg-1+Leg-2 모두 성공, false = Leg-2 실패(KRW 잔여) */
   private async executeSwap(
     userId: number,
     exchange: string,
@@ -229,15 +232,15 @@ export class RebalancerAgent extends BaseAgent {
     excessQty: number,
     sellBid: number,
     buyAsk: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const leg = await this.getLeg(userId, exchange);
-    if (!leg) return;
+    if (!leg) return false;
 
     // Leg-1: 초과 코인 시장가 매도
     const sellResult = await leg.sellIoc(sellCoin, excessQty, sellBid);
     if (!sellResult || sellResult.filledQty === 0) {
       console.log(`[RebalancerAgent] userId=${userId} ${exchange} ${sellCoin} 매도 미체결 — 스킵`);
-      return;
+      return false;
     }
 
     const netKrw = sellResult.grossKrw - sellResult.feeKrw;
@@ -246,10 +249,30 @@ export class RebalancerAgent extends BaseAgent {
     );
 
     // Leg-2: 대상 코인 매수 (매도 순수익 한도 내)
-    const buyResult = await leg.buyIoc(buyCoin, sellResult.filledQty, buyAsk, netKrw);
+    let buyResult = await leg.buyIoc(buyCoin, sellResult.filledQty, buyAsk, netKrw);
+
+    // Leg-2 즉시 재시도: 스프레드 소멸로 미체결된 경우 현재 호가로 1회 재시도
     if (!buyResult || buyResult.filledQty === 0) {
-      console.log(`[RebalancerAgent] userId=${userId} ${exchange} ${buyCoin} 매수 미체결 — KRW 잔여`);
-      return;
+      console.warn(`[RebalancerAgent] userId=${userId} ${exchange} ${buyCoin} 매수 1차 미체결 — 호가 갱신 후 재시도`);
+      await new Promise((r) => setTimeout(r, 500));
+      const retryBook = this.getBook(exchange, buyCoin);
+      if (retryBook && retryBook.ask > 0) {
+        buyResult = await leg.buyIoc(buyCoin, sellResult.filledQty, retryBook.ask, netKrw);
+      }
+    }
+
+    if (!buyResult || buyResult.filledQty === 0) {
+      const alertMsg =
+        `[리밸런서 ⚠️ Leg-2 실패]\n` +
+        `거래소: ${exchange}\n` +
+        `매도: ${sellResult.filledQty.toFixed(2)} ${sellCoin} → ${netKrw.toFixed(0)} KRW\n` +
+        `매수 대상: ${buyCoin} (미체결)\n` +
+        `KRW ${netKrw.toFixed(0)}원이 계정에 잔류 중 — 수동 매수 필요`;
+      console.error(`[RebalancerAgent] ${alertMsg}`);
+      kakaoNotifyService.sendToMe(alertMsg).catch((e: any) =>
+        console.error('[RebalancerAgent] 카카오 알림 실패:', e.message),
+      );
+      return false;
     }
 
     const pnl = netKrw - buyResult.grossKrw - buyResult.feeKrw;
@@ -257,6 +280,7 @@ export class RebalancerAgent extends BaseAgent {
       `[RebalancerAgent] 완료 userId=${userId} ${exchange} ${sellCoin}→${buyCoin} ` +
         `${buyResult.filledQty.toFixed(4)}개 | P&L=${pnl.toFixed(0)} KRW`,
     );
+    return true;
   }
 
   private async getLeg(

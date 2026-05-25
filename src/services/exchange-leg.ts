@@ -353,6 +353,12 @@ export class CoinoneLeg implements ExchangeLeg {
       if (order.status === 'cancelled' || order.status === 'failed') return null;
       await new Promise((r) => setTimeout(r, 500));
     }
+    // 3초 미체결 → 취소 (sellIoc와 동일 처리)
+    try {
+      await this.client.cancelOrder(placed.orderId, symbol);
+    } catch (err: any) {
+      console.warn(`[CoinoneLeg] buyIoc 취소 실패 ${symbol}:`, err.message);
+    }
     return null;
   }
 
