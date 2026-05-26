@@ -24,8 +24,16 @@ class GeneralArbScannerService {
   // 마지막 기회 기록 시각 (symbol → timestamp ms)
   private lastOpportunityAt: Map<string, number> = new Map();
 
+  // 설정 캐시 (30초 TTL — 매 사이클 DB 조회 방지)
+  private configCache: GeneralArbConfigDto | null = null;
+  private configCachedAt = 0;
+  private static readonly CONFIG_TTL_MS = 30_000;
+
   // 설정 조회 (없으면 id=1 생성)
   async getConfig(): Promise<GeneralArbConfigDto> {
+    if (this.configCache && Date.now() - this.configCachedAt < GeneralArbScannerService.CONFIG_TTL_MS) {
+      return this.configCache;
+    }
     let cfg = await (prisma as any).generalArbConfig.findFirst();
     if (!cfg) {
       cfg = await (prisma as any).generalArbConfig.create({
@@ -37,11 +45,14 @@ class GeneralArbScannerService {
         },
       });
     }
-    return {
+    const result: GeneralArbConfigDto = {
       thresholdPct: Number(cfg.thresholdPct),
       minIntervalSec: cfg.minIntervalSec,
       isEnabled: cfg.isEnabled,
     };
+    this.configCache = result;
+    this.configCachedAt = Date.now();
+    return result;
   }
 
   // 설정 수정
@@ -58,6 +69,9 @@ class GeneralArbScannerService {
         ...(dto.isEnabled !== undefined && { isEnabled: dto.isEnabled }),
       },
     });
+    // 설정 변경 시 캐시 무효화
+    this.configCache = null;
+    this.configCachedAt = 0;
     return {
       thresholdPct: Number(updated.thresholdPct),
       minIntervalSec: updated.minIntervalSec,
