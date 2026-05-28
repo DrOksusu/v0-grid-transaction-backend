@@ -55,6 +55,10 @@ interface UserCredentialCache {
 }
 const userCredentialCache = new Map<string, UserCredentialCache>(); // `${userId}-${exchange}` -> credential
 
+// 사용자+거래소별 마지막 stale check 시각 (과도한 API 호출 방지)
+const staleCheckThrottleMap = new Map<string, number>(); // `${userId}-${exchange}` -> 마지막 실행 ms
+const STALE_CHECK_THROTTLE_MS = 5 * 60 * 1000; // 5분
+
 export class TradingService {
   // 봇 중지 시 캐시 정리
   static clearLastCheckedPrice(botId: number) {
@@ -599,12 +603,17 @@ export class TradingService {
 
           // ===== 2단계: 오래된 pending을 orderId로 직접 배치 조회 (누락 방지) =====
           const STALE_THRESHOLD = 10 * 60 * 1000; // 10분
-          // 빗썸: 순차 개별 API 호출(300-500ms/건)이라 10건 상한 → 이벤트 루프 블로킹 방지
-          // 업비트: 배치 API라 높은 한도 허용
-          const MAX_STALE_CHECK_PER_USER = exchange === 'bithumb' ? 10 : Math.min(300, Math.max(50, Math.ceil(grids.length * 0.1)));
+          // 5분 throttle: 직전 stale check로부터 5분 미경과 시 이번 사이클 skip
+          const throttleKey = `${userId}-${exchange}`;
+          const lastStaleCheck = staleCheckThrottleMap.get(throttleKey) ?? 0;
           const now = Date.now();
+          const staleCheckSkipped = (now - lastStaleCheck) < STALE_CHECK_THROTTLE_MS;
 
-          const staleGrids = grids
+          // 빗썸: 순차 개별 API 호출(300-500ms/건)이라 10건 상한 → 이벤트 루프 블로킹 방지
+          // 업비트: 배치 API, 50건 상한 (이전 300건에서 축소)
+          const MAX_STALE_CHECK_PER_USER = exchange === 'bithumb' ? 10 : 50;
+
+          const staleGrids = staleCheckSkipped ? [] : grids
             .filter(g =>
               g.orderId &&
               !processedGridIds.has(g.id) &&
@@ -614,6 +623,7 @@ export class TradingService {
             .slice(0, MAX_STALE_CHECK_PER_USER);
 
           if (staleGrids.length > 0) {
+            staleCheckThrottleMap.set(throttleKey, now);
             console.log(`[Trading] User ${userId}(${exchange}): ${staleGrids.length}개 오래된 pending 주문 직접 확인 (10분+, max=${MAX_STALE_CHECK_PER_USER})`);
 
             try {
