@@ -419,12 +419,47 @@ class UpbitListingMonitorService {
   }
 
   private async handleUpbitListed(ticker: string): Promise<void> {
+    console.log(`[ListingMonitor] 신규 마켓 감지: KRW-${ticker}`);
+
     // ticker가 일치하는 announced 상태 공지 찾기
-    const announcement = await (prisma as any).upbitListingAnnouncement.findFirst({
+    let announcement = await (prisma as any).upbitListingAnnouncement.findFirst({
       where: { ticker, status: 'announced' },
       orderBy: { announcedAt: 'desc' },
     });
-    if (!announcement) return;
+
+    if (!announcement) {
+      // 사전 공지 없이 마켓 목록에 직접 등장 (공지 API 차단 등) → 공지 레코드 생성
+      console.log(`[ListingMonitor] 사전 공지 없이 마켓 등장: ${ticker} — 직접 공지 생성`);
+      const syntheticNoticeId = 3_000_000_000 + (Date.now() % 1_000_000_000);
+      announcement = await (prisma as any).upbitListingAnnouncement.create({
+        data: {
+          noticeId: syntheticNoticeId,
+          title: `[마켓 감지] ${ticker} 신규 거래지원`,
+          ticker,
+          url: `https://upbit.com/exchange?code=CRIX.UPBIT.KRW-${ticker}`,
+          status: 'announced',
+        },
+      });
+      this.seenNoticeIds.add(syntheticNoticeId);
+
+      const kakaoMsg =
+        `[업비트 신규 상장 - 마켓 직접 감지]\n` +
+        `티커: ${ticker}\n` +
+        `(공지 API 차단으로 공지 미감지, 마켓 목록에서 직접 포착)\n` +
+        `https://v0-grid-transaction.vercel.app/admin/upbit-listings`;
+      kakaoNotifyService.sendToMe(kakaoMsg).catch(e =>
+        console.error('[ListingMonitor] 카카오 알림 실패:', e.message)
+      );
+
+      await Promise.all([
+        listingAutoTraderService.executeBuy(announcement.id, ticker).catch(e =>
+          console.error('[ListingMonitor] 마켓 감지 자동매수 오류:', e)
+        ),
+        this.captureSnapshots(announcement.id, ticker, 'announced'),
+      ]);
+
+      this.scheduleFollowUpSnapshots(announcement.id, ticker);
+    }
 
     const listedAt = new Date();
     await (prisma as any).upbitListingAnnouncement.update({
