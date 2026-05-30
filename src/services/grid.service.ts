@@ -167,13 +167,16 @@ export class GridService {
   // 1. 크로싱 감지: 이전 가격→현재 가격 사이를 지나간 그리드 레벨 (상승/하락 모두 대응)
   // 2. 하방 매수 대기: 현재가 아래의 가장 가까운 available 매수 레벨 (하락 대비 지정가 매수)
   // 3. 매도: 현재가 이상의 가장 가까운 available 매도 레벨
+  // 봇당 하방 대기 매수 주문 최대 개수 (trimBuyOrdersOnInsufficientBalance의 keepCount와 동기화)
+  static readonly MAX_PENDING_BUY_ORDERS = 7;
+
   static async findExecutableGrids(botId: number, currentPrice: number, previousPrice?: number) {
-    // 매수 + 매도 쿼리를 병렬 실행 (3쿼리 순차 → 2쿼리 병렬)
+    // 매수 + 매도 쿼리를 병렬 실행 (3쿼리 동시)
     const upperPriceBound = previousPrice !== undefined
       ? Math.max(currentPrice, previousPrice)
       : currentPrice;
 
-    const [allAvailableBuys, sellLevels] = await Promise.all([
+    const [allAvailableBuys, sellLevels, pendingBuyCount] = await Promise.all([
       // 매수 후보: 크로싱 범위 + 하방 대기 모두 포함하는 단일 쿼리
       prisma.gridLevel.findMany({
         where: {
@@ -195,6 +198,10 @@ export class GridService {
         orderBy: { price: 'asc' },
         take: 1,
       }),
+      // pending 매수 주문 수 (하방 대기 상한 체크용)
+      prisma.gridLevel.count({
+        where: { botId, type: 'buy', status: 'pending' },
+      }),
     ]);
 
     // JS에서 크로싱 + 하방 매수 분류 (DB 쿼리 대신 메모리 필터링)
@@ -213,12 +220,17 @@ export class GridService {
     }
 
     // 2단계: 하방 매수 대기 (현재가 이하에서 가장 높은 1개)
+    // pending 매수가 MAX_PENDING_BUY_ORDERS 미만인 경우에만 추가
+    // (잔고 고갈→trim→재주문 반복 사이클 방지)
     const belowBuys = allAvailableBuys.filter((b: any) => b.price <= currentPrice);
-    const belowBuy = belowBuys.length > 0 ? belowBuys[belowBuys.length - 1] : null; // 이미 asc 정렬이므로 마지막이 가장 높음
+    const belowBuy = belowBuys.length > 0 ? belowBuys[belowBuys.length - 1] : null;
 
     if (belowBuy && !buyLevels.some((b: any) => b.id === belowBuy.id)) {
-      buyLevels.push(belowBuy);
-      console.log(`[GridService] Bot ${botId}: 하방 매수 대기 - ${belowBuy.price.toLocaleString()}원`);
+      const totalPendingAfterCrossing = pendingBuyCount + buyLevels.length;
+      if (totalPendingAfterCrossing < GridService.MAX_PENDING_BUY_ORDERS) {
+        buyLevels.push(belowBuy);
+        console.log(`[GridService] Bot ${botId}: 하방 매수 대기 - ${belowBuy.price.toLocaleString()}원 (pending: ${totalPendingAfterCrossing + 1}/${GridService.MAX_PENDING_BUY_ORDERS})`);
+      }
     }
 
     return {
