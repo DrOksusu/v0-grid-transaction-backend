@@ -27,6 +27,7 @@ model User {
   usdtDeposits      UsdtDeposit[]
   usdtPayments      UsdtPayment[]
   coinTransfers     CoinTransfer[]
+  manualTrades      ManualTrade[]
 
   @@map("users")
 }
@@ -708,4 +709,23 @@ model BtcRsiAlert {
 
   @@index([sentAt])
   @@map("btc_rsi_alerts")
+}
+
+// 수동 거래 기록 (봇 외부에서 직접 한 매수/매도 — 평균 취득단가 계산용)
+model ManualTrade {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  ticker    String   // 'KRW-USDS' 등 KRW 마켓 형식
+  type      String   // 'buy' | 'sell'
+  price     Decimal  @db.Decimal(20, 2)
+  quantity  Decimal  @db.Decimal(20, 8)
+  note      String?  @db.VarChar(200)
+  tradedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, ticker])
+  @@index([userId, ticker, type])
+  @@map("manual_trades")
 }
