@@ -842,6 +842,8 @@ export class ProfitService {
         price: true,
         amount: true,
         filledAt: true,
+        ticker: true,
+        bot: { select: { ticker: true } },
         gridLevel: {
           select: {
             buyPrice: true,
@@ -854,13 +856,14 @@ export class ProfitService {
     // Soft Delete로 봇의 Trade 기록이 보존되므로 위 Trade 조회에서 이미 포함됨
 
     // 날짜별로 그룹핑 (1일부터 마지막 날까지 모든 날짜 포함)
-    const dailyMap = new Map<number, { profit: number; trades: number }>();
+    type TickerAccum = { profit: number; trades: number };
+    const dailyMap = new Map<number, { profit: number; trades: number; tickerMap: Map<string, TickerAccum> }>();
     const UPBIT_FEE_RATE = 0.0005; // 업비트 수수료 0.05%
     const kstOffset = 9 * 60 * 60 * 1000; // 9시간 (밀리초)
 
     // 모든 날짜를 0으로 초기화
     for (let day = 1; day <= daysInMonth; day++) {
-      dailyMap.set(day, { profit: 0, trades: 0 });
+      dailyMap.set(day, { profit: 0, trades: 0, tickerMap: new Map() });
     }
 
     // 거래 데이터 집계 (한국 시간 기준으로 날짜 계산)
@@ -885,10 +888,20 @@ export class ProfitService {
       // UTC 시간에 9시간 더해서 한국 시간으로 변환 후 날짜 추출
       const kstDate = new Date(trade.filledAt.getTime() + kstOffset);
       const day = kstDate.getUTCDate();
-      const existing = dailyMap.get(day) || { profit: 0, trades: 0 };
+      const existing = dailyMap.get(day) || { profit: 0, trades: 0, tickerMap: new Map() };
+
+      // 티커 집계 (trade.ticker 우선, 없으면 bot.ticker)
+      const ticker = trade.ticker ?? trade.bot?.ticker ?? 'UNKNOWN';
+      const tickerEntry = existing.tickerMap.get(ticker) || { profit: 0, trades: 0 };
+      existing.tickerMap.set(ticker, {
+        profit: tickerEntry.profit + profit,
+        trades: tickerEntry.trades + 1,
+      });
+
       dailyMap.set(day, {
         profit: existing.profit + profit,
         trades: existing.trades + 1,
+        tickerMap: existing.tickerMap,
       });
     }
 
@@ -899,6 +912,9 @@ export class ProfitService {
         date: `${month}-${String(day).padStart(2, '0')}`,
         profit: Math.round(data.profit),
         trades: data.trades,
+        tickers: Array.from(data.tickerMap.entries())
+          .map(([ticker, d]) => ({ ticker, profit: Math.round(d.profit), trades: d.trades }))
+          .sort((a, b) => b.profit - a.profit),
       }))
       .sort((a, b) => a.day - b.day);
 
