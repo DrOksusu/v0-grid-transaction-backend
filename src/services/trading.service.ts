@@ -786,11 +786,15 @@ export class TradingService {
       // 4. 단건 주문 조회 (API 1회)
       const order = await (upbit as any).getOrder(grid.orderId);
 
-      if (order.state === 'done') {
+      // upbit: raw API → order.state ('done'/'cancel'), bithumb: 매핑된 PlacedOrder → order.status ('filled'/'cancelled')
+      const isFilled = order.state === 'done' || order.status === 'filled';
+      const isCancelled = order.state === 'cancel' || order.status === 'cancelled';
+
+      if (isFilled) {
         // 5. 체결 처리
         await this.processFilledOrder(grid, order, upbit, grid.bot.userId, botExchange);
         return true;
-      } else if (order.state === 'cancel') {
+      } else if (isCancelled) {
         // 6. 취소된 주문 → available로 복원
         console.log(`[Trading] Grid ${gridId}: 취소된 주문 감지 - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
         await prisma.gridLevel.update({
