@@ -170,7 +170,7 @@ export class GridService {
   // 봇당 하방 대기 매수 주문 최대 개수 (trimBuyOrdersOnInsufficientBalance의 keepCount와 동기화)
   static readonly MAX_PENDING_BUY_ORDERS = 7;
 
-  static async findExecutableGrids(botId: number, currentPrice: number, previousPrice?: number) {
+  static async findExecutableGrids(botId: number, currentPrice: number, previousPrice?: number, skipBelowMarket: boolean = false) {
     // 매수 + 매도 쿼리를 병렬 실행 (3쿼리 동시)
     const upperPriceBound = previousPrice !== undefined
       ? Math.max(currentPrice, previousPrice)
@@ -220,12 +220,12 @@ export class GridService {
     }
 
     // 2단계: 하방 매수 대기 (현재가 이하에서 가장 높은 1개)
-    // pending 매수가 MAX_PENDING_BUY_ORDERS 미만인 경우에만 추가
-    // (잔고 고갈→trim→재주문 반복 사이클 방지)
+    // 조건: (1) skipBelowMarket=false (유저 잔고 쿨다운 중 아님)
+    //       (2) pending 매수가 MAX_PENDING_BUY_ORDERS 미만
     const belowBuys = allAvailableBuys.filter((b: any) => b.price <= currentPrice);
     const belowBuy = belowBuys.length > 0 ? belowBuys[belowBuys.length - 1] : null;
 
-    if (belowBuy && !buyLevels.some((b: any) => b.id === belowBuy.id)) {
+    if (!skipBelowMarket && belowBuy && !buyLevels.some((b: any) => b.id === belowBuy.id)) {
       const totalPendingAfterCrossing = pendingBuyCount + buyLevels.length;
       if (totalPendingAfterCrossing < GridService.MAX_PENDING_BUY_ORDERS) {
         buyLevels.push(belowBuy);
