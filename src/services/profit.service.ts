@@ -435,110 +435,40 @@ export class ProfitService {
   static async getMonthlyRanking(limit: number = 5, month?: string) {
     const targetMonth = month || getCurrentMonth();
 
-    // 해당 월의 시작/끝 날짜 계산 (한국 시간 기준 UTC+9)
-    const [year, monthNum] = targetMonth.split('-').map(Number);
-    // 한국 시간 기준 해당 월 1일 00:00:00 = UTC로 변환 (9시간 빼기)
-    const startDate = new Date(Date.UTC(year, monthNum - 1, 1, -9, 0, 0, 0));
-    // 한국 시간 기준 해당 월 말일 23:59:59 = UTC로 변환
-    const lastDayOfMonth = new Date(year, monthNum, 0).getDate();
-    const endDate = new Date(Date.UTC(year, monthNum - 1, lastDayOfMonth, 14, 59, 59, 999));
-
-    // 1. 해당 월의 매도 체결 기록에서 수익 계산 (활성/중지된 봇)
-    const trades = await prisma.trade.findMany({
+    // MonthlyProfit 테이블 기반으로 랭킹 계산
+    // Trade.profit이 null이거나 gridLevel이 삭제된 경우 누락되는 버그를 방지
+    const monthlyProfits = await prisma.monthlyProfit.findMany({
       where: {
-        type: 'sell',
-        status: 'filled',
-        filledAt: {
-          gte: startDate,
-          lte: endDate,
-        },
-        bot: {
-          exchange: 'upbit',  // 그리드매매는 업비트만
+        month: targetMonth,
+        exchange: 'upbit',
+        totalProfit: { gt: 0 },
+      },
+      include: {
+        user: {
+          select: { id: true, name: true, nickname: true },
         },
       },
-      select: {
-        profit: true,
-        price: true,
-        amount: true,
-        gridLevel: {
-          select: {
-            buyPrice: true,
-          },
-        },
-        bot: {
-          select: {
-            userId: true,
-          },
-        },
-      },
+      orderBy: { totalProfit: 'desc' },
+      take: limit,
     });
 
-    // 참고: ProfitSnapshot.finalProfit은 봇의 "누적 총 수익"이므로 월별 랭킹에 포함하면 안 됨
-    // Soft Delete: 삭제된 봇의 거래도 월별 수익에 포함됨 (모든 Trade 기록 보존)
-
-    // 사용자별로 수익 집계
-    const userProfitMap = new Map<number, number>();
-    const UPBIT_FEE_RATE = 0.0005; // 업비트 수수료 0.05%
-
-    // Trade 기록에서 수익 집계
-    for (const trade of trades) {
-      if (!trade.bot) continue;
-      const userId = trade.bot.userId;
-
-      let profit = trade.profit;
-      // profit이 null이면 gridLevel.buyPrice로 직접 계산
-      if (profit === null && trade.gridLevel?.buyPrice) {
-        const buyPrice = trade.gridLevel.buyPrice;
-        const sellPrice = trade.price;
-        const volume = trade.amount;
-        const buyAmount = volume * buyPrice;
-        const sellAmount = volume * sellPrice;
-        const buyFee = buyAmount * UPBIT_FEE_RATE;
-        const sellFee = sellAmount * UPBIT_FEE_RATE;
-        profit = sellAmount - buyAmount - buyFee - sellFee;
+    const ranking = monthlyProfits.map((mp, index) => {
+      const user = mp.user;
+      let displayName: string;
+      if (user?.nickname) {
+        displayName = user.nickname;
+      } else {
+        const name = user?.name || '익명';
+        displayName = name.length > 1
+          ? name[0] + '*'.repeat(name.length - 1)
+          : name;
       }
-
-      if (profit === null || profit === undefined) continue;
-
-      const existing = userProfitMap.get(userId) || 0;
-      userProfitMap.set(userId, existing + profit);
-    }
-
-    // 사용자 정보 조회
-    const userIds = Array.from(userProfitMap.keys());
-    const users = await prisma.user.findMany({
-      where: { id: { in: userIds } },
-      select: { id: true, name: true, nickname: true, email: true },
-    });
-
-    const userMap = new Map(users.map(u => [u.id, u]));
-
-    // 수익 기준 정렬 후 Top N
-    const ranking = Array.from(userProfitMap.entries())
-      .map(([userId, profit]) => {
-        const user = userMap.get(userId);
-        // 닉네임이 있으면 닉네임 사용, 없으면 이름 마스킹
-        let displayName: string;
-        if (user?.nickname) {
-          displayName = user.nickname;
-        } else {
-          const name = user?.name || '익명';
-          displayName = name.length > 1
-            ? name[0] + '*'.repeat(name.length - 1)
-            : name;
-        }
-        return {
-          rank: 0,
-          name: displayName,
-          profit: Math.round(profit),
-        };
-      })
-      .sort((a, b) => b.profit - a.profit)
-      .slice(0, limit)
-      .map((item, index) => ({
-        ...item,
+      return {
         rank: index + 1,
-      }));
+        name: displayName,
+        profit: Math.round(mp.totalProfit),
+      };
+    });
 
     return {
       month: targetMonth,
