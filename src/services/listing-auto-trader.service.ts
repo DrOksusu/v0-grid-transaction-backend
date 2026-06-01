@@ -247,6 +247,15 @@ class ListingAutoTraderService {
     const config = await this.getConfig();
     if (!config.enabled) return [];
 
+    // 같은 ticker에 대해 다른 announcement에서 이미 주문이 진행됐으면 중복 매수 방지
+    const existingOrder = await (prisma as any).listingAutoOrder.findFirst({
+      where: { ticker, status: { in: ['pending', 'filled'] }, announcementId: { not: announcementId } },
+    });
+    if (existingOrder) {
+      console.log(`[AutoTrader] ticker=${ticker} 중복 매수 skip (기존 announcementId=${existingOrder.announcementId})`);
+      return [];
+    }
+
     const results = await Promise.allSettled([
       config.useBinance ? this.buyOnBinance(announcementId, ticker, config.amountKrw) : null,
       config.useBithumb ? this.buyOnBithumb(announcementId, ticker, config.amountKrw) : null,

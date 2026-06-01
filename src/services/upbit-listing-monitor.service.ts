@@ -382,6 +382,17 @@ class UpbitListingMonitorService {
   private async handleNewListing(notice: UpbitNotice): Promise<void> {
     const ticker = this.parseTicker(notice.title);
 
+    // 같은 ticker에 대해 이미 처리 중인 공지가 있으면 skip (채널 간 레이스 컨디션 방지)
+    if (ticker) {
+      const dup = await (prisma as any).upbitListingAnnouncement.findFirst({
+        where: { ticker, status: 'announced' },
+      });
+      if (dup) {
+        console.log(`[ListingMonitor] 공지 API 중복 skip: ${ticker} (기존 id=${dup.id})`);
+        return;
+      }
+    }
+
     // DB에 공지 저장
     const announcement = await (prisma as any).upbitListingAnnouncement.create({
       data: {
