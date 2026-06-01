@@ -10,6 +10,7 @@ import {
   getRankingUserDetail,
   getInfiniteBuyRankingUserDetail,
   getProfitGapDiagnosis,
+  fixProfitGap,
 } from '../controllers/profit.controller';
 import { authenticate } from '../middlewares/auth';
 
@@ -47,5 +48,8 @@ router.get('/deleted-bots', getDeletedBots);
 
 // 수익 불일치 진단 (랭킹 vs 일별수익)
 router.get('/debug/gap', getProfitGapDiagnosis);
+
+// MonthlyProfit을 Trade 기준으로 보정
+router.post('/debug/fix', fixProfitGap);
 
 export default router;

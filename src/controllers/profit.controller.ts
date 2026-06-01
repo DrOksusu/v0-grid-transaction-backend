@@ -253,6 +253,108 @@ export const getProfitGapDiagnosis = async (
 };
 
 /**
+ * MonthlyProfit을 Trade 테이블 기준으로 재계산하여 보정
+ * POST /api/profits/debug/fix?month=2026-06
+ */
+export const fixProfitGap = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const month = (req.query.month as string) || (() => {
+      const now = new Date();
+      const kst = new Date(now.getTime() + 9 * 3600000);
+      return `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, '0')}`;
+    })();
+
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ status: 'error', message: '월 형식 오류 (YYYY-MM)' });
+    }
+
+    const [year, monthNum] = month.split('-').map(Number);
+    const startDate = new Date(Date.UTC(year, monthNum - 1, 1, -9, 0, 0, 0));
+    const lastDay = new Date(year, monthNum, 0).getDate();
+    const endDate = new Date(Date.UTC(year, monthNum - 1, lastDay, 14, 59, 59, 999));
+
+    const UPBIT_FEE_RATE = 0.0005;
+    const BITHUMB_FEE_RATE = 0.0004;
+
+    // 모든 봇(soft delete 포함) 조회
+    const bots = await prisma.bot.findMany({ where: { userId }, select: { id: true, exchange: true } });
+    const botIds = bots.map(b => b.id);
+
+    const trades = await prisma.trade.findMany({
+      where: {
+        botId: { in: botIds },
+        type: 'sell',
+        status: 'filled',
+        filledAt: { gte: startDate, lte: endDate },
+      },
+      select: {
+        profit: true,
+        price: true,
+        amount: true,
+        bot: { select: { exchange: true } },
+        gridLevel: { select: { buyPrice: true } },
+      },
+    });
+
+    // 거래소별 수익 합산 (MonthlyProfit은 exchange별로 분리)
+    const exchangeProfitMap = new Map<string, { profit: number; count: number }>();
+    for (const trade of trades) {
+      let profit = trade.profit;
+      if (profit === null && trade.gridLevel?.buyPrice) {
+        const feeRate = trade.bot.exchange === 'bithumb' ? BITHUMB_FEE_RATE : UPBIT_FEE_RATE;
+        const buyAmount = trade.amount * trade.gridLevel.buyPrice;
+        const sellAmount = trade.amount * trade.price;
+        profit = sellAmount - buyAmount - buyAmount * feeRate - sellAmount * feeRate;
+      }
+      if (profit == null) continue;
+
+      const ex = trade.bot.exchange;
+      const cur = exchangeProfitMap.get(ex) ?? { profit: 0, count: 0 };
+      exchangeProfitMap.set(ex, { profit: cur.profit + profit, count: cur.count + 1 });
+    }
+
+    // MonthlyProfit 보정 (거래소별)
+    const before: any[] = [];
+    const after: any[] = [];
+
+    for (const [exchange, { profit, count }] of exchangeProfitMap) {
+      const existing = await prisma.monthlyProfit.findUnique({
+        where: { userId_exchange_month: { userId, exchange: exchange as any, month } },
+      });
+      before.push({ exchange, total: existing ? Math.round(existing.totalProfit) : 0, count: existing?.tradeCount ?? 0 });
+
+      await prisma.monthlyProfit.upsert({
+        where: { userId_exchange_month: { userId, exchange: exchange as any, month } },
+        update: { totalProfit: profit, tradeCount: count },
+        create: { userId, exchange: exchange as any, month, totalProfit: profit, tradeCount: count },
+      });
+      after.push({ exchange, total: Math.round(profit), count });
+    }
+
+    // Trade에 없는 거래소의 MonthlyProfit 레코드 제거 (불필요한 초과 데이터 정리)
+    const monthlyAll = await prisma.monthlyProfit.findMany({ where: { userId, month } });
+    for (const mp of monthlyAll) {
+      if (!exchangeProfitMap.has(mp.exchange)) {
+        await prisma.monthlyProfit.delete({
+          where: { userId_exchange_month: { userId, exchange: mp.exchange, month } },
+        });
+        before.push({ exchange: mp.exchange, total: Math.round(mp.totalProfit), count: mp.tradeCount });
+        after.push({ exchange: mp.exchange, total: 0, count: 0, deleted: true });
+      }
+    }
+
+    return successResponse(res, { month, before, after, message: 'MonthlyProfit이 Trade 테이블 기준으로 보정되었습니다.' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * 수익 랭킹 조회
  * GET /api/profits/ranking
  * @query month - 조회할 월 (YYYY-MM 형식, 미지정 시 현재 월)
