@@ -21,6 +21,8 @@ interface AutoTradeConfig {
   takeProfitPct: number;
   stopLossPct: number;
   maxHoldMinutes: number;
+  useTrailingStop: boolean;
+  trailingStopPct: number;
 }
 
 interface OrderResult {
@@ -174,6 +176,8 @@ class ListingAutoTraderService {
         takeProfitPct: 20,
         stopLossPct: 10,
         maxHoldMinutes: 30,
+        useTrailingStop: false,
+        trailingStopPct: 20,
       };
     }
     return {
@@ -187,6 +191,8 @@ class ListingAutoTraderService {
       takeProfitPct: row.takeProfitPct ?? 20,
       stopLossPct: row.stopLossPct ?? 10,
       maxHoldMinutes: row.maxHoldMinutes ?? 30,
+      useTrailingStop: row.useTrailingStop ?? false,
+      trailingStopPct: row.trailingStopPct ?? 20,
     };
   }
 
@@ -204,6 +210,8 @@ class ListingAutoTraderService {
         takeProfitPct: data.takeProfitPct ?? 20,
         stopLossPct: data.stopLossPct ?? 10,
         maxHoldMinutes: data.maxHoldMinutes ?? 30,
+        useTrailingStop: data.useTrailingStop ?? false,
+        trailingStopPct: data.trailingStopPct ?? 20,
       },
       update: data,
     });
@@ -218,6 +226,8 @@ class ListingAutoTraderService {
       takeProfitPct: row.takeProfitPct ?? 20,
       stopLossPct: row.stopLossPct ?? 10,
       maxHoldMinutes: row.maxHoldMinutes ?? 30,
+      useTrailingStop: row.useTrailingStop ?? false,
+      trailingStopPct: row.trailingStopPct ?? 20,
     };
   }
 

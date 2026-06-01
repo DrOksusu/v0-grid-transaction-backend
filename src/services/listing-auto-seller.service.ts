@@ -44,6 +44,7 @@ interface SellResult {
 
 class ListingAutoSellerService {
   private checking = false; // 중복 실행 방지
+  private peakPrices: Map<number, number> = new Map(); // orderId → 최고가 (trailing stop용)
 
   /**
    * 매도 조건 점검 (5초마다 에이전트에서 호출)
@@ -90,14 +91,35 @@ class ListingAutoSellerService {
     if (elapsedMinutes >= config.maxHoldMinutes) {
       // 시간 컷: 최대 보유 시간 초과
       sellReason = 'time_cut';
-    } else if (currentPrice !== null && buyAvgPrice !== null && buyAvgPrice > 0) {
-      const pctChange = ((currentPrice - buyAvgPrice) / buyAvgPrice) * 100;
-      if (pctChange >= config.takeProfitPct) {
-        // 익절: 목표 수익률 도달
-        sellReason = 'take_profit';
-      } else if (pctChange <= -config.stopLossPct) {
-        // 손절: 손절 수익률 도달
-        sellReason = 'stop_loss';
+    } else if (config.useTrailingStop) {
+      // Trailing Stop 모드: 최고가 기준
+      if (currentPrice !== null) {
+        const prevPeak = this.peakPrices.get(order.id) ?? (buyAvgPrice ?? 0);
+        const newPeak = Math.max(prevPeak, currentPrice);
+        this.peakPrices.set(order.id, newPeak);
+
+        if (newPeak > 0 && currentPrice <= newPeak * (1 - config.trailingStopPct / 100)) {
+          sellReason = 'trailing_stop';
+        }
+      }
+      // 바닥 보호: 매수가 대비 stopLossPct% 하락 시 손절
+      if (!sellReason && currentPrice !== null && buyAvgPrice !== null && buyAvgPrice > 0) {
+        const pctChange = ((currentPrice - buyAvgPrice) / buyAvgPrice) * 100;
+        if (pctChange <= -config.stopLossPct) {
+          sellReason = 'stop_loss';
+        }
+      }
+    } else {
+      // 고정 익절/손절 모드 (기존)
+      if (currentPrice !== null && buyAvgPrice !== null && buyAvgPrice > 0) {
+        const pctChange = ((currentPrice - buyAvgPrice) / buyAvgPrice) * 100;
+        if (pctChange >= config.takeProfitPct) {
+          // 익절: 목표 수익률 도달
+          sellReason = 'take_profit';
+        } else if (pctChange <= -config.stopLossPct) {
+          // 손절: 손절 수익률 도달
+          sellReason = 'stop_loss';
+        }
       }
     }
 
@@ -155,6 +177,7 @@ class ListingAutoSellerService {
         },
       });
 
+      this.peakPrices.delete(order.id);
       console.log(
         `[AutoSeller] ${ticker} ${order.exchange} ${reason} 매도 완료 — 수익률 ${profitPct?.toFixed(2) ?? '?'}%`,
       );

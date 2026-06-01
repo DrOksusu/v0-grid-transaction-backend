@@ -597,8 +597,10 @@ model ListingAutoTradeConfig {
   autoSellEnabled Boolean  @default(true)
   takeProfitPct   Float    @default(20)   // +20% 목표 수익
   stopLossPct     Float    @default(10)   // -10% 손절
-  maxHoldMinutes  Int      @default(30)   // 30분 시간 컷
-  updatedAt       DateTime @updatedAt
+  maxHoldMinutes   Int      @default(30)   // 30분 시간 컷
+  useTrailingStop  Boolean  @default(false) // trailing stop 사용 여부
+  trailingStopPct  Float    @default(20)    // 최고가 대비 X% 하락 시 매도
+  updatedAt        DateTime @updatedAt
 
   @@map("listing_auto_trade_config")
 }
