@@ -540,7 +540,7 @@ export class ProfitService {
 
     // 해당 사용자의 모든 봇 조회 (Soft delete 포함 - 수익 랭킹과 일치시키기 위해)
     const bots = await prisma.bot.findMany({
-      where: { userId: targetUserId, exchange: 'upbit' },
+      where: { userId: targetUserId },
       select: {
         id: true,
         ticker: true,
