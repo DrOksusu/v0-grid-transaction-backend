@@ -435,12 +435,11 @@ export class ProfitService {
   static async getMonthlyRanking(limit: number = 5, month?: string) {
     const targetMonth = month || getCurrentMonth();
 
-    // MonthlyProfit 테이블 기반으로 랭킹 계산
-    // Trade.profit이 null이거나 gridLevel이 삭제된 경우 누락되는 버그를 방지
-    const monthlyProfits = await prisma.monthlyProfit.findMany({
+    // MonthlyProfit 테이블 기반으로 랭킹 계산 (모든 거래소 합산)
+    // exchange: 'upbit' 필터 제거 → 빗썸 등 모든 거래소 수익 포함
+    const allProfits = await prisma.monthlyProfit.findMany({
       where: {
         month: targetMonth,
-        exchange: 'upbit',
         totalProfit: { gt: 0 },
       },
       include: {
@@ -448,27 +447,39 @@ export class ProfitService {
           select: { id: true, name: true, nickname: true },
         },
       },
-      orderBy: { totalProfit: 'desc' },
-      take: limit,
     });
 
-    const ranking = monthlyProfits.map((mp, index) => {
-      const user = mp.user;
-      let displayName: string;
-      if (user?.nickname) {
-        displayName = user.nickname;
+    // 사용자별로 모든 거래소 수익 합산
+    const userProfitMap = new Map<number, { user: any; totalProfit: number }>();
+    for (const mp of allProfits) {
+      if (!mp.user) continue;
+      const existing = userProfitMap.get(mp.userId);
+      if (existing) {
+        existing.totalProfit += mp.totalProfit;
       } else {
-        const name = user?.name || '익명';
-        displayName = name.length > 1
-          ? name[0] + '*'.repeat(name.length - 1)
-          : name;
+        userProfitMap.set(mp.userId, { user: mp.user, totalProfit: mp.totalProfit });
       }
-      return {
-        rank: index + 1,
-        name: displayName,
-        profit: Math.round(mp.totalProfit),
-      };
-    });
+    }
+
+    const ranking = Array.from(userProfitMap.values())
+      .sort((a, b) => b.totalProfit - a.totalProfit)
+      .slice(0, limit)
+      .map(({ user, totalProfit }, index) => {
+        let displayName: string;
+        if (user?.nickname) {
+          displayName = user.nickname;
+        } else {
+          const name = user?.name || '익명';
+          displayName = name.length > 1
+            ? name[0] + '*'.repeat(name.length - 1)
+            : name;
+        }
+        return {
+          rank: index + 1,
+          name: displayName,
+          profit: Math.round(totalProfit),
+        };
+      });
 
     return {
       month: targetMonth,
