@@ -11,6 +11,7 @@ import {
   getInfiniteBuyRankingUserDetail,
   getProfitGapDiagnosis,
   fixProfitGap,
+  fixTradeProfit,
 } from '../controllers/profit.controller';
 import { authenticate } from '../middlewares/auth';
 
@@ -51,5 +52,8 @@ router.get('/debug/gap', getProfitGapDiagnosis);
 
 // MonthlyProfit을 Trade 기준으로 보정
 router.post('/debug/fix', fixProfitGap);
+
+// profit=null Trade 레코드를 gridLevel로 직접 보정 (getSummary thisMonthProfit 불일치 해결)
+router.post('/debug/fix-trade-profit', fixTradeProfit);
 
 export default router;

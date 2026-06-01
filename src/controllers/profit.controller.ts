@@ -355,6 +355,92 @@ export const fixProfitGap = async (
 };
 
 /**
+ * profit=null인 Trade 레코드를 gridLevel.buyPrice로 재계산하여 직접 업데이트
+ * POST /api/profits/debug/fix-trade-profit?month=2026-06
+ * - getSummary()의 thisMonthProfit이 낮게 나올 때 사용
+ * - getDailyProfits는 null-profit을 gridLevel로 대체 계산하지만 getSummary()는 IS NOT NULL 필터링만 함
+ */
+export const fixTradeProfit = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const month = (req.query.month as string) || (() => {
+      const now = new Date();
+      const kst = new Date(now.getTime() + 9 * 3600000);
+      return `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, '0')}`;
+    })();
+
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ status: 'error', message: '월 형식 오류 (YYYY-MM)' });
+    }
+
+    const [year, monthNum] = month.split('-').map(Number);
+    const startDate = new Date(Date.UTC(year, monthNum - 1, 1, -9, 0, 0, 0));
+    const lastDay = new Date(year, monthNum, 0).getDate();
+    const endDate = new Date(Date.UTC(year, monthNum - 1, lastDay, 14, 59, 59, 999));
+
+    const UPBIT_FEE_RATE = 0.0005;
+    const BITHUMB_FEE_RATE = 0.0004;
+
+    // 해당 월의 사용자 봇 ID 목록 (soft delete 포함)
+    const bots = await prisma.bot.findMany({ where: { userId }, select: { id: true, exchange: true } });
+    const botIds = bots.map(b => b.id);
+
+    // profit=null인 매도 체결 트레이드만 조회
+    const nullProfitTrades = await prisma.trade.findMany({
+      where: {
+        botId: { in: botIds },
+        type: 'sell',
+        status: 'filled',
+        profit: null,
+        filledAt: { gte: startDate, lte: endDate },
+      },
+      select: {
+        id: true,
+        price: true,
+        amount: true,
+        bot: { select: { exchange: true } },
+        gridLevel: { select: { buyPrice: true } },
+      },
+    });
+
+    let updated = 0;
+    let skipped = 0;
+
+    for (const trade of nullProfitTrades) {
+      if (!trade.gridLevel?.buyPrice) {
+        skipped++;
+        continue;
+      }
+
+      const feeRate = trade.bot.exchange === 'bithumb' ? BITHUMB_FEE_RATE : UPBIT_FEE_RATE;
+      const buyAmount = trade.amount * trade.gridLevel.buyPrice;
+      const sellAmount = trade.amount * trade.price;
+      const profit = sellAmount - buyAmount - buyAmount * feeRate - sellAmount * feeRate;
+
+      await prisma.trade.update({
+        where: { id: trade.id },
+        data: { profit },
+      });
+      updated++;
+    }
+
+    return successResponse(res, {
+      month,
+      totalNullProfitTrades: nullProfitTrades.length,
+      updated,
+      skipped,
+      message: `Trade.profit 보정 완료: ${updated}건 업데이트, ${skipped}건 gridLevel 없어 스킵`,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * 수익 랭킹 조회
  * GET /api/profits/ranking
  * @query month - 조회할 월 (YYYY-MM 형식, 미지정 시 현재 월)
