@@ -379,6 +379,11 @@ class ListingAutoTraderService {
       return { exchange, status: 'filled', orderId: placed.orderId, amountKrw };
     } catch (err: any) {
       const msg = String(err?.message ?? err);
+      // 빗썸 신규 상장 시장가 제한 시간 — 업비트 선상장이므로 재시도 불필요
+      if (msg.includes('invalid_market_order_time')) {
+        await this.updateOrderSkipped(dbRow.id, '빗썸 시장가 주문 제한 시간 (업비트 선상장으로 재시도 불필요)');
+        return { exchange, status: 'skipped', amountKrw };
+      }
       await this.updateOrderFailed(dbRow.id, msg);
       return { exchange, status: 'failed', amountKrw, errorMsg: msg };
     }
@@ -587,6 +592,13 @@ class ListingAutoTraderService {
     await (prisma as any).listingAutoOrder.update({
       where: { id },
       data: { status: 'failed', errorMsg },
+    });
+  }
+
+  private async updateOrderSkipped(id: number, errorMsg: string): Promise<void> {
+    await (prisma as any).listingAutoOrder.update({
+      where: { id },
+      data: { status: 'skipped', errorMsg },
     });
   }
 }
