@@ -9,6 +9,7 @@ import {
   getInfiniteBuyRanking,
   getRankingUserDetail,
   getInfiniteBuyRankingUserDetail,
+  getProfitGapDiagnosis,
 } from '../controllers/profit.controller';
 import { authenticate } from '../middlewares/auth';
 
@@ -43,5 +44,8 @@ router.get('/daily/:month', getDailyProfits);
 
 // 삭제된 봇 성과 목록
 router.get('/deleted-bots', getDeletedBots);
+
+// 수익 불일치 진단 (랭킹 vs 일별수익)
+router.get('/debug/gap', getProfitGapDiagnosis);
 
 export default router;

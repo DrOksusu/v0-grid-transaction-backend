@@ -900,11 +900,6 @@ export class TradingService {
       },
     });
 
-    // 월별 수익 기록
-    if (grid.type === 'sell' && profit !== 0) {
-      await ProfitService.recordProfit(userId, exchange as any, profit);
-    }
-
     // 실제 체결가 및 체결량 추출
     // PlacedOrder(avgFillPrice/filledQty) 또는 raw API(avg_price/executed_volume) 모두 지원
     const filledPrice = order.avgFillPrice != null
@@ -915,7 +910,7 @@ export class TradingService {
       : parseFloat(order.executed_volume ?? '0');
     const filledTotal = filledPrice * filledVolume;
 
-    // 거래 기록 업데이트
+    // 거래 기록 업데이트 (Trade.profit을 먼저 기록해야 일별수익과 MonthlyProfit이 일치)
     const trade = await prisma.trade.findFirst({
       where: { orderId: grid.orderId! },
     });
@@ -980,6 +975,11 @@ export class TradingService {
         status: 'filled',
         filledAt: actualFilledAt,
       });
+    }
+
+    // Trade.profit 기록 완료 후 월별 수익 기록 (순서 중요: Trade 먼저 → MonthlyProfit)
+    if (grid.type === 'sell' && profit !== 0) {
+      await ProfitService.recordProfit(userId, exchange as any, profit);
     }
 
     // 봇 상태 업데이트 알림 (재시도 로직 포함)
@@ -1137,18 +1137,13 @@ export class TradingService {
             },
           });
 
-          // 월별 수익 기록 (매도 체결 시에만)
-          if (grid.type === 'sell' && profit !== 0) {
-            await ProfitService.recordProfit(userId, botExchange as any, profit);
-          }
-
           // 실제 체결가 및 체결량 추출
           // order.avg_price가 실제 평균 체결가
           const filledPrice = order.avg_price ? parseFloat(order.avg_price) : parseFloat(order.price);
           const filledVolume = parseFloat(order.executed_volume);
           const filledTotal = filledPrice * filledVolume;
 
-          // 거래 기록에 실제 체결가로 업데이트
+          // 거래 기록에 실제 체결가로 업데이트 (Trade.profit 먼저 기록 → MonthlyProfit과 정합성 보장)
           const trade = await prisma.trade.findFirst({
             where: { orderId: grid.orderId! },
           });
@@ -1176,6 +1171,11 @@ export class TradingService {
               status: 'filled',
               filledAt: actualFilledAt,
             });
+          }
+
+          // Trade.profit 기록 완료 후 월별 수익 기록 (순서 중요: Trade 먼저 → MonthlyProfit)
+          if (grid.type === 'sell' && profit !== 0) {
+            await ProfitService.recordProfit(userId, botExchange as any, profit);
           }
 
           // 봇 상태 업데이트 알림 (재시도 로직 포함)

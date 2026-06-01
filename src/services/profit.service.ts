@@ -859,8 +859,9 @@ export class ProfitService {
       }))
       .sort((a, b) => a.day - b.day);
 
-    // 총계 계산
-    const totalProfit = dailyProfits.reduce((sum, d) => sum + d.profit, 0);
+    // 총계 계산: 반올림 누적 오차 방지를 위해 raw float 합산 후 1회 반올림
+    const rawTotal = Array.from(dailyMap.values()).reduce((sum, d) => sum + d.profit, 0);
+    const totalProfit = Math.round(rawTotal);
     const totalTrades = dailyProfits.reduce((sum, d) => sum + d.trades, 0);
     const tradingDays = dailyProfits.filter(d => d.trades > 0).length;
 

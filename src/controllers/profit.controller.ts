@@ -3,6 +3,7 @@ import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { ProfitService } from '../services/profit.service';
 import { Exchange } from '@prisma/client';
+import prisma from '../config/database';
 
 /**
  * 수익 요약 조회
@@ -143,6 +144,109 @@ export const getDeletedBots = async (
     );
 
     return successResponse(res, { deletedBots });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 수익 불일치 진단 (랭킹 vs 일별수익 차이 원인 분석)
+ * GET /api/profits/debug/gap?month=2026-06
+ */
+export const getProfitGapDiagnosis = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId!;
+    const month = (req.query.month as string) || (() => {
+      const now = new Date();
+      const kst = new Date(now.getTime() + 9 * 3600000);
+      return `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, '0')}`;
+    })();
+
+    const [year, monthNum] = month.split('-').map(Number);
+    const startDate = new Date(Date.UTC(year, monthNum - 1, 1, -9, 0, 0, 0));
+    const lastDay = new Date(year, monthNum, 0).getDate();
+    const endDate = new Date(Date.UTC(year, monthNum - 1, lastDay, 14, 59, 59, 999));
+
+    // MonthlyProfit 합계
+    const monthlyProfits = await prisma.monthlyProfit.findMany({
+      where: { userId, month },
+    });
+    const rankingTotal = monthlyProfits.reduce((s, mp) => s + mp.totalProfit, 0);
+    const rankingTradeCount = monthlyProfits.reduce((s, mp) => s + mp.tradeCount, 0);
+
+    // Trade 테이블 집계
+    const bots = await prisma.bot.findMany({ where: { userId }, select: { id: true, exchange: true } });
+    const botIds = bots.map(b => b.id);
+
+    const trades = await prisma.trade.findMany({
+      where: {
+        botId: { in: botIds },
+        type: 'sell',
+        status: 'filled',
+        filledAt: { gte: startDate, lte: endDate },
+      },
+      select: {
+        id: true,
+        botId: true,
+        profit: true,
+        price: true,
+        amount: true,
+        filledAt: true,
+        gridLevel: { select: { buyPrice: true } },
+        bot: { select: { exchange: true } },
+      },
+    });
+
+    const UPBIT_FEE_RATE = 0.0005;
+    const BITHUMB_FEE_RATE = 0.0004;
+
+    let tradeTotal = 0;
+    let nullProfitWithGridLevel = 0;
+    let nullProfitWithoutGridLevel = 0;
+    let nullProfitRecoveredSum = 0;
+
+    for (const trade of trades) {
+      let profit = trade.profit;
+      if (profit === null && trade.gridLevel?.buyPrice) {
+        const feeRate = trade.bot.exchange === 'bithumb' ? BITHUMB_FEE_RATE : UPBIT_FEE_RATE;
+        const buyAmount = trade.amount * trade.gridLevel.buyPrice;
+        const sellAmount = trade.amount * trade.price;
+        profit = sellAmount - buyAmount - buyAmount * feeRate - sellAmount * feeRate;
+        nullProfitWithGridLevel++;
+        nullProfitRecoveredSum += profit;
+      } else if (profit === null) {
+        nullProfitWithoutGridLevel++;
+        continue;
+      }
+      tradeTotal += profit;
+    }
+
+    const gap = rankingTotal - tradeTotal;
+
+    return successResponse(res, {
+      month,
+      ranking: {
+        total: Math.round(rankingTotal),
+        tradeCount: rankingTradeCount,
+        source: 'MonthlyProfit 테이블',
+      },
+      daily: {
+        total: Math.round(tradeTotal),
+        tradeCount: trades.length,
+        source: 'Trade 테이블',
+      },
+      gap: Math.round(gap),
+      nullProfitTrades: {
+        recoverable: nullProfitWithGridLevel,
+        recoverableSum: Math.round(nullProfitRecoveredSum),
+        lost: nullProfitWithoutGridLevel,
+        note: 'lost 건수는 Trade.profit=null이고 gridLevel.buyPrice도 없어 재계산 불가 → 일별수익에서 누락됨',
+      },
+    });
   } catch (error) {
     next(error);
   }
