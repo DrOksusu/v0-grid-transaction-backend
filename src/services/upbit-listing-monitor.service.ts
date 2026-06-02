@@ -324,8 +324,8 @@ class UpbitListingMonitorService {
 
     const res = await axios.post(
       `${FLARESOLVERR}/v1`,
-      { cmd: 'request.get', url: target, maxTimeout: 60000 },
-      { timeout: 70000 },
+      { cmd: 'request.get', url: target, maxTimeout: 12000 },
+      { timeout: 15000 },
     );
 
     if (res.data?.status !== 'ok') {

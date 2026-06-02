@@ -98,7 +98,10 @@ export abstract class BaseAgent {
   }
 
   private startCycleLoop(): void {
-    this.cycleTimer = setInterval(async () => {
+    // setInterval 대신 순차 setTimeout 루프 — 이전 사이클이 끝난 후 다음 스케줄
+    // setInterval은 사이클이 intervalMs보다 오래 걸릴 때 중복 실행 누적 문제 발생
+    const loop = async () => {
+      if (this.status !== 'running') return;
       try {
         await this.onCycle();
         this.metrics.cycles++;
@@ -108,12 +111,16 @@ export abstract class BaseAgent {
         this.metrics.lastError = error.message;
         console.error(`[${this.name}] Cycle error:`, error.message);
       }
-    }, this.cycleIntervalMs);
+      if (this.status === 'running') {
+        this.cycleTimer = setTimeout(loop, this.cycleIntervalMs);
+      }
+    };
+    this.cycleTimer = setTimeout(loop, this.cycleIntervalMs);
   }
 
   private stopCycleLoop(): void {
     if (this.cycleTimer) {
-      clearInterval(this.cycleTimer);
+      clearTimeout(this.cycleTimer);
       this.cycleTimer = null;
     }
   }
