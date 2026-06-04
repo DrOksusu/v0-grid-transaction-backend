@@ -160,6 +160,12 @@ class MetricsService {
 
     // 일일 리포트 체크 (오전 9시 KST)
     this.checkDailyReport();
+
+    // 이벤트 루프 P99를 최근 1분 윈도우로 리셋
+    // (리셋하지 않으면 단발 스파이크가 누적 P99에 영구 잔존 → 과부하 오탐 반복)
+    if (this.eloopHistogram) {
+      this.eloopHistogram.reset();
+    }
   }
 
   /** 매일 오전 9시 KST 서버 상태 리포트 발송 */
