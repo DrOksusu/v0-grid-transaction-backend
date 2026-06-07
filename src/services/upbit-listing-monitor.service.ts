@@ -45,6 +45,9 @@ export interface ListingSnapshotDto {
 
 // 상장 공지 키워드 (제목에 포함되어야 신규 상장으로 판단)
 const LISTING_KEYWORDS = ['신규 거래지원'];
+// 기존 코인의 KRW(원화) 마켓 신규 추가 형식: "바빌론(BABY) KRW 마켓 디지털 자산 추가"
+// BTC/USDT 단독 추가는 제외하기 위해 'KRW' 또는 '원화'가 반드시 포함되어야 함
+const KRW_MARKET_ADD_PATTERN = /(KRW|원화).*마켓.*추가/;
 // 티커로 오인할 수 있는 제외 단어
 const TICKER_EXCLUDES = new Set(['KRW', 'BTC', 'USDT', 'ETH', 'BNB', 'USDC']);
 
@@ -78,9 +81,20 @@ class UpbitListingMonitorService {
   private twitterUpbitUserId: string | null = null;
   // 트위터 마지막 폴링 시각
   private lastTwitterPollAt: number = 0;
+  // 마켓 목록 조회 진단 (catch-all 경로의 조용한 실패 감지용)
+  private lastMarketRefreshOkAt: number = 0;
+  private lastMarketRefreshError: string | null = null;
+  private marketRefreshFailCount: number = 0;
+  // 마켓 blind 경고 카카오 중복 발송 방지 플래그
+  private marketBlindAlertSent: boolean = false;
+  // 마켓 조회 연속 실패가 이 시간 이상 지속되면 감지 blind로 판단
+  private static readonly MARKET_BLIND_ALERT_MS = 10 * 60 * 1000;
 
   // 서비스 초기화 (에이전트 시작 시 호출)
   async initialize(): Promise<void> {
+    // blind 판정 기준 시각을 부팅 시점으로 baseline 설정 (부팅 직후 오탐 방지)
+    this.lastMarketRefreshOkAt = Date.now();
+
     // 기존 공지 ID를 DB에서 로드
     const existing = await (prisma as any).upbitListingAnnouncement.findMany({
       select: { noticeId: true },
@@ -212,6 +226,13 @@ class UpbitListingMonitorService {
       seenTweetCount: this.seenTweetIds.size,
       twitterEnabled: !!process.env.TWITTER_BEARER_TOKEN,
       pendingAnnouncementCount: this.snapshotTimers.size,
+      // 마켓 diff(catch-all) 진단 — 감지 blind 여부를 여기서 확인
+      knownMarketCount: this.upbitMarkets.size,
+      lastMarketRefreshOkAt: this.lastMarketRefreshOkAt
+        ? new Date(this.lastMarketRefreshOkAt).toISOString()
+        : null,
+      marketRefreshFailCount: this.marketRefreshFailCount,
+      lastMarketRefreshError: this.lastMarketRefreshError,
     };
   }
 
@@ -219,6 +240,9 @@ class UpbitListingMonitorService {
   async checkNewUpbitMarkets(): Promise<void> {
     const prev = new Set(this.upbitMarkets);
     await this.refreshUpbitMarkets();
+
+    // 마켓 조회가 장시간 실패하면 감지 blind 상태 — 카카오 경고
+    this.maybeAlertMarketBlind();
 
     // 새로 추가된 마켓
     const newMarkets: string[] = [];
@@ -366,7 +390,10 @@ class UpbitListingMonitorService {
   }
 
   private isListingNotice(title: string): boolean {
-    return LISTING_KEYWORDS.some(kw => title.includes(kw));
+    if (LISTING_KEYWORDS.some(kw => title.includes(kw))) return true;
+    // KRW 마켓 추가(기존 코인의 원화 신규 상장) 형식도 감지
+    if (KRW_MARKET_ADD_PATTERN.test(title)) return true;
+    return false;
   }
 
   // 제목에서 티커 파싱: "페페(PEPE)" → "PEPE"
@@ -691,7 +718,7 @@ class UpbitListingMonitorService {
   private async fetchUpbitTweets(): Promise<{ id: string; text: string }[]> {
     const bearer = process.env.TWITTER_BEARER_TOKEN!;
     const query = process.env.TWITTER_SEARCH_QUERY
-      ?? '"신규 거래지원" Upbit -is:retweet';
+      ?? '("신규 거래지원" OR "마켓 디지털 자산 추가") Upbit -is:retweet';
 
     const res = await axios.get(
       'https://api.twitter.com/2/tweets/search/recent',
@@ -827,6 +854,34 @@ class UpbitListingMonitorService {
     this.scheduleFollowUpSnapshots(announcement.id, ticker);
   }
 
+  // 마켓 목록 조회가 장시간 연속 실패하면 신규 상장 감지가 멈춘 것 → 카카오 1회 경고
+  private maybeAlertMarketBlind(): void {
+    const blindMs = Date.now() - this.lastMarketRefreshOkAt;
+    const isBlind =
+      this.marketRefreshFailCount > 0 &&
+      blindMs >= UpbitListingMonitorService.MARKET_BLIND_ALERT_MS;
+
+    if (isBlind && !this.marketBlindAlertSent) {
+      this.marketBlindAlertSent = true;
+      const mins = Math.round(blindMs / 60000);
+      const msg =
+        `[⚠️ 업비트 상장 감지 경고]\n` +
+        `마켓 목록 조회가 ${mins}분째 실패 중 (${this.marketRefreshFailCount}회 연속).\n` +
+        `신규 상장 자동 감지가 멈췄을 수 있습니다.\n` +
+        `사유: ${this.lastMarketRefreshError ?? '알 수 없음'}\n` +
+        `https://v0-grid-transaction.vercel.app/admin/upbit-listings`;
+      kakaoNotifyService.sendToMe(msg).catch(e =>
+        console.error('[ListingMonitor] 마켓 blind 경고 알림 실패:', e.message),
+      );
+    } else if (!isBlind && this.marketBlindAlertSent) {
+      // 회복됨 → 다음 장애 때 다시 알릴 수 있도록 리셋 + 회복 알림
+      this.marketBlindAlertSent = false;
+      kakaoNotifyService.sendToMe(
+        `[✅ 업비트 상장 감지 회복]\n마켓 목록 조회가 정상화되었습니다.`,
+      ).catch(() => {});
+    }
+  }
+
   private async saveMarketsToDb(markets: string[]): Promise<void> {
     if (markets.length === 0) return;
     await (prisma as any).upbitKnownMarket.createMany({
@@ -842,8 +897,19 @@ class UpbitListingMonitorService {
         .filter((m: any) => m.market.startsWith('KRW-'))
         .map((m: any) => m.market);
       this.upbitMarkets = new Set(krwMarkets);
-    } catch {
-      // 네트워크 오류 시 기존 캐시 유지
+      this.lastMarketRefreshOkAt = Date.now();
+      this.lastMarketRefreshError = null;
+      this.marketRefreshFailCount = 0;
+    } catch (err: any) {
+      // 네트워크/차단 오류 시 기존 캐시 유지 — 단, 조용히 묻지 말고 기록
+      this.marketRefreshFailCount++;
+      this.lastMarketRefreshError = err?.message ?? String(err);
+      // 로그 폭주 방지: 처음 1회 + 이후 10회마다
+      if (this.marketRefreshFailCount === 1 || this.marketRefreshFailCount % 10 === 0) {
+        console.warn(
+          `[ListingMonitor] 업비트 마켓 목록 조회 실패 (${this.marketRefreshFailCount}회 연속): ${this.lastMarketRefreshError}`,
+        );
+      }
     }
   }
 
