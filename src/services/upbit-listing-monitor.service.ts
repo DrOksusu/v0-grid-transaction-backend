@@ -59,10 +59,14 @@ const SNAPSHOT_SCHEDULE = [
   { type: '+6h', delayMs: 6 * 60 * 60 * 1000 },
 ];
 
-// 텔레그램 noticeId 충돌 방지 오프셋 (Upbit 공지 ID는 수만 단위, TG 메시지 ID도 유사 → 10억 오프셋)
-const TG_NOTICE_ID_OFFSET = 1_000_000_000;
-// Twitter noticeId 오프셋: TG보다 더 큰 값으로 분리 (tweet ID는 snowflake 19자리 → BigInt 불필요, 해시 방식 사용)
-const TWITTER_NOTICE_ID_OFFSET = 2_000_000_000;
+// 합성 noticeId 대역 — noticeId는 INT(최대 2,147,483,647) 컬럼이라 반드시 그 이내여야 함.
+// 과거 코드는 3e9(마켓)/2e9+1e9(트위터) 오프셋을 써서 INT를 초과 → MySQL 클램핑으로
+// 모두 2,147,483,647로 수렴 → 두 번째 합성 insert부터 noticeId 중복(P2002)으로 사이클 중단됐음.
+// 실제 업비트 noticeId는 작은 양수(수천~수만)라 1.5e9 이상 대역은 합성 전용으로 안전하다.
+const SYNTHETIC_BASE_MARKET = 1_500_000_000; // 마켓 직접 감지
+const SYNTHETIC_BASE_TWITTER = 1_700_000_000; // 트위터
+const SYNTHETIC_BASE_TELEGRAM = 1_900_000_000; // 텔레그램
+const SYNTHETIC_BAND = 200_000_000; // 각 대역 폭 (서로 겹치지 않음, 최대 2.1e9 < INT max)
 // Twitter API 폴링 간격 (5분 — API 쿼터 절약)
 const TWITTER_POLL_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -250,7 +254,12 @@ class UpbitListingMonitorService {
       if (!prev.has(market)) {
         newMarkets.push(market);
         const ticker = market.replace('KRW-', '');
-        await this.handleUpbitListed(ticker);
+        // 한 마켓 처리 실패가 나머지 마켓 처리와 DB 저장을 막지 않도록 격리
+        try {
+          await this.handleUpbitListed(ticker);
+        } catch (err: any) {
+          console.error(`[ListingMonitor] 마켓 처리 오류 (${market}):`, err?.message ?? err);
+        }
       }
     }
 
@@ -406,6 +415,37 @@ class UpbitListingMonitorService {
     return null;
   }
 
+  // 문자열 → [0, mod) 범위의 안정적 해시 (djb2). 같은 입력은 항상 같은 값 → 재감지 시 멱등성 보장
+  private stableHash(input: string, mod: number): number {
+    let hash = 5381;
+    for (let i = 0; i < input.length; i++) {
+      hash = (((hash << 5) + hash) + input.charCodeAt(i)) >>> 0;
+    }
+    return hash % mod;
+  }
+
+  // 합성 공지 생성 — noticeId 중복(P2002) 시 throw하지 않고 기존 레코드를 반환해 사이클 중단 방지.
+  // created=false면 이미 처리된 공지이므로 호출부에서 매수/스냅샷 등 최초 1회 부작용을 건너뛴다.
+  private async createAnnouncementSafe(
+    data: { noticeId: number; title: string; ticker: string | null; url: string; status: string },
+  ): Promise<{ record: any; created: boolean }> {
+    try {
+      const record = await (prisma as any).upbitListingAnnouncement.create({ data });
+      return { record, created: true };
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        const record = await (prisma as any).upbitListingAnnouncement.findUnique({
+          where: { noticeId: data.noticeId },
+        });
+        console.warn(
+          `[ListingMonitor] noticeId 중복 — 기존 레코드 사용 (ticker=${data.ticker}, noticeId=${data.noticeId})`,
+        );
+        return { record, created: false };
+      }
+      throw err;
+    }
+  }
+
   private async handleNewListing(notice: UpbitNotice): Promise<void> {
     const ticker = this.parseTicker(notice.title);
 
@@ -468,36 +508,45 @@ class UpbitListingMonitorService {
     if (!announcement) {
       // 사전 공지 없이 마켓 목록에 직접 등장 (공지 API 차단 등) → 공지 레코드 생성
       console.log(`[ListingMonitor] 사전 공지 없이 마켓 등장: ${ticker} — 직접 공지 생성`);
-      const syntheticNoticeId = 3_000_000_000 + (Date.now() % 1_000_000_000);
-      announcement = await (prisma as any).upbitListingAnnouncement.create({
-        data: {
-          noticeId: syntheticNoticeId,
-          title: `[마켓 감지] ${ticker} 신규 거래지원`,
-          ticker,
-          url: `https://upbit.com/exchange?code=CRIX.UPBIT.KRW-${ticker}`,
-          status: 'announced',
-        },
+      const syntheticNoticeId = SYNTHETIC_BASE_MARKET + this.stableHash(ticker, SYNTHETIC_BAND);
+      const { record, created } = await this.createAnnouncementSafe({
+        noticeId: syntheticNoticeId,
+        title: `[마켓 감지] ${ticker} 신규 거래지원`,
+        ticker,
+        url: `https://upbit.com/exchange?code=CRIX.UPBIT.KRW-${ticker}`,
+        status: 'announced',
       });
+      if (!record) {
+        console.warn(`[ListingMonitor] 마켓 감지 공지 생성/조회 실패 — 다음 사이클 재시도: ${ticker}`);
+        return;
+      }
+      announcement = record;
       this.seenNoticeIds.add(syntheticNoticeId);
 
-      const kakaoMsg =
-        `[업비트 신규 상장 - 마켓 직접 감지]\n` +
-        `티커: ${ticker}\n` +
-        `(공지 API 차단으로 공지 미감지, 마켓 목록에서 직접 포착)\n` +
-        `https://v0-grid-transaction.vercel.app/admin/upbit-listings`;
-      kakaoNotifyService.sendToMe(kakaoMsg).catch(e =>
-        console.error('[ListingMonitor] 카카오 알림 실패:', e.message)
-      );
+      // created=false면 이미 처리된 공지 → 매수/스냅샷 등 최초 1회 부작용 건너뜀
+      if (created) {
+        const kakaoMsg =
+          `[업비트 신규 상장 - 마켓 직접 감지]\n` +
+          `티커: ${ticker}\n` +
+          `(공지 API 차단으로 공지 미감지, 마켓 목록에서 직접 포착)\n` +
+          `https://v0-grid-transaction.vercel.app/admin/upbit-listings`;
+        kakaoNotifyService.sendToMe(kakaoMsg).catch(e =>
+          console.error('[ListingMonitor] 카카오 알림 실패:', e.message)
+        );
 
-      await Promise.all([
-        listingAutoTraderService.executeBuy(announcement.id, ticker).catch(e =>
-          console.error('[ListingMonitor] 마켓 감지 자동매수 오류:', e)
-        ),
-        this.captureSnapshots(announcement.id, ticker, 'announced'),
-      ]);
+        await Promise.all([
+          listingAutoTraderService.executeBuy(announcement.id, ticker).catch(e =>
+            console.error('[ListingMonitor] 마켓 감지 자동매수 오류:', e)
+          ),
+          this.captureSnapshots(announcement.id, ticker, 'announced'),
+        ]);
 
-      this.scheduleFollowUpSnapshots(announcement.id, ticker);
+        this.scheduleFollowUpSnapshots(announcement.id, ticker);
+      }
     }
+
+    // 이미 listed/complete로 처리된 공지면 재상장 알림/스냅샷 스킵 (중복 방지)
+    if (announcement.status !== 'announced') return;
 
     const listedAt = new Date();
     await (prisma as any).upbitListingAnnouncement.update({
@@ -738,8 +787,8 @@ class UpbitListingMonitorService {
 
   // 트위터 공지 → UpbitListingAnnouncement 생성 + 자동매수
   private async handleTwitterListing(tweetId: string, text: string, ticker: string): Promise<void> {
-    // tweet ID(19자리 snowflake)를 Int에 맞게 해시: 뒤 9자리 + OFFSET
-    const syntheticNoticeId = TWITTER_NOTICE_ID_OFFSET + parseInt(tweetId.slice(-9), 10);
+    // tweet ID(19자리 snowflake)는 INT32 범위를 초과 → 결정적 해시로 밴드 내 매핑
+    const syntheticNoticeId = SYNTHETIC_BASE_TWITTER + this.stableHash(tweetId, SYNTHETIC_BAND);
 
     const existing = await (prisma as any).upbitListingAnnouncement.findFirst({
       where: { ticker, status: 'announced' },
@@ -751,17 +800,17 @@ class UpbitListingMonitorService {
     }
 
     const handle = process.env.TWITTER_UPBIT_HANDLE ?? 'UPBITexchange';
-    const announcement = await (prisma as any).upbitListingAnnouncement.create({
-      data: {
-        noticeId: syntheticNoticeId,
-        title: `[트위터] ${text.slice(0, 200)}`,
-        ticker,
-        url: `https://twitter.com/${handle}/status/${tweetId}`,
-        status: 'announced',
-      },
+    const { record: announcement, created } = await this.createAnnouncementSafe({
+      noticeId: syntheticNoticeId,
+      title: `[트위터] ${text.slice(0, 200)}`,
+      ticker,
+      url: `https://twitter.com/${handle}/status/${tweetId}`,
+      status: 'announced',
     });
 
     this.seenNoticeIds.add(syntheticNoticeId);
+
+    if (!created) return; // 중복 공지 — 부수효과(매수/알림) 재실행 방지
 
     // 카카오 알림
     const kakaoMsg =
@@ -811,7 +860,8 @@ class UpbitListingMonitorService {
 
   // 텔레그램 공지 → UpbitListingAnnouncement 생성 + 자동매수
   private async handleTelegramListing(telegramMsgId: number, text: string, ticker: string): Promise<void> {
-    const syntheticNoticeId = TG_NOTICE_ID_OFFSET + telegramMsgId;
+    // 메시지 ID가 밴드 폭을 넘을 수 있어 결정적 해시로 밴드 내 매핑
+    const syntheticNoticeId = SYNTHETIC_BASE_TELEGRAM + this.stableHash(String(telegramMsgId), SYNTHETIC_BAND);
 
     // 이미 DB에 동일 공지가 있으면 skip (공지 API/수동 등록으로 이미 처리된 경우)
     const existing = await (prisma as any).upbitListingAnnouncement.findFirst({
@@ -823,17 +873,17 @@ class UpbitListingMonitorService {
       return;
     }
 
-    const announcement = await (prisma as any).upbitListingAnnouncement.create({
-      data: {
-        noticeId: syntheticNoticeId,
-        title: `[텔레그램] ${text.slice(0, 200)}`,
-        ticker,
-        url: `https://t.me/upbitkr/${telegramMsgId}`,
-        status: 'announced',
-      },
+    const { record: announcement, created } = await this.createAnnouncementSafe({
+      noticeId: syntheticNoticeId,
+      title: `[텔레그램] ${text.slice(0, 200)}`,
+      ticker,
+      url: `https://t.me/upbitkr/${telegramMsgId}`,
+      status: 'announced',
     });
 
     this.seenNoticeIds.add(syntheticNoticeId);
+
+    if (!created) return; // 중복 공지 — 부수효과(매수/알림) 재실행 방지
 
     // 카카오 알림
     const kakaoMsg =
