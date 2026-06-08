@@ -161,6 +161,47 @@ export const listAutoOrders = async (req: AuthRequest, res: Response, next: Next
 };
 
 /**
+ * PATCH /api/admin/upbit-listings/auto-trade/orders/:id
+ * 매수 체결 수량/평균가 수동 보정 (잘못 기록된 주문 정정)
+ * Body: { filledQty?: number, filledPrice?: number }
+ */
+export const correctAutoOrder = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ success: false, message: '유효한 주문 id가 필요합니다.' });
+      return;
+    }
+
+    const { filledQty, filledPrice } = req.body as { filledQty?: number; filledPrice?: number };
+    const patch: { filledQty?: number; filledPrice?: number } = {};
+    if (filledQty !== undefined) {
+      if (typeof filledQty !== 'number' || !Number.isFinite(filledQty) || filledQty < 0) {
+        res.status(400).json({ success: false, message: 'filledQty는 0 이상의 숫자여야 합니다.' });
+        return;
+      }
+      patch.filledQty = filledQty;
+    }
+    if (filledPrice !== undefined) {
+      if (typeof filledPrice !== 'number' || !Number.isFinite(filledPrice) || filledPrice < 0) {
+        res.status(400).json({ success: false, message: 'filledPrice는 0 이상의 숫자여야 합니다.' });
+        return;
+      }
+      patch.filledPrice = filledPrice;
+    }
+    if (patch.filledQty === undefined && patch.filledPrice === undefined) {
+      res.status(400).json({ success: false, message: 'filledQty 또는 filledPrice 중 하나는 필요합니다.' });
+      return;
+    }
+
+    const updated = await listingAutoTraderService.correctOrderFill(id, patch);
+    return successResponse(res, updated);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * GET /api/admin/upbit-listings/auto-trade/check-permissions
  * Binance API 키 스팟 거래 권한 확인
  */

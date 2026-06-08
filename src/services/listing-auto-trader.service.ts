@@ -293,6 +293,21 @@ class ListingAutoTraderService {
     return rows;
   }
 
+  // 매수 체결 수량/평균가를 수동 보정 (거래소 API 필드 오해 등으로 잘못 기록된 주문 정정용)
+  async correctOrderFill(
+    id: number,
+    data: { filledQty?: number; filledPrice?: number },
+  ): Promise<any> {
+    const patch: { filledQty?: number; filledPrice?: number } = {};
+    if (data.filledQty !== undefined) patch.filledQty = data.filledQty;
+    if (data.filledPrice !== undefined) patch.filledPrice = data.filledPrice;
+
+    return (prisma as any).listingAutoOrder.update({
+      where: { id },
+      data: patch,
+    });
+  }
+
   // ── Private: Binance 시장가 매수 ──────────────────────────────────────────
 
   private async buyOnBinance(announcementId: number, ticker: string, amountKrw: number): Promise<OrderResult> {

@@ -10,6 +10,7 @@ import {
   getAutoTradeConfig,
   updateAutoTradeConfig,
   listAutoOrders,
+  correctAutoOrder,
   checkBinancePermissions,
 } from '../controllers/upbit-listing-admin.controller';
 
@@ -22,6 +23,7 @@ router.use(requireAdmin);
 router.get('/auto-trade/config', getAutoTradeConfig);
 router.put('/auto-trade/config', updateAutoTradeConfig);
 router.get('/auto-trade/orders', listAutoOrders);
+router.patch('/auto-trade/orders/:id', correctAutoOrder);
 router.get('/auto-trade/check-permissions', checkBinancePermissions);
 
 router.get('/', listAnnouncements);
