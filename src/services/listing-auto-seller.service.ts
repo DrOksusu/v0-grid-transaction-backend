@@ -350,17 +350,18 @@ class ListingAutoSellerService {
 
     const data = await gateioRequest(cred.apiKey, cred.secretKey, 'POST', '/api/v4/spot/orders', '', body);
     const orderId = String(data.id ?? '');
-    const fillPrice = parseFloat(data.fill_price ?? '0');
+    // Gate.io 주의: fill_price = 체결된 quote(USDT) 총액이며 코인당 가격이 아님. 평균가는 avg_deal_price.
+    const avgDealPrice = parseFloat(data.avg_deal_price ?? '0');
     const filledTotal = parseFloat(data.filled_total ?? '0');
 
-    // filledQty: 실제로 팔린 수량 = 전체 - 남은 수량
+    // sell은 amount가 base 수량. filled_amount 우선, 없으면 전체 - 남은 수량
     const left = parseFloat(data.left ?? '0');
     const requestedQty = parseFloat(data.amount ?? qtyStr);
-    const filledQty = requestedQty - left || qty;
+    const filledQty = parseFloat(data.filled_amount ?? '0') || (requestedQty - left) || qty;
 
     let avgPrice: number | null = null;
-    if (fillPrice > 0) {
-      avgPrice = fillPrice;
+    if (avgDealPrice > 0) {
+      avgPrice = avgDealPrice;
     } else if (filledQty > 0 && filledTotal > 0) {
       avgPrice = filledTotal / filledQty;
     }
@@ -382,8 +383,8 @@ class ListingAutoSellerService {
       if (i > 0) await new Promise<void>((r) => setTimeout(r, 1500));
       try {
         const data = await gateioRequest(apiKey, secretKey, 'GET', `/api/v4/spot/orders/${orderId}`, `currency_pair=${ticker}_USDT`);
-        const fillPrice = parseFloat(data.fill_price ?? '0');
-        if (fillPrice > 0) return fillPrice;
+        const avgDealPrice = parseFloat(data.avg_deal_price ?? '0');
+        if (avgDealPrice > 0) return avgDealPrice;
       } catch {}
     }
     return null;
