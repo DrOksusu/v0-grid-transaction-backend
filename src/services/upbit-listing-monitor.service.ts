@@ -399,6 +399,13 @@ class UpbitListingMonitorService {
   }
 
   private isListingNotice(title: string): boolean {
+    // KRW/원화 마켓이 명시되지 않은 공지는 신규상장 대상에서 제외.
+    // BTC/USDT 단독 마켓 추가(예: "OOO(CTR) BTC 마켓 디지털 자산 추가")는 원화 신규상장이
+    // 아니므로 자동매수 오탐을 막는다. "(KRW, BTC, USDT 마켓)"처럼 나열돼도 KRW 단어가
+    // 있으면 통과하도록 단어 포함 여부만 검사한다(\s*마켓 강제 시 나열형을 놓침).
+    const hasKrwMarket = title.includes('KRW') || title.includes('원화');
+    if (!hasKrwMarket) return false;
+
     if (LISTING_KEYWORDS.some(kw => title.includes(kw))) return true;
     // KRW 마켓 추가(기존 코인의 원화 신규 상장) 형식도 감지
     if (KRW_MARKET_ADD_PATTERN.test(title)) return true;
