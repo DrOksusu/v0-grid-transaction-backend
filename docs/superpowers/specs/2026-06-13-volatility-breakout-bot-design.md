@@ -84,8 +84,8 @@ model VolatilityBreakoutTrade {
 | `src/services/volatility-breakout.service.ts` | 봇 CRUD, 사이클 로직(목표가 계산→진입→청산), 모의/실거래 체결 |
 | `src/services/volatility-backtest.service.ts` | 업비트 일봉 수집(페이지네이션) + 백테스트 실행 |
 | `src/utils/volatility-breakout-core.ts` | **순수 함수**: 목표가 계산, KST 거래일 계산, 백테스트 시뮬레이션. 봇과 백테스트가 공유. 단위 테스트 대상 |
-| `src/controllers/volatility.controller.ts` | 요청 파싱/검증 |
-| `src/routes/volatility.ts` | 라우트 (`/api/volatility`, authenticate) |
+| `src/controllers/volatility-admin.controller.ts` | 요청 파싱/검증 |
+| `src/routes/volatility-admin.ts` | 라우트 (`/admin/volatility`, authenticate + requireAdmin — 스테이블코인 관리자 패턴) |
 
 ### 에이전트 사이클 (30초)
 
@@ -112,7 +112,8 @@ model VolatilityBreakoutTrade {
 
 ## 6. API
 
-Base: `/api/volatility` (전부 authenticate)
+Base: `/admin/volatility` — `src/routes/index.ts`에 `router.use('/admin/volatility', volatilityAdminRoutes)` 등록.
+전 라우트 `authenticate` + `requireAdmin` (스테이블코인 매매 관리자와 동일 패턴). **관리자 전용 기능.**
 
 | 메서드 | 경로 | 설명 |
 |---|---|---|
@@ -139,7 +140,7 @@ Base: `/api/volatility` (전부 authenticate)
 
 ## 8. 프론트엔드
 
-- 신규 페이지 `app/volatility/page.tsx` + 사이드바/모바일 네비 메뉴 추가
+- 신규 페이지 `app/admin/volatility/page.tsx` — **관리자 전용** (admin/btc-rsi, admin/stablecoin과 동일하게 관리자만 접근, 일반 메뉴에 노출 안 함)
 - `lib/api.ts`에 API 함수 + 타입 추가
 
 화면 구성 (shadcn/ui Card 기반, 기존 전략 페이지 패턴):
