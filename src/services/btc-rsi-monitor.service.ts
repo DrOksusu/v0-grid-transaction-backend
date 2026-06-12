@@ -3,6 +3,7 @@ import axios from 'axios';
 import prisma from '../config/database';
 import { kakaoNotifyService } from './kakao-notify.service';
 import { telegramNotifyService } from './telegram-notify.service';
+import { buildBullishDivergenceMsg } from './btc-rsi-message';
 
 interface Candle {
   openTime: number;
@@ -87,6 +88,8 @@ class BtcRsiMonitorService {
   private detectBullishDivergence(
     swings: SwingLow[],
     candles: Candle[],
+    currentPrice: number,
+    currentRsi: number,
   ): { detected: boolean; msg: string; rsi: number; price: number } {
     if (swings.length < 2) return { detected: false, msg: '', rsi: 0, price: 0 };
 
@@ -101,21 +104,14 @@ class BtcRsiMonitorService {
 
       // 가격 lower low + RSI higher low
       if (recent.price < prev.price && recent.rsi > prev.rsi) {
-        const recentCandle = candles[recent.index];
-        const prevCandle = candles[prev.index];
-        const recentDate = new Date(recentCandle.openTime).toISOString().slice(0, 16);
-        const prevDate = new Date(prevCandle.openTime).toISOString().slice(0, 16);
+        const msg = buildBullishDivergenceMsg({
+          currentPrice,
+          currentRsi,
+          prev: { price: prev.price, rsi: prev.rsi, openTime: candles[prev.index].openTime },
+          recent: { price: recent.price, rsi: recent.rsi, openTime: candles[recent.index].openTime },
+        });
 
-        const msg =
-          `[BTC RSI 상승 다이버전스]\n` +
-          `현재가: $${recent.price.toLocaleString()}\n` +
-          `현재 RSI: ${recent.rsi.toFixed(2)}\n` +
-          `이전 저점 ($${prev.price.toLocaleString()} @ ${prevDate}, RSI ${prev.rsi.toFixed(2)}) ↔ ` +
-          `최근 저점 ($${recent.price.toLocaleString()} @ ${recentDate}, RSI ${recent.rsi.toFixed(2)})\n` +
-          `⬇️ 가격 하락 / ⬆️ RSI 상승 → 매수 시그널\n` +
-          `https://v0-grid-transaction.vercel.app/admin/btc-rsi`;
-
-        return { detected: true, msg, rsi: recent.rsi, price: recent.price };
+        return { detected: true, msg, rsi: currentRsi, price: currentPrice };
       }
       // 더 이전으로 가도 최근 스윙과 비교할 쌍이 하나면 충분
       break;
@@ -176,7 +172,11 @@ class BtcRsiMonitorService {
       time: candles[s.index].openTime,
     }));
 
-    const { detected, msg, rsi, price } = this.detectBullishDivergence(swings, candles);
+    // 알림 표시용 실제 현재가/RSI (마지막 캔들 기준)
+    const currentPrice = closes[closes.length - 1];
+    const currentRsi = rsiArr[rsiArr.length - 1];
+
+    const { detected, msg, rsi, price } = this.detectBullishDivergence(swings, candles, currentPrice, currentRsi);
     if (!detected) return;
 
     if (await this.isWithinCooldown()) {
