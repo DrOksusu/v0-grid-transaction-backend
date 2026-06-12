@@ -19,6 +19,7 @@ import { socketService } from './socket.service';
 import { botEngine } from './bot-engine.service';
 import { whaleAlertService } from './whale-alert.service';
 import { kakaoNotifyService } from './kakao-notify.service';
+import { calcAlertErrorRate } from '../utils/alert-error-rate';
 
 // 과부하 알림 임계치
 const ALERT_THRESHOLDS = {
@@ -228,10 +229,8 @@ class MetricsService {
       : 0;
 
     const recentMetrics = this.rawMetrics.filter((m) => m.timestamp > Date.now() - 60000);
-    // 최소 10건 이상일 때만 에러율 계산 — 새벽 저트래픽 시 1/3건 에러가 33%로 오탐 방지
-    const errorRate = recentMetrics.length >= 10
-      ? (recentMetrics.filter((m) => m.statusCode >= 400).length / recentMetrics.length) * 100
-      : 0;
+    // 5xx만 집계 + 최소 30건 샘플 — 저트래픽 새벽 401/404 오탐 방지 (calcAlertErrorRate 참조)
+    const errorRate = calcAlertErrorRate(recentMetrics);
 
     const checks: Array<{ key: string; triggered: boolean; label: string; value: string }> = [
       {
