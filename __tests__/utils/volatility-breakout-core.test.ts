@@ -4,6 +4,8 @@ import {
   isForceCloseWindow,
   calcStopLossPrice,
   evaluateExit,
+  simulateBreakout,
+  type DailyCandle,
 } from '../../src/utils/volatility-breakout-core';
 
 describe('calcTargetPrice', () => {
@@ -84,5 +86,71 @@ describe('evaluateExit', () => {
 
   it('아무 조건도 아니면 null (보유 유지)', () => {
     expect(evaluateExit({ ...base, currentPrice: 105000 })).toBeNull();
+  });
+});
+
+describe('simulateBreakout', () => {
+  const opts = { k: 0.5, stopLossPct: 3, feeRoundTripPct: 0.1, startCapital: 1_000_000 };
+
+  // 전일(인덱스 0)은 변동폭 산출용 — 거래는 인덱스 1부터
+  const prevDay: DailyCandle = { date: '2026-01-01', open: 100, high: 110, low: 90, close: 105 };
+  // 전일 변동폭 20, k=0.5 → 목표가 = 당일시가 100 + 10 = 110
+
+  it('고가가 목표가 미달이면 진입 없음', () => {
+    const r = simulateBreakout(
+      [prevDay, { date: '2026-01-02', open: 100, high: 109, low: 95, close: 108 }],
+      opts,
+    );
+    expect(r.n).toBe(0);
+    expect(r.finalCapital).toBe(1_000_000);
+  });
+
+  it('돌파 시 목표가 체결 → 종가 청산, 수수료 차감', () => {
+    const r = simulateBreakout(
+      [prevDay, { date: '2026-01-02', open: 100, high: 120, low: 108, close: 115 }],
+      opts,
+    );
+    expect(r.n).toBe(1);
+    // (115/110 - 1)*100 - 0.1 = 4.4545... - 0.1
+    expect(r.avgNetPct).toBeCloseTo((115 / 110 - 1) * 100 - 0.1, 5);
+    expect(r.winRate).toBe(100);
+  });
+
+  it('저가가 손절선 이하면 손절 체결이 우선 (보수적 가정)', () => {
+    // 손절선 = 110 × 0.97 = 106.7, 저가 99 ≤ 106.7 → STOP
+    const r = simulateBreakout(
+      [prevDay, { date: '2026-01-02', open: 100, high: 120, low: 99, close: 115 }],
+      opts,
+    );
+    expect(r.n).toBe(1);
+    expect(r.avgNetPct).toBeCloseTo(-3 - 0.1, 5); // -stopLossPct - 수수료
+    expect(r.worstPct).toBeCloseTo(-3.1, 5);
+  });
+
+  it('복리 누적: 2거래 수익률이 곱으로 반영', () => {
+    const day2: DailyCandle = { date: '2026-01-02', open: 100, high: 120, low: 108, close: 115 };
+    // day2 변동폭 12 → day3 목표가 = 110 + 6 = 116
+    const day3: DailyCandle = { date: '2026-01-03', open: 110, high: 130, low: 114, close: 120 };
+    const r = simulateBreakout([prevDay, day2, day3], opts);
+    expect(r.n).toBe(2);
+    const pnl1 = (115 / 110 - 1) * 100 - 0.1;
+    const pnl2 = (120 / 116 - 1) * 100 - 0.1;
+    expect(r.finalCapital).toBeCloseTo(1_000_000 * (1 + pnl1 / 100) * (1 + pnl2 / 100), 2);
+  });
+
+  it('연도별 손익 집계', () => {
+    const r = simulateBreakout(
+      [prevDay, { date: '2026-01-02', open: 100, high: 120, low: 108, close: 115 }],
+      opts,
+    );
+    expect(r.yearly).toEqual([{ year: 2026, pnlPct: expect.closeTo((115 / 110 - 1) * 100 - 0.1, 5) }]);
+  });
+
+  it('단순 보유 최종자본 = 첫 종가 대비 마지막 종가 배율', () => {
+    const r = simulateBreakout(
+      [prevDay, { date: '2026-01-02', open: 100, high: 109, low: 95, close: 210 }],
+      opts,
+    );
+    expect(r.buyHoldFinal).toBeCloseTo(1_000_000 * (210 / 105), 2);
   });
 });

@@ -51,3 +51,88 @@ export function evaluateExit(params: {
   if (getTradeDate(now) !== entryTradeDate) return 'CLOSE';
   return null;
 }
+
+export interface DailyCandle {
+  date: string; // "2026-06-13" (UTC)
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+export interface BacktestOptions {
+  k: number;
+  stopLossPct: number;
+  feeRoundTripPct: number; // 왕복 수수료 % (업비트 0.05×2 = 0.1)
+  startCapital: number;
+}
+
+export interface BacktestResult {
+  n: number;
+  winRate: number;
+  avgNetPct: number;
+  finalCapital: number;
+  maxDdPct: number;
+  worstPct: number;
+  yearly: Array<{ year: number; pnlPct: number }>;
+  buyHoldFinal: number;
+}
+
+/**
+ * 변동성 돌파 백테스트 (일봉, 롱 온리, 하루 1회, 복리).
+ * - 진입: high ≥ 목표가 → 목표가 체결 가정
+ * - 손절: low ≤ 손절선 → 손절가 체결 (보수적 — 종가 청산보다 먼저 가정)
+ * - 그 외: 당일 종가 청산
+ * 한계: 일봉 기반이라 장중 돌파→손절 순서는 근사치. 슬리피지 미반영.
+ */
+export function simulateBreakout(daily: DailyCandle[], opts: BacktestOptions): BacktestResult {
+  let equity = opts.startCapital;
+  let peak = equity;
+  let maxDd = 0;
+  let n = 0;
+  let wins = 0;
+  let sumNet = 0;
+  let worst = 0;
+  const yearlyMap = new Map<number, number>();
+
+  for (let i = 1; i < daily.length; i++) {
+    const today = daily[i];
+    const prev = daily[i - 1];
+    const target = calcTargetPrice(today.open, prev.high, prev.low, opts.k);
+    if (today.high < target) continue;
+
+    const stopPrice = calcStopLossPrice(target, opts.stopLossPct);
+    const exitPrice = today.low <= stopPrice ? stopPrice : today.close;
+    const pnlPct = (exitPrice / target - 1) * 100 - opts.feeRoundTripPct;
+
+    n++;
+    sumNet += pnlPct;
+    if (pnlPct > 0) wins++;
+    worst = n === 1 ? pnlPct : Math.min(worst, pnlPct);
+
+    equity *= 1 + pnlPct / 100;
+    peak = Math.max(peak, equity);
+    maxDd = Math.max(maxDd, (1 - equity / peak) * 100);
+
+    const year = Number(today.date.slice(0, 4));
+    yearlyMap.set(year, (yearlyMap.get(year) ?? 0) + pnlPct);
+  }
+
+  const buyHoldFinal =
+    daily.length >= 2
+      ? opts.startCapital * (daily[daily.length - 1].close / daily[0].close)
+      : opts.startCapital;
+
+  return {
+    n,
+    winRate: n > 0 ? (wins / n) * 100 : 0,
+    avgNetPct: n > 0 ? sumNet / n : 0,
+    finalCapital: equity,
+    maxDdPct: maxDd,
+    worstPct: worst,
+    yearly: [...yearlyMap.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([year, pnlPct]) => ({ year, pnlPct })),
+    buyHoldFinal,
+  };
+}
