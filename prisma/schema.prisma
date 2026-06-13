@@ -731,3 +731,43 @@ model ManualTrade {
   @@index([userId, ticker, type])
   @@map("manual_trades")
 }
+
+// 변동성 돌파(래리 윌리엄스) 봇 — 사용자×코인당 1개
+model VolatilityBreakoutBot {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  market       String   // "KRW-BTC" 등
+  buyAmountKrw Float    @map("buy_amount_krw") // 1회 매수금액
+  k            Float    @default(0.65)
+  stopLossPct  Float    @default(3) @map("stop_loss_pct")
+  live         Boolean  @default(false) // false=모의, true=실거래
+  enabled      Boolean  @default(false)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  trades       VolatilityBreakoutTrade[]
+
+  @@unique([userId, market])
+  @@map("volatility_breakout_bots")
+}
+
+// 거래가 발생한 날만 row 생성. status=HOLDING row가 곧 포지션 (서버 재시작 복구용)
+model VolatilityBreakoutTrade {
+  id          Int       @id @default(autoincrement())
+  botId       Int       @map("bot_id")
+  bot         VolatilityBreakoutBot @relation(fields: [botId], references: [id])
+  tradeDate   String    @map("trade_date") // KST 거래일 "2026-06-13" (09:00 경계 = UTC 날짜)
+  targetPrice Float     @map("target_price")
+  entryPrice  Float     @map("entry_price")
+  entryAt     DateTime  @map("entry_at")
+  qty         Float
+  exitPrice   Float?    @map("exit_price")
+  exitAt      DateTime? @map("exit_at")
+  exitReason  String?   @map("exit_reason") // "CLOSE" | "STOP"
+  pnlKrw      Float?    @map("pnl_krw")
+  pnlPct      Float?    @map("pnl_pct") // 수수료 차감 후
+  isLive      Boolean   @map("is_live")
+  status      String    // "HOLDING" | "CLOSED"
+
+  @@index([botId, tradeDate])
+  @@map("volatility_breakout_trades")
+}
