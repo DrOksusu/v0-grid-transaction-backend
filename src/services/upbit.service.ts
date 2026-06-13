@@ -308,6 +308,34 @@ export class UpbitService {
     }
   }
 
+  // 시장가 매도 주문
+  // volume: 매도할 코인 수량
+  async sellMarket(market: string, volume: number) {
+    try {
+      await throttleOrderApi();
+      const params: OrderParams = {
+        market,
+        side: 'ask',
+        ord_type: 'market',  // 시장가 매도는 'market' 타입 + volume 필수
+        volume: volume.toString(),
+      };
+
+      const queryString = new URLSearchParams(params as any).toString();
+
+      const response = await axiosInstance.post(
+        `${UPBIT_API_URL}/orders`,
+        params,
+        {
+          headers: this.getHeaders(queryString),
+        }
+      );
+
+      return response.data;
+    } catch (error: any) {
+      throw new Error(`시장가 매도 주문 실패: ${error.response?.data?.error?.message || error.message}`);
+    }
+  }
+
   /**
    * best + IOC 주문 (즉시 체결 가능한 최유리 호가 주문, 미체결분 자동 취소)
    *
