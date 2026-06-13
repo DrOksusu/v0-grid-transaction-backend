@@ -125,6 +125,21 @@ describe('simulateBreakout', () => {
     expect(r.n).toBe(1);
     expect(r.avgNetPct).toBeCloseTo(-3 - 0.1, 5); // -stopLossPct - 수수료
     expect(r.worstPct).toBeCloseTo(-3.1, 5);
+    expect(r.maxDdPct).toBeCloseTo(3.1, 5);
+  });
+
+  it('빈 배열이면 무거래 — 시작자본 유지', () => {
+    const r = simulateBreakout([], opts);
+    expect(r.n).toBe(0);
+    expect(r.finalCapital).toBe(1_000_000);
+    expect(r.buyHoldFinal).toBe(1_000_000);
+  });
+
+  it('캔들 1개면 무거래 — 시작자본 유지', () => {
+    const r = simulateBreakout([prevDay], opts);
+    expect(r.n).toBe(0);
+    expect(r.finalCapital).toBe(1_000_000);
+    expect(r.buyHoldFinal).toBe(1_000_000);
   });
 
   it('복리 누적: 2거래 수익률이 곱으로 반영', () => {

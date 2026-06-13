@@ -74,7 +74,7 @@ export interface BacktestResult {
   finalCapital: number;
   maxDdPct: number;
   worstPct: number;
-  yearly: Array<{ year: number; pnlPct: number }>;
+  yearly: Array<{ year: number; pnlPct: number }>; // 연도별 손익 합산 (복리 아닌 단순 합산, 참고용)
   buyHoldFinal: number;
 }
 
