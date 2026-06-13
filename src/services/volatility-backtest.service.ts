@@ -30,10 +30,24 @@ export async function fetchDailyCandles(market: string, days: number): Promise<D
 
   while (out.length < days) {
     const count = Math.min(200, days - out.length);
-    const res = await axios.get(`${UPBIT_API_URL}/candles/days`, {
-      params: { market, count, ...(to ? { to } : {}) },
-      timeout: 10_000,
-    });
+    let res;
+    try {
+      res = await axios.get(`${UPBIT_API_URL}/candles/days`, {
+        params: { market, count, ...(to ? { to } : {}) },
+        timeout: 10_000,
+      });
+    } catch (error) {
+      // 4xx = 잘못된 요청(존재하지 않는 마켓 등) → 400, 그 외(네트워크/타임아웃/5xx) → 502
+      if (
+        axios.isAxiosError(error) &&
+        error.response &&
+        error.response.status >= 400 &&
+        error.response.status < 500
+      ) {
+        throw new AppError(`업비트 일봉 조회 실패: ${market} (${error.response.status})`, 400);
+      }
+      throw new AppError('업비트 API 응답 없음 — 잠시 후 다시 시도하세요', 502);
+    }
     const batch: UpbitDayCandle[] = res.data;
     if (!Array.isArray(batch) || batch.length === 0) break; // 상장 이전 — 데이터 끝
     out.push(...batch);
