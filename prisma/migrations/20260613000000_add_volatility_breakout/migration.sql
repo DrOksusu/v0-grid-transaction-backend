@@ -33,9 +33,13 @@ CREATE TABLE `volatility_breakout_trades` (
     `status` VARCHAR(191) NOT NULL,
 
     INDEX `volatility_breakout_trades_bot_id_trade_date_idx`(`bot_id`, `trade_date`),
+    INDEX `volatility_breakout_trades_status_idx`(`status`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- AddForeignKey
-ALTER TABLE `volatility_breakout_trades` ADD CONSTRAINT `volatility_breakout_trades_bot_id_fkey` FOREIGN KEY (`bot_id`) REFERENCES `volatility_breakout_bots`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE `volatility_breakout_bots` ADD CONSTRAINT `volatility_breakout_bots_user_id_fkey` FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `volatility_breakout_trades` ADD CONSTRAINT `volatility_breakout_trades_bot_id_fkey` FOREIGN KEY (`bot_id`) REFERENCES `volatility_breakout_bots`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 

@@ -28,6 +28,7 @@ model User {
   usdtPayments      UsdtPayment[]
   coinTransfers     CoinTransfer[]
   manualTrades      ManualTrade[]
+  volatilityBreakoutBots VolatilityBreakoutBot[]
 
   @@map("users")
 }
@@ -744,6 +745,7 @@ model VolatilityBreakoutBot {
   enabled      Boolean  @default(false)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   trades       VolatilityBreakoutTrade[]
 
   @@unique([userId, market])
@@ -754,7 +756,7 @@ model VolatilityBreakoutBot {
 model VolatilityBreakoutTrade {
   id          Int       @id @default(autoincrement())
   botId       Int       @map("bot_id")
-  bot         VolatilityBreakoutBot @relation(fields: [botId], references: [id])
+  bot         VolatilityBreakoutBot @relation(fields: [botId], references: [id], onDelete: Cascade)
   tradeDate   String    @map("trade_date") // KST 거래일 "2026-06-13" (09:00 경계 = UTC 날짜)
   targetPrice Float     @map("target_price")
   entryPrice  Float     @map("entry_price")
@@ -769,5 +771,6 @@ model VolatilityBreakoutTrade {
   status      String    // "HOLDING" | "CLOSED"
 
   @@index([botId, tradeDate])
+  @@index([status])
   @@map("volatility_breakout_trades")
 }
