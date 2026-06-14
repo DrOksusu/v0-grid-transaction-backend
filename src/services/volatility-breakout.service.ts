@@ -221,30 +221,47 @@ function notify(msg: string): void {
     .catch((e: any) => console.error('[VolatilityBreakout] 카카오 알림 실패:', e.message));
 }
 
+// 동시 실행 가드 — 직전 사이클이 waitForFill로 길어져 30초 인터벌과 겹치면 중복 매수 위험
+let cycleRunning = false;
+
 export async function runCycle(): Promise<void> {
-  const now = new Date();
-  const tradeDate = getTradeDate(now);
+  if (cycleRunning) {
+    console.warn('[VolatilityBreakout] 직전 사이클 미완료 — 이번 사이클 skip');
+    return;
+  }
+  cycleRunning = true;
+  try {
+    const now = new Date();
+    const tradeDate = getTradeDate(now);
 
-  // 대상: enabled 봇 + (disabled여도 HOLDING 거래가 있는 봇 — 청산 감시 유지)
-  const enabledBots = await prisma.volatilityBreakoutBot.findMany({ where: { enabled: true } });
-  const holdingTrades = await prisma.volatilityBreakoutTrade.findMany({
-    where: { status: 'HOLDING' },
-  });
-  const enabledIds = new Set(enabledBots.map((b) => b.id));
-  const extraIds = holdingTrades.map((t) => t.botId).filter((id) => !enabledIds.has(id));
-  const extraBots =
-    extraIds.length > 0
-      ? await prisma.volatilityBreakoutBot.findMany({ where: { id: { in: extraIds } } })
-      : [];
-
-  for (const bot of [...enabledBots, ...extraBots]) {
-    try {
-      const holding = holdingTrades.find((t) => t.botId === bot.id) ?? null;
-      await runBotCycle(bot, holding, now, tradeDate);
-    } catch (e: any) {
-      // 개별 봇 에러는 다른 봇 사이클을 막지 않음 — 다음 사이클에서 조건 재평가
-      console.error(`[VolatilityBreakout] bot=${bot.id} ${bot.market} 사이클 에러:`, e.message);
+    // 거래일 바뀐 failedEntryDates 키 정리 (메모리 누수 방지)
+    for (const [botId, date] of failedEntryDates) {
+      if (date !== tradeDate) failedEntryDates.delete(botId);
     }
+
+    // 대상: enabled 봇 + (disabled여도 HOLDING 거래가 있는 봇 — 청산 감시 유지)
+    const enabledBots = await prisma.volatilityBreakoutBot.findMany({ where: { enabled: true } });
+    const holdingTrades = await prisma.volatilityBreakoutTrade.findMany({
+      where: { status: 'HOLDING' },
+    });
+    const enabledIds = new Set(enabledBots.map((b) => b.id));
+    const extraIds = holdingTrades.map((t) => t.botId).filter((id) => !enabledIds.has(id));
+    const extraBots =
+      extraIds.length > 0
+        ? await prisma.volatilityBreakoutBot.findMany({ where: { id: { in: extraIds } } })
+        : [];
+
+    for (const bot of [...enabledBots, ...extraBots]) {
+      try {
+        const holding = holdingTrades.find((t) => t.botId === bot.id) ?? null;
+        await runBotCycle(bot, holding, now, tradeDate);
+      } catch (e: any) {
+        // 개별 봇 에러는 다른 봇 사이클을 막지 않음 — 다음 사이클에서 조건 재평가
+        console.error(`[VolatilityBreakout] bot=${bot.id} ${bot.market} 사이클 에러:`, e.message);
+      }
+    }
+  } finally {
+    cycleRunning = false;
   }
 }
 
@@ -306,17 +323,29 @@ async function enterPosition(
       notify(`[변동성돌파 ⚠️] ${bot.market} 매수금액 ${bot.buyAmountKrw} < 최소 5,000 KRW — 오늘 진입 skip`);
       return;
     }
+    // uuid를 try 바깥에 보존 — buyMarket 성공 후 waitForFill 타임아웃 시
+    // 실제로는 체결됐을 수 있어 운영자가 사후 수동 복구 가능하게 알림에 포함
+    let buyOrderUuid: string | null = null;
     try {
       const upbit = await getUpbitClientFor(bot.userId);
       const order = await upbit.buyMarket(bot.market, bot.buyAmountKrw);
+      buyOrderUuid = order.uuid;
       const filled = await waitForFill(upbit, order.uuid);
       entryPrice = filled.avgPrice;
       qty = filled.qty;
     } catch (e: any) {
       // 매수 실패: 중복 주문 방지 우선 — 해당 거래일 재시도 안 함
       failedEntryDates.set(bot.id, tradeDate);
-      console.error(`[VolatilityBreakout] bot=${bot.id} 매수 실패:`, e.message);
-      notify(`[변동성돌파 ❌ 매수 실패] ${bot.market}\n${e.message}\n오늘(${tradeDate}) 진입 skip`);
+      console.error(`[VolatilityBreakout] bot=${bot.id} 매수 실패(uuid=${buyOrderUuid ?? 'none'}):`, e.message);
+      if (buyOrderUuid) {
+        // 주문은 접수됐는데 체결 확인만 실패 — 잔고에 코인 있을 수 있음
+        notify(
+          `[변동성돌파 ❌ 매수 체결 확인 실패] ${bot.market} (uuid=${buyOrderUuid}) — 업비트에서 직접 확인 필요. 잔고에 코인 있으면 봇 정지 후 수동 처리: ${e.message}`,
+        );
+      } else {
+        // 주문 자체가 거부됨 — 잔고 영향 없음
+        notify(`[변동성돌파 ❌ 매수 실패] ${bot.market}\n${e.message}\n오늘(${tradeDate}) 진입 skip`);
+      }
       return;
     }
   }
@@ -351,16 +380,26 @@ async function exitPosition(
   let qty = holding.qty;
 
   if (holding.isLive) {
+    // uuid를 try 바깥에 보존 — sellMarket 성공 후 waitForFill 타임아웃 시
+    // 운영자가 사후 수동 확인할 수 있도록 알림에 포함
+    let sellOrderUuid: string | null = null;
     try {
       const upbit = await getUpbitClientFor(bot.userId);
       const order = await upbit.sellMarket(bot.market, holding.qty);
+      sellOrderUuid = order.uuid;
       const filled = await waitForFill(upbit, order.uuid);
       exitPrice = filled.avgPrice;
       qty = filled.qty;
     } catch (e: any) {
       // 매도 실패는 재시도함 (포지션 방치가 더 위험) — 다음 사이클의 조건 재평가가 자연 재시도
-      console.error(`[VolatilityBreakout] bot=${bot.id} 매도 실패(${reason}):`, e.message);
-      notify(`[변동성돌파 ⚠️ 매도 실패] ${bot.market} (${reason})\n${e.message}\n다음 사이클 재시도`);
+      console.error(`[VolatilityBreakout] bot=${bot.id} 매도 실패(${reason}, uuid=${sellOrderUuid ?? 'none'}):`, e.message);
+      if (sellOrderUuid) {
+        notify(
+          `[변동성돌파 ❌ ${reason} 매도 체결 확인 실패] ${bot.market} (uuid=${sellOrderUuid}) — 다음 사이클 재시도: ${e.message}`,
+        );
+      } else {
+        notify(`[변동성돌파 ⚠️ 매도 실패] ${bot.market} (${reason})\n${e.message}\n다음 사이클 재시도`);
+      }
       return;
     }
   }
