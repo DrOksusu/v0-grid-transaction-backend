@@ -11,3 +11,4 @@ export { GeneralArbScannerAgent, generalArbScannerAgent } from './general-arb-sc
 export { UpbitListingMonitorAgent, upbitListingMonitorAgent } from './upbit-listing-monitor-agent';
 export { BtcRsiAgent } from './btc-rsi-agent';
 export { RebalancerAgent } from './rebalancer-agent';
+export { VolatilityBreakoutAgent } from './volatility-breakout-agent';
