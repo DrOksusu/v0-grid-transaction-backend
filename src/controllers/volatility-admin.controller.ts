@@ -140,12 +140,16 @@ export const backtest = async (req: AuthRequest, res: Response, next: NextFuncti
     if (typeof body.years !== 'number' || ![1, 2, 4, 8].includes(body.years)) {
       throw new AppError('years는 1|2|4|8 중 하나여야 합니다', 400);
     }
+    if (body.applyStopLoss !== undefined && typeof body.applyStopLoss !== 'boolean') {
+      throw new AppError('applyStopLoss는 boolean이어야 합니다', 400);
+    }
     res.json(
       await runBacktest({
         market: body.market,
         k: body.k,
         stopLossPct: body.stopLossPct,
         years: body.years as number,
+        applyStopLoss: body.applyStopLoss as boolean | undefined,
       }),
     );
   } catch (e) {

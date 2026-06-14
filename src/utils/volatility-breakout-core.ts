@@ -65,6 +65,13 @@ export interface BacktestOptions {
   stopLossPct: number;
   feeRoundTripPct: number; // 왕복 수수료 % (업비트 0.05×2 = 0.1)
   startCapital: number;
+  /**
+   * 손절 적용 여부 (기본 false).
+   * 일봉 데이터로는 low가 진입 전/후 발생인지 알 수 없어, true 시 보수적으로 손절 우선 가정 → 비관적 결과.
+   * false 시 손절 무시(종가 청산만) — 검증된 원본 스크립트와 동일 방식.
+   * 손절 자체는 실거래에서 분 단위 모니터링으로 정확히 작동.
+   */
+  applyStopLoss?: boolean;
 }
 
 export interface BacktestResult {
@@ -81,8 +88,9 @@ export interface BacktestResult {
 /**
  * 변동성 돌파 백테스트 (일봉, 롱 온리, 하루 1회, 복리).
  * - 진입: high ≥ 목표가 → 목표가 체결 가정
- * - 손절: low ≤ 손절선 → 손절가 체결 (보수적 — 종가 청산보다 먼저 가정)
- * - 그 외: 당일 종가 청산
+ * - 청산:
+ *   - opts.applyStopLoss=true: low ≤ 손절선 → 손절가 체결 (보수적). 그 외 종가 청산
+ *   - opts.applyStopLoss=false (기본): 항상 종가 청산 (손절 무시)
  * 한계: 일봉 기반이라 장중 돌파→손절 순서는 근사치. 슬리피지 미반영.
  */
 export function simulateBreakout(daily: DailyCandle[], opts: BacktestOptions): BacktestResult {
@@ -101,8 +109,13 @@ export function simulateBreakout(daily: DailyCandle[], opts: BacktestOptions): B
     const target = calcTargetPrice(today.open, prev.high, prev.low, opts.k);
     if (today.high < target) continue;
 
-    const stopPrice = calcStopLossPrice(target, opts.stopLossPct);
-    const exitPrice = today.low <= stopPrice ? stopPrice : today.close;
+    let exitPrice: number;
+    if (opts.applyStopLoss) {
+      const stopPrice = calcStopLossPrice(target, opts.stopLossPct);
+      exitPrice = today.low <= stopPrice ? stopPrice : today.close;
+    } else {
+      exitPrice = today.close;
+    }
     const pnlPct = (exitPrice / target - 1) * 100 - opts.feeRoundTripPct;
 
     n++;
