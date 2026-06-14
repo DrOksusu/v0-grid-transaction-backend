@@ -71,6 +71,7 @@ export async function runBacktest(params: {
   k: number;
   stopLossPct: number;
   years: number;
+  applyStopLoss?: boolean;
 }): Promise<BacktestResult> {
   const days = params.years * 365 + 1; // 전일 변동폭 계산용 1일 여유
   const daily = await fetchDailyCandles(params.market, days);
@@ -82,5 +83,6 @@ export async function runBacktest(params: {
     stopLossPct: params.stopLossPct,
     feeRoundTripPct: FEE_ROUND_TRIP_PCT,
     startCapital: START_CAPITAL,
+    applyStopLoss: params.applyStopLoss ?? false,
   });
 }

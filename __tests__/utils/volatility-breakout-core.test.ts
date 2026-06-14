@@ -116,16 +116,28 @@ describe('simulateBreakout', () => {
     expect(r.winRate).toBe(100);
   });
 
-  it('저가가 손절선 이하면 손절 체결이 우선 (보수적 가정)', () => {
+  it('손절 적용=true: 저가가 손절선 이하면 손절 체결이 우선 (보수적 가정)', () => {
     // 손절선 = 110 × 0.97 = 106.7, 저가 99 ≤ 106.7 → STOP
     const r = simulateBreakout(
       [prevDay, { date: '2026-01-02', open: 100, high: 120, low: 99, close: 115 }],
-      opts,
+      { ...opts, applyStopLoss: true },
     );
     expect(r.n).toBe(1);
     expect(r.avgNetPct).toBeCloseTo(-3 - 0.1, 5); // -stopLossPct - 수수료
     expect(r.worstPct).toBeCloseTo(-3.1, 5);
     expect(r.maxDdPct).toBeCloseTo(3.1, 5);
+  });
+
+  it('손절 적용=false (기본): 저가가 손절선 이하여도 종가 청산', () => {
+    // 일봉으로는 low가 진입 전/후인지 알 수 없어 기본은 손절 무시 — 종가 청산.
+    const r = simulateBreakout(
+      [prevDay, { date: '2026-01-02', open: 100, high: 120, low: 99, close: 115 }],
+      opts, // applyStopLoss 생략 = false
+    );
+    expect(r.n).toBe(1);
+    // 진입가 110(=target), 종가 115 → (115/110 - 1)*100 - 0.1 ≈ 4.4545
+    expect(r.avgNetPct).toBeCloseTo((115 / 110 - 1) * 100 - 0.1, 5);
+    expect(r.winRate).toBe(100);
   });
 
   it('빈 배열이면 무거래 — 시작자본 유지', () => {
