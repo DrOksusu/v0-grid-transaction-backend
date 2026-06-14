@@ -6,19 +6,29 @@ import { runBacktest } from '../services/volatility-backtest.service';
 
 const MARKET_RE = /^KRW-[A-Z0-9]+$/;
 
-// buyAmountKrw / k / stopLossPct 필드 검증
+// buyAmountKrw / k / stopLossPct 필드 검증 (Infinity/NaN 차단)
 function validateBotFields(body: Record<string, unknown>, partial: boolean) {
   if (!partial || body.buyAmountKrw !== undefined) {
-    if (typeof body.buyAmountKrw !== 'number' || body.buyAmountKrw < 5000) {
+    if (
+      typeof body.buyAmountKrw !== 'number' ||
+      !Number.isFinite(body.buyAmountKrw) ||
+      body.buyAmountKrw < 5000
+    ) {
       throw new AppError('buyAmountKrw는 5000 이상 숫자여야 합니다', 400);
     }
   }
-  if (body.k !== undefined && (typeof body.k !== 'number' || body.k < 0.1 || body.k > 2)) {
+  if (
+    body.k !== undefined &&
+    (typeof body.k !== 'number' || !Number.isFinite(body.k) || body.k < 0.1 || body.k > 2)
+  ) {
     throw new AppError('k는 0.1~2 사이 숫자여야 합니다', 400);
   }
   if (
     body.stopLossPct !== undefined &&
-    (typeof body.stopLossPct !== 'number' || body.stopLossPct < 0.5 || body.stopLossPct > 50)
+    (typeof body.stopLossPct !== 'number' ||
+      !Number.isFinite(body.stopLossPct) ||
+      body.stopLossPct < 0.5 ||
+      body.stopLossPct > 50)
   ) {
     throw new AppError('stopLossPct는 0.5~50 사이 숫자여야 합니다', 400);
   }
@@ -116,17 +126,18 @@ export const backtest = async (req: AuthRequest, res: Response, next: NextFuncti
     if (typeof body.market !== 'string' || !MARKET_RE.test(body.market)) {
       throw new AppError('market은 KRW-XXX 형식이어야 합니다', 400);
     }
-    if (typeof body.k !== 'number' || body.k < 0.1 || body.k > 2) {
+    if (typeof body.k !== 'number' || !Number.isFinite(body.k) || body.k < 0.1 || body.k > 2) {
       throw new AppError('k는 0.1~2 사이 숫자여야 합니다', 400);
     }
     if (
       typeof body.stopLossPct !== 'number' ||
+      !Number.isFinite(body.stopLossPct) ||
       body.stopLossPct < 0.5 ||
       body.stopLossPct > 50
     ) {
       throw new AppError('stopLossPct는 0.5~50 사이 숫자여야 합니다', 400);
     }
-    if (![1, 2, 4, 8].includes(body.years as number)) {
+    if (typeof body.years !== 'number' || ![1, 2, 4, 8].includes(body.years)) {
       throw new AppError('years는 1|2|4|8 중 하나여야 합니다', 400);
     }
     res.json(
