@@ -74,6 +74,13 @@ export interface BacktestOptions {
   applyStopLoss?: boolean;
 }
 
+export interface BacktestTrade {
+  date: string; // 거래일 (UTC, "YYYY-MM-DD")
+  entryPrice: number; // = 목표가(target)
+  exitPrice: number; // 손절가 또는 종가
+  pnlPct: number; // 수수료 차감 후 손익률 %
+}
+
 export interface BacktestResult {
   n: number;
   winRate: number;
@@ -83,6 +90,7 @@ export interface BacktestResult {
   worstPct: number;
   yearly: Array<{ year: number; pnlPct: number }>; // 연도별 손익 합산 (복리 아닌 단순 합산, 참고용)
   buyHoldFinal: number;
+  topTrades: BacktestTrade[]; // 수익률 상위 10건 (pnlPct desc)
 }
 
 /**
@@ -102,6 +110,7 @@ export function simulateBreakout(daily: DailyCandle[], opts: BacktestOptions): B
   let sumNet = 0;
   let worst = 0;
   const yearlyMap = new Map<number, number>();
+  const trades: BacktestTrade[] = [];
 
   for (let i = 1; i < daily.length; i++) {
     const today = daily[i];
@@ -129,7 +138,10 @@ export function simulateBreakout(daily: DailyCandle[], opts: BacktestOptions): B
 
     const year = Number(today.date.slice(0, 4));
     yearlyMap.set(year, (yearlyMap.get(year) ?? 0) + pnlPct);
+    trades.push({ date: today.date, entryPrice: target, exitPrice, pnlPct });
   }
+
+  const topTrades = [...trades].sort((a, b) => b.pnlPct - a.pnlPct).slice(0, 10);
 
   const buyHoldFinal =
     daily.length >= 2
@@ -147,5 +159,6 @@ export function simulateBreakout(daily: DailyCandle[], opts: BacktestOptions): B
       .sort((a, b) => a[0] - b[0])
       .map(([year, pnlPct]) => ({ year, pnlPct })),
     buyHoldFinal,
+    topTrades,
   };
 }

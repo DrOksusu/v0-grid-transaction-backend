@@ -180,4 +180,31 @@ describe('simulateBreakout', () => {
     );
     expect(r.buyHoldFinal).toBeCloseTo(1_000_000 * (210 / 105), 2);
   });
+
+  it('topTrades: 거래가 0건이면 빈 배열', () => {
+    const r = simulateBreakout(
+      [prevDay, { date: '2026-01-02', open: 100, high: 105, low: 95, close: 102 }],
+      opts,
+    );
+    expect(r.n).toBe(0);
+    expect(r.topTrades).toEqual([]);
+  });
+
+  it('topTrades: 수익률 내림차순으로 최대 10건만 반환', () => {
+    // 12거래일을 만들어 12건 거래 발생 (각 일의 종가를 다르게 설정해 다양한 수익률)
+    const candles: DailyCandle[] = [prevDay];
+    for (let i = 1; i <= 12; i++) {
+      // 매일 종가를 (110 + i)로 설정 — 진입가 110에서 5~17 상승 → 다양한 수익률
+      candles.push({ date: `2026-01-${String(i + 1).padStart(2, '0')}`, open: 100, high: 130, low: 108, close: 110 + i });
+    }
+    const r = simulateBreakout(candles, opts);
+    expect(r.n).toBe(12);
+    expect(r.topTrades).toHaveLength(10);
+    // 내림차순 검증
+    for (let i = 1; i < r.topTrades.length; i++) {
+      expect(r.topTrades[i - 1].pnlPct).toBeGreaterThanOrEqual(r.topTrades[i].pnlPct);
+    }
+    // 가장 큰 종가(122)의 거래가 1위
+    expect(r.topTrades[0].exitPrice).toBe(122);
+  });
 });
