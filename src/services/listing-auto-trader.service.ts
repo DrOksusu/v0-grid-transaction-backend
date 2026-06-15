@@ -7,6 +7,7 @@ import https from 'https';
 import prisma from '../config/database';
 import { decrypt } from '../utils/encryption';
 import { BithumbClient } from './exchange/bithumb-client';
+import { kakaoNotifyService } from './kakao-notify.service';
 
 const ADMIN_USER_ID = 2; // Binance/Bithumb 인증정보 소유 유저
 
@@ -256,6 +257,20 @@ class ListingAutoTraderService {
   async executeBuy(announcementId: number, ticker: string): Promise<OrderResult[]> {
     const config = await this.getConfig();
     if (!config.enabled) return [];
+
+    // 이미 업비트 KRW 마켓에 등록된 코인은 신규상장이 아님 — 매수 skip (false positive 차단)
+    // 예: "인터넷컴퓨터(ICP) 신규 거래지원 안내 (KRW, BTC, USDT 마켓)" — KRW-ICP가 이미 존재하면 BTC/USDT 마켓 추가 공지일 가능성
+    const existingKrwMarket = await (prisma as any).upbitKnownMarket.findUnique({
+      where: { market: `KRW-${ticker}` },
+    });
+    if (existingKrwMarket) {
+      const msg = `[Listing Skip] ${ticker} 이미 업비트 KRW 마켓 존재 — 신규상장 아님으로 판단해 매수 차단`;
+      console.log(`[AutoTrader] ${msg}`);
+      kakaoNotifyService.sendToMe(msg).catch(() => {
+        /* 알림 실패는 무시 */
+      });
+      return [];
+    }
 
     // 같은 ticker에 대해 다른 announcement에서 이미 주문이 진행됐으면 중복 매수 방지
     const existingOrder = await (prisma as any).listingAutoOrder.findFirst({
