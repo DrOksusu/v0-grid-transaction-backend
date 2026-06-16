@@ -76,7 +76,7 @@ export async function createBot(params: {
   market: string;
   buyAmountKrw: number;
   k?: number;
-  stopLossPct?: number;
+  stopLossPct?: number | null; // null = 손절 비활성화
 }) {
   const existing = await prisma.volatilityBreakoutBot.findFirst({
     where: { userId: params.userId, market: params.market },
@@ -100,7 +100,7 @@ export async function updateBot(
   patch: Partial<{
     buyAmountKrw: number;
     k: number;
-    stopLossPct: number;
+    stopLossPct: number | null; // null = 손절 비활성화
     live: boolean;
     enabled: boolean;
   }>,
@@ -266,7 +266,7 @@ export async function runCycle(): Promise<void> {
 }
 
 async function runBotCycle(
-  bot: { id: number; userId: number; market: string; buyAmountKrw: number; k: number; stopLossPct: number; live: boolean; enabled: boolean },
+  bot: { id: number; userId: number; market: string; buyAmountKrw: number; k: number; stopLossPct: number | null; live: boolean; enabled: boolean },
   holding: { id: number; tradeDate: string; entryPrice: number; qty: number; isLive: boolean } | null,
   now: Date,
   tradeDate: string,

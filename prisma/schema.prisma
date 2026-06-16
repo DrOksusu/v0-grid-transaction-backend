@@ -740,7 +740,7 @@ model VolatilityBreakoutBot {
   market       String   // "KRW-BTC" 등
   buyAmountKrw Float    @map("buy_amount_krw") // 1회 매수금액
   k            Float    @default(0.65)
-  stopLossPct  Float    @default(3) @map("stop_loss_pct")
+  stopLossPct  Float?   @default(3) @map("stop_loss_pct") // null = 손절 비활성화
   live         Boolean  @default(false) // false=모의, true=실거래
   enabled      Boolean  @default(false)
   createdAt    DateTime @default(now()) @map("created_at")

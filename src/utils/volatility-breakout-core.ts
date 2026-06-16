@@ -42,11 +42,11 @@ export function evaluateExit(params: {
   now: Date;
   currentPrice: number;
   entryPrice: number;
-  stopLossPct: number;
+  stopLossPct: number | null; // null = 손절 비활성화 (CLOSE만 사용)
   entryTradeDate: string;
 }): ExitReason | null {
   const { now, currentPrice, entryPrice, stopLossPct, entryTradeDate } = params;
-  if (currentPrice <= calcStopLossPrice(entryPrice, stopLossPct)) return 'STOP';
+  if (stopLossPct !== null && currentPrice <= calcStopLossPrice(entryPrice, stopLossPct)) return 'STOP';
   if (isForceCloseWindow(now)) return 'CLOSE';
   if (getTradeDate(now) !== entryTradeDate) return 'CLOSE';
   return null;
