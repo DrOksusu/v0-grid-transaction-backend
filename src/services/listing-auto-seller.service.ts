@@ -182,7 +182,11 @@ class ListingAutoSellerService {
         `[AutoSeller] ${ticker} ${order.exchange} ${reason} 매도 완료 — 수익률 ${profitPct?.toFixed(2) ?? '?'}%`,
       );
     } catch (err: any) {
-      const msg = err?.response?.data?.msg ?? err.message ?? String(err);
+      // 거래소별 에러 메시지 키가 다름:
+      //   - Binance/MEXC: data.msg
+      //   - Gate.io:      data.message / data.label
+      const d = err?.response?.data;
+      const msg = d?.msg ?? d?.message ?? d?.label ?? err.message ?? String(err);
       console.error(`[AutoSeller] ${ticker} ${order.exchange} 매도 실패:`, msg);
       await (prisma as any).listingAutoOrder.update({
         where: { id: order.id },
@@ -337,7 +341,20 @@ class ListingAutoSellerService {
     if (!cred) throw new Error('Gate.io 인증정보 없음');
     if (!qty || qty <= 0) throw new Error('매도 수량 없음');
 
-    const qtyStr = parseFloat(qty.toFixed(8)).toString();
+    // 실제 잔고 보정: Gate.io는 매수 시 fee를 base coin에서 차감하므로
+    // filledQty(gross)를 그대로 매도하면 BALANCE_NOT_ENOUGH 발생 (2026-06-16 SPX 사고)
+    const actualBalance = await this.getGateioCoinBalance(cred.apiKey, cred.secretKey, ticker);
+    let sellQty = qty;
+    if (actualBalance !== null && actualBalance > 0) {
+      sellQty = Math.min(qty, actualBalance);
+    }
+
+    // amount_precision 적용 (소수점 절사). 시장 정보 조회 실패 시 8자리 default.
+    const amountPrecision = await this.getGateioAmountPrecision(ticker);
+    const factor = Math.pow(10, amountPrecision);
+    sellQty = Math.floor(sellQty * factor) / factor;
+    if (sellQty <= 0) throw new Error('매도 수량 없음 (잔고/정밀도 절사 후 0)');
+    const qtyStr = sellQty.toString();
 
     // Gate.io market sell: amount = base currency (코인 수량)
     const body = JSON.stringify({
@@ -544,6 +561,40 @@ class ListingAutoSellerService {
       select: { apiKey: true, secretKey: true },
     });
     return row ? { apiKey: decrypt(row.apiKey), secretKey: decrypt(row.secretKey) } : null;
+  }
+
+  // ── Gate.io 잔고 / 마켓 정밀도 조회 ───────────────────────────────────────
+
+  private async getGateioCoinBalance(apiKey: string, secretKey: string, coin: string): Promise<number | null> {
+    try {
+      const data = await gateioRequest(apiKey, secretKey, 'GET', '/api/v4/spot/accounts', `currency=${coin}`);
+      if (Array.isArray(data) && data.length > 0) {
+        return parseFloat(data[0].available ?? '0');
+      }
+      return 0;
+    } catch {
+      return null;
+    }
+  }
+
+  // 마켓 정밀도 캐시 (프로세스 생명주기 동안 유효)
+  private gateioPrecisionCache: Map<string, number> = new Map();
+
+  private async getGateioAmountPrecision(ticker: string): Promise<number> {
+    const cached = this.gateioPrecisionCache.get(ticker);
+    if (cached !== undefined) return cached;
+    try {
+      const res = await axios.get(
+        `https://api.gateio.ws/api/v4/spot/currency_pairs/${ticker}_USDT`,
+        { timeout: 4000 },
+      );
+      const precision = Number(res.data?.amount_precision);
+      const safe = Number.isFinite(precision) && precision >= 0 ? precision : 8;
+      this.gateioPrecisionCache.set(ticker, safe);
+      return safe;
+    } catch {
+      return 8;
+    }
   }
 
   private async getGateioCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
