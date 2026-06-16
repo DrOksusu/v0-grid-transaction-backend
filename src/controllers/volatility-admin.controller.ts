@@ -23,14 +23,16 @@ function validateBotFields(body: Record<string, unknown>, partial: boolean) {
   ) {
     throw new AppError('k는 0.1~2 사이 숫자여야 합니다', 400);
   }
+  // stopLossPct는 null 허용 (손절 비활성화). 값이 있을 때만 0.5~50 검증.
   if (
     body.stopLossPct !== undefined &&
+    body.stopLossPct !== null &&
     (typeof body.stopLossPct !== 'number' ||
       !Number.isFinite(body.stopLossPct) ||
       body.stopLossPct < 0.5 ||
       body.stopLossPct > 50)
   ) {
-    throw new AppError('stopLossPct는 0.5~50 사이 숫자여야 합니다', 400);
+    throw new AppError('stopLossPct는 0.5~50 사이 숫자 또는 null이어야 합니다', 400);
   }
 }
 
@@ -56,7 +58,7 @@ export const createBot = async (req: AuthRequest, res: Response, next: NextFunct
       market: body.market,
       buyAmountKrw: body.buyAmountKrw as number,
       k: body.k as number | undefined,
-      stopLossPct: body.stopLossPct as number | undefined,
+      stopLossPct: body.stopLossPct as number | null | undefined,
     });
     res.json(bot);
   } catch (e) {

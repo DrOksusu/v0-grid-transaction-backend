@@ -87,6 +87,22 @@ describe('evaluateExit', () => {
   it('아무 조건도 아니면 null (보유 유지)', () => {
     expect(evaluateExit({ ...base, currentPrice: 105000 })).toBeNull();
   });
+
+  it('stopLossPct=null이면 손절선 이하라도 STOP 발동 안 함 (CLOSE만 사용)', () => {
+    // 현재가가 손절선 한참 이하지만 손절 비활성화 → null
+    expect(evaluateExit({ ...base, stopLossPct: null, currentPrice: 50000 })).toBeNull();
+  });
+
+  it('stopLossPct=null이어도 강제청산 창이면 CLOSE', () => {
+    expect(
+      evaluateExit({
+        ...base,
+        stopLossPct: null,
+        now: new Date('2026-06-13T23:56:00Z'),
+        currentPrice: 50000,
+      }),
+    ).toBe('CLOSE');
+  });
 });
 
 describe('simulateBreakout', () => {
