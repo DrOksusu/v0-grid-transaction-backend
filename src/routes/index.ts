@@ -24,6 +24,7 @@ import kakaoAdminRoutes from './kakao-admin';
 import transferRoutes from './transfer';
 import internalRoutes from './internal';
 import costBasisRoutes from './cost-basis';
+import marketRegimeRoutes from './market-regime';
 
 const router = Router();
 
@@ -60,5 +61,6 @@ router.use('/admin/btc-rsi', kakaoAdminRoutes);
 router.use('/transfer', transferRoutes);
 router.use('/internal', internalRoutes);
 router.use('/cost-basis', costBasisRoutes);
+router.use('/market-regime', marketRegimeRoutes);
 
 export default router;
