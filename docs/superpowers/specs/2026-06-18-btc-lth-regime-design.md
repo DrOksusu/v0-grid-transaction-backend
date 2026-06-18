@@ -570,3 +570,13 @@ GitHub Secrets에는 secret 없음 (둘 다 무료 공개 API).
 | 일자 | 변경 |
 |------|------|
 | 2026-06-18 | 최초 작성 (브레인스토밍 7개 질문 답변 반영) |
+
+---
+
+## 15. PoC 구현 후속 조치 (2026-06-18 발견)
+
+bitcoin-data.com fallback이 spec 가정과 실제 API가 달라 PoC에서는 실효성 없음으로 deferred:
+- spec 가정: `https://bitcoin-data.com/api/v1/hodl-waves` + `{ d, '1y', '2y', ...}` schema
+- 실제: `https://api.bitcoin-data.com/hodl-waves-supplies` (Spring HATEOAS) + `{ unixTs, age_2y_3y, age_3y_4y, ... }`
+- PR #A 머지 후 후속 PR에서 정상화 예정 (10 req/hour rate limit 고려한 재구현)
+- 그동안 CoinMetrics primary가 100% 동작 (community API 인증 불필요 확인)

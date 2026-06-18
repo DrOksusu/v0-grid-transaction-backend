@@ -41,6 +41,15 @@ export async function withRetry<T>(
 // bitcoin-data.com HODL 웨이브 API fetch
 // ============================================================
 
+/**
+ * bitcoin-data.com (api.bitcoin-data.com) fallback fetch.
+ *
+ * ⚠️ POC LIMITATION: 실제 API는 Spring HATEOAS 패턴이고 hodl-waves 응답 키가
+ * `age_2y_3y`, `age_3y_4y` 등으로 구성됨 (spec/plan 가정 `2y`, `3y`와 다름).
+ * 현재 구현은 spec 가정대로 두고, fallback은 실효성이 없는 상태로 둠.
+ * runBackfill/runDailyPoll의 `.catch(() => null/[])`로 graceful degrade되어
+ * CoinMetrics primary가 동작하면 정상 폴링됨. 후속 PR에서 정상화 예정.
+ */
 export async function fetchFromBitcoinData(): Promise<BitcoinDataHodlWavesRow[]> {
   const url = `${MARKET_REGIME_CONFIG.bitcoinDataBase}/hodlWaves`
   const ctl = new AbortController()
