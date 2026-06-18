@@ -246,6 +246,57 @@ export interface DailyPollResult {
 }
 
 export async function runDailyPoll(): Promise<DailyPollResult> {
-  // TODO: Cycle F에서 구현
-  return { status: 'failed' }
+  // 어제 날짜를 기준 날짜로 설정
+  const fetchDate = new Date()
+  fetchDate.setUTCDate(fetchDate.getUTCDate() - 1)
+  fetchDate.setUTCHours(0, 0, 0, 0)
+  const dstr = fetchDate.toISOString().slice(0, 10)
+
+  // 이미 존재하면 skip
+  const existing = await prisma.btcDormantSnapshot.findUnique({ where: { date: fetchDate } })
+  if (existing) return { status: 'skipped_existing', date: dstr }
+
+  // 두 소스를 순차적으로 fetch (실패 시 null)
+  const cmResult = await withRetry(
+    () => fetchFromCoinMetrics(fetchDate, fetchDate),
+    MARKET_REGIME_CONFIG.retryDelaysMs,
+  ).catch(() => null)
+
+  const bdResult = await withRetry(
+    () => fetchFromBitcoinData(),
+    MARKET_REGIME_CONFIG.retryDelaysMs,
+  ).catch(() => null)
+
+  const cm = cmResult?.find((r) => r.time.slice(0, 10) === dstr) ?? null
+  const bd = bdResult?.find((r) => r.d.slice(0, 10) === dstr) ?? null
+
+  // 두 소스 모두 없으면 실패
+  if (!cm && !bd) return { status: 'failed', date: dstr }
+
+  const row = computeSnapshotRow(fetchDate, cm, bd)
+  await prisma.btcDormantSnapshot.upsert({
+    where: { date: fetchDate },
+    create: {
+      date: row.date,
+      dormant1yRatio: row.dormant1yRatio,
+      dormant2yRatio: row.dormant2yRatio,
+      dormant3yRatio: row.dormant3yRatio,
+      btcPriceUsd: row.btcPriceUsd,
+      rawCoinmetrics: row.rawCoinmetrics as any,
+      rawBitcoinData: row.rawBitcoinData as any,
+      reconcileWarning: row.reconcileWarning,
+      dataSource: row.dataSource,
+    },
+    update: {
+      dormant1yRatio: row.dormant1yRatio,
+      dormant2yRatio: row.dormant2yRatio,
+      dormant3yRatio: row.dormant3yRatio,
+      btcPriceUsd: row.btcPriceUsd,
+      rawCoinmetrics: row.rawCoinmetrics as any,
+      rawBitcoinData: row.rawBitcoinData as any,
+      reconcileWarning: row.reconcileWarning,
+      dataSource: row.dataSource,
+    },
+  })
+  return { status: 'ok', date: dstr, dataSource: row.dataSource }
 }

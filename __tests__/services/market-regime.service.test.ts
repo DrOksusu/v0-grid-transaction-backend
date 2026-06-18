@@ -196,3 +196,60 @@ describe('runBackfill', () => {
     expect(prisma.btcDormantSnapshot.createMany).not.toHaveBeenCalled()
   })
 })
+
+// ============================================================
+// Cycle F — runDailyPoll
+// ============================================================
+
+describe('runDailyPoll', () => {
+  const originalDelays = [...[10_000, 30_000, 90_000]]
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    // 재시도 지연을 0으로 패치 (테스트 속도)
+    const { MARKET_REGIME_CONFIG } = require('../../src/config/market-regime')
+    ;(MARKET_REGIME_CONFIG as any).retryDelaysMs = [0, 0, 0]
+  })
+
+  it('어제 날짜 row 이미 있으면 skip', async () => {
+    ;(prisma.btcDormantSnapshot.findUnique as jest.Mock).mockResolvedValue({ date: 'x' })
+    const r = await runDailyPoll()
+    expect(r.status).toBe('skipped_existing')
+  })
+
+  it('두 소스 모두 실패 → status=failed', async () => {
+    jest.setTimeout(30_000)
+    ;(prisma.btcDormantSnapshot.findUnique as jest.Mock).mockResolvedValue(null)
+    global.fetch = jest.fn().mockRejectedValue(new Error('net')) as any
+    const r = await runDailyPoll()
+    expect(r.status).toBe('failed')
+  })
+
+  it('CoinMetrics 정상 → upsert 호출', async () => {
+    ;(prisma.btcDormantSnapshot.findUnique as jest.Mock).mockResolvedValue(null)
+    ;(prisma.btcDormantSnapshot.upsert as jest.Mock).mockResolvedValue({})
+    const yesterdayIso = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [{
+            asset: 'btc',
+            time: yesterdayIso + 'T00:00:00Z',
+            SplyAct1yr: '5000000', SplyAct2yr: '4500000', SplyAct3yr: '4200000',
+            SplyCur: '19700000', PriceUSD: '91234.56',
+          }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ([
+          { d: yesterdayIso, '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 },
+        ]),
+      }) as any
+
+    const r = await runDailyPoll()
+    expect(r.status).toBe('ok')
+    expect(prisma.btcDormantSnapshot.upsert).toHaveBeenCalled()
+  })
+})
