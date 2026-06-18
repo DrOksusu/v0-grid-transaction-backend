@@ -42,7 +42,7 @@ export async function withRetry<T>(
 // ============================================================
 
 export async function fetchFromBitcoinData(): Promise<BitcoinDataHodlWavesRow[]> {
-  const url = `${MARKET_REGIME_CONFIG.bitcoinDataBase}/hodl-waves`
+  const url = `${MARKET_REGIME_CONFIG.bitcoinDataBase}/hodlWaves`
   const ctl = new AbortController()
   const to = setTimeout(() => ctl.abort(), MARKET_REGIME_CONFIG.fetchTimeoutMs)
   try {
