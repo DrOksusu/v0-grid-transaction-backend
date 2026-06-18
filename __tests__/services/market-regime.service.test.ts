@@ -2,7 +2,8 @@
 // Cycle A (Task 4) ~ Cycle F (Task 9)
 
 import { classifyRegime, REGIME_THRESHOLDS } from '../../src/config/market-regime'
-import { fetchFromCoinMetrics, fetchFromBitcoinData, withRetry, computeSnapshotRow, reconcile } from '../../src/services/market-regime.service'
+import { fetchFromCoinMetrics, fetchFromBitcoinData, withRetry, computeSnapshotRow, reconcile, runBackfill, runDailyPoll } from '../../src/services/market-regime.service'
+import { prisma } from '../../__mocks__/database'
 
 // ============================================================
 // 글로벌 fetch mock 복원용
@@ -144,5 +145,54 @@ describe('computeSnapshotRow', () => {
     expect(row.dataSource).toBe('FALLBACK')
     expect(row.dormant2yRatio).toBeCloseTo(0.08 + 0.07 + 0.05 + 0.04 + 0.03, 5)
     expect(row.btcPriceUsd).toBe(88000)
+  })
+})
+
+// ============================================================
+// Cycle E — runBackfill
+// ============================================================
+
+describe('runBackfill', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  it('DB 0건 + fetch 정상 → createMany 호출', async () => {
+    ;(prisma.btcDormantSnapshot.count as jest.Mock).mockResolvedValue(0)
+    ;(prisma.btcDormantSnapshot.createMany as jest.Mock).mockResolvedValue({ count: 3650 })
+
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: Array.from({ length: 3 }, (_, i) => ({
+            asset: 'btc',
+            time: `2026-06-${15 + i}T00:00:00Z`,
+            SplyAct1yr: '5000000', SplyAct2yr: '4500000', SplyAct3yr: '4200000',
+            SplyCur: '19700000', PriceUSD: '91234.56',
+          })),
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ([
+          { d: '2026-06-15', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 },
+          { d: '2026-06-16', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 },
+          { d: '2026-06-17', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 },
+        ]),
+      }) as any
+
+    const result = await runBackfill()
+    expect(result.inserted).toBeGreaterThan(0)
+    expect(prisma.btcDormantSnapshot.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skipDuplicates: true }),
+    )
+  })
+
+  it('DB에 이미 데이터 있으면 skip', async () => {
+    ;(prisma.btcDormantSnapshot.count as jest.Mock).mockResolvedValue(100)
+    const result = await runBackfill()
+    expect(result.skipped).toBe(true)
+    expect(prisma.btcDormantSnapshot.createMany).not.toHaveBeenCalled()
   })
 })

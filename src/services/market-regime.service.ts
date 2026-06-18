@@ -170,3 +170,82 @@ export function computeSnapshotRow(
   }
   throw new Error('computeSnapshotRow: both sources null')
 }
+
+// ============================================================
+// runBackfill — DB가 비어있을 때 최대 10년치 데이터 일괄 적재
+// ============================================================
+
+export interface BackfillResult {
+  skipped: boolean
+  inserted: number
+}
+
+export async function runBackfill(): Promise<BackfillResult> {
+  // 이미 데이터가 있으면 건너뜀
+  const existing = await prisma.btcDormantSnapshot.count()
+  if (existing > 0) return { skipped: true, inserted: 0 }
+
+  const end = new Date()
+  end.setUTCDate(end.getUTCDate() - 1)
+  end.setUTCHours(0, 0, 0, 0)
+  const start = new Date(end)
+  start.setUTCFullYear(start.getUTCFullYear() - MARKET_REGIME_CONFIG.backfillYears)
+
+  // 두 소스를 병렬로 fetch (실패 시 빈 배열)
+  const [cmRows, bdRows] = await Promise.all([
+    withRetry(() => fetchFromCoinMetrics(start, end), MARKET_REGIME_CONFIG.retryDelaysMs).catch(() => []),
+    withRetry(() => fetchFromBitcoinData(), MARKET_REGIME_CONFIG.retryDelaysMs).catch(() => []),
+  ])
+
+  const bdByDate = new Map(bdRows.map((r) => [r.d.slice(0, 10), r]))
+  const cmByDate = new Map(cmRows.map((r) => [r.time.slice(0, 10), r]))
+  const dates = new Set([...bdByDate.keys(), ...cmByDate.keys()])
+
+  const rows: SnapshotInput[] = []
+  for (const dstr of dates) {
+    const date = new Date(`${dstr}T00:00:00Z`)
+    if (date < start || date > end) continue
+    const cm = cmByDate.get(dstr) ?? null
+    const bd = bdByDate.get(dstr) ?? null
+    if (!cm && !bd) continue
+    try {
+      rows.push(computeSnapshotRow(date, cm, bd))
+    } catch {
+      /* 둘 다 null인 경우 — 건너뜀 */
+    }
+  }
+
+  if (rows.length === 0) return { skipped: false, inserted: 0 }
+
+  const result = await prisma.btcDormantSnapshot.createMany({
+    data: rows.map((r) => ({
+      date: r.date,
+      dormant1yRatio: r.dormant1yRatio,
+      dormant2yRatio: r.dormant2yRatio,
+      dormant3yRatio: r.dormant3yRatio,
+      btcPriceUsd: r.btcPriceUsd,
+      rawCoinmetrics: r.rawCoinmetrics as any,
+      rawBitcoinData: r.rawBitcoinData as any,
+      reconcileWarning: r.reconcileWarning,
+      dataSource: r.dataSource,
+    })),
+    skipDuplicates: true,
+  })
+
+  return { skipped: false, inserted: result.count }
+}
+
+// ============================================================
+// runDailyPoll — 어제 날짜 데이터 upsert (Cycle F에서 완성)
+// ============================================================
+
+export interface DailyPollResult {
+  status: 'ok' | 'skipped_existing' | 'failed'
+  date?: string
+  dataSource?: string
+}
+
+export async function runDailyPoll(): Promise<DailyPollResult> {
+  // TODO: Cycle F에서 구현
+  return { status: 'failed' }
+}
