@@ -6,11 +6,16 @@ const env2y = {
   top: Number(process.env.REGIME_2Y_TOP_CUTOFF ?? '0.55'),
 }
 
+// 부동소수점 덧셈 오차 방지: 소수점 4자리로 반올림
+function round4(n: number): number {
+  return Math.round(n * 10000) / 10000
+}
+
 // 2y 기준 ±5pt offset
 export const REGIME_THRESHOLDS: Record<Series, { bottom: number; top: number }> = {
-  '1y': { bottom: env2y.bottom + 0.05, top: env2y.top + 0.05 },
+  '1y': { bottom: round4(env2y.bottom + 0.05), top: round4(env2y.top + 0.05) },
   '2y': { bottom: env2y.bottom, top: env2y.top },
-  '3y': { bottom: env2y.bottom - 0.05, top: env2y.top - 0.05 },
+  '3y': { bottom: round4(env2y.bottom - 0.05), top: round4(env2y.top - 0.05) },
 }
 
 export const MARKET_REGIME_CONFIG = {
