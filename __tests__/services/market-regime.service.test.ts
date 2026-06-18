@@ -2,7 +2,7 @@
 // Cycle A (Task 4) ~ Cycle F (Task 9)
 
 import { classifyRegime, REGIME_THRESHOLDS } from '../../src/config/market-regime'
-import { fetchFromCoinMetrics } from '../../src/services/market-regime.service'
+import { fetchFromCoinMetrics, fetchFromBitcoinData, withRetry } from '../../src/services/market-regime.service'
 
 // ============================================================
 // 글로벌 fetch mock 복원용
@@ -64,4 +64,38 @@ describe('fetchFromCoinMetrics', () => {
       fetchFromCoinMetrics(new Date('2026-06-17'), new Date('2026-06-17')),
     ).rejects.toThrow(/503/)
   })
+})
+
+// ============================================================
+// Cycle C — fetchFromBitcoinData + withRetry
+// ============================================================
+
+describe('fetchFromBitcoinData', () => {
+  it('hodl-waves 응답을 배열로 반환', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ([
+        { d: '2026-06-17', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 },
+      ]),
+    }) as any
+    const rows = await fetchFromBitcoinData()
+    expect(rows[0]['2y']).toBe(0.08)
+  })
+})
+
+describe('withRetry', () => {
+  it('첫 시도 성공 시 1회만 호출', async () => {
+    const fn = jest.fn().mockResolvedValue('ok')
+    await withRetry(fn, [10, 10, 10])
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+  it('2회 실패 후 3번째 성공', async () => {
+    const fn = jest.fn()
+      .mockRejectedValueOnce(new Error('fail'))
+      .mockRejectedValueOnce(new Error('fail'))
+      .mockResolvedValueOnce('ok')
+    const out = await withRetry(fn, [10, 10, 10])
+    expect(out).toBe('ok')
+    expect(fn).toHaveBeenCalledTimes(3)
+  }, 1000)
 })

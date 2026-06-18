@@ -17,6 +17,45 @@ function fmtDate(d: Date): string {
 }
 
 // ============================================================
+// 재시도 유틸 — delaysMs 배열 길이만큼 재시도
+// ============================================================
+
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  delaysMs: readonly number[],
+): Promise<T> {
+  let lastErr: unknown
+  for (let i = 0; i <= delaysMs.length; i++) {
+    try {
+      return await fn()
+    } catch (e) {
+      lastErr = e
+      if (i === delaysMs.length) break
+      await new Promise((r) => setTimeout(r, delaysMs[i]))
+    }
+  }
+  throw lastErr
+}
+
+// ============================================================
+// bitcoin-data.com HODL 웨이브 API fetch
+// ============================================================
+
+export async function fetchFromBitcoinData(): Promise<BitcoinDataHodlWavesRow[]> {
+  const url = `${MARKET_REGIME_CONFIG.bitcoinDataBase}/hodl-waves`
+  const ctl = new AbortController()
+  const to = setTimeout(() => ctl.abort(), MARKET_REGIME_CONFIG.fetchTimeoutMs)
+  try {
+    const res = await fetch(url, { signal: ctl.signal })
+    if (!res.ok) throw new Error(`bitcoin-data ${res.status}`)
+    const json = await res.json()
+    return bitcoinDataHodlWavesSchema.parse(json)
+  } finally {
+    clearTimeout(to)
+  }
+}
+
+// ============================================================
 // CoinMetrics 커뮤니티 API fetch
 // ============================================================
 
