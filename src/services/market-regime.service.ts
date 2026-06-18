@@ -42,13 +42,17 @@ export async function withRetry<T>(
 // ============================================================
 
 /**
- * bitcoin-data.com (api.bitcoin-data.com) fallback fetch.
+ * bitcoin-data.com fallback fetch.
  *
- * ⚠️ POC LIMITATION: 실제 API는 Spring HATEOAS 패턴이고 hodl-waves 응답 키가
- * `age_2y_3y`, `age_3y_4y` 등으로 구성됨 (spec/plan 가정 `2y`, `3y`와 다름).
- * 현재 구현은 spec 가정대로 두고, fallback은 실효성이 없는 상태로 둠.
- * runBackfill/runDailyPoll의 `.catch(() => null/[])`로 graceful degrade되어
- * CoinMetrics primary가 동작하면 정상 폴링됨. 후속 PR에서 정상화 예정.
+ * ⚠️ POC LIMITATION (2026-06-19 직접 검증):
+ * - spec/plan의 `hodl-waves` 또는 `hodlWaves` endpoint는 무료 API에 존재하지 않음 (모두 404).
+ * - 실제 API 루트: `https://api.bitcoin-data.com/` (Spring HATEOAS discovery).
+ * - HODL 관련 실제 endpoint: `longTermHodlerSupplyBtcs` (단일 LTH supply 값, ~155일 기준).
+ *   응답 행: `{ unixTs: number, longTermHodlerSupplyBtc: number }` (HATEOAS `_embedded` 래퍼).
+ * - 1y/2y/3y/5y/7y/10y 멀티버킷 데이터는 무료 API에 없음 → spec의 reconcile 설계와 호환 불가.
+ * - 현재 구현은 spec 가정대로 두고 fallback은 비활성. runBackfill/runDailyPoll의
+ *   `.catch(() => null/[])`로 graceful degrade되어 CoinMetrics primary가 정상이면 폴링 OK.
+ * - 후속 조치: spec § 15 참조 (단일 시리즈 fallback 재설계, 제거, 또는 유료 소스 이전).
  */
 export async function fetchFromBitcoinData(): Promise<BitcoinDataHodlWavesRow[]> {
   const url = `${MARKET_REGIME_CONFIG.bitcoinDataBase}/hodlWaves`

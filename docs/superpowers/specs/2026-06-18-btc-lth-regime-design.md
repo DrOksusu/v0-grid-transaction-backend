@@ -573,10 +573,49 @@ GitHub Secrets에는 secret 없음 (둘 다 무료 공개 API).
 
 ---
 
-## 15. PoC 구현 후속 조치 (2026-06-18 발견)
+## 15. PoC 구현 후속 조치 (2026-06-18~19 검증 완료)
 
-bitcoin-data.com fallback이 spec 가정과 실제 API가 달라 PoC에서는 실효성 없음으로 deferred:
-- spec 가정: `https://bitcoin-data.com/api/v1/hodl-waves` + `{ d, '1y', '2y', ...}` schema
-- 실제: `https://api.bitcoin-data.com/hodl-waves-supplies` (Spring HATEOAS) + `{ unixTs, age_2y_3y, age_3y_4y, ... }`
-- PR #A 머지 후 후속 PR에서 정상화 예정 (10 req/hour rate limit 고려한 재구현)
-- 그동안 CoinMetrics primary가 100% 동작 (community API 인증 불필요 확인)
+bitcoin-data.com fallback은 spec의 가정 자체가 무료 API와 호환되지 않아 deferred:
+
+### 직접 검증한 사실 (2026-06-19, curl)
+
+- **잘못된 URL 후보들** (모두 404):
+  - spec 가정: `https://bitcoin-data.com/api/v1/hodl-waves`
+  - implementer 1차 추측: `https://bitcoin-data.com/api/v1/hodlWaves`
+  - implementer 2차 추측: `https://api.bitcoin-data.com/hodl-waves`
+- **API 루트**: `https://api.bitcoin-data.com/` 200 OK (Spring HATEOAS discovery 문서)
+- **HODL 관련 실제 endpoint** (HATEOAS 디스커버리에서 확인):
+  - `shortTermHodlerSupplyBtcs` — STH 단일값 (BTC)
+  - `longTermHodlerSupplyBtcs` — **LTH 단일값** (BTC, ~155일 기준)
+  - `rhodlRatios` / `hodlBanks` — 다른 지표
+  - **hodl waves 멀티버킷 endpoint는 무료 API에 없음**
+
+### `longTermHodlerSupplyBtcs` 실제 응답 (size=2 sample)
+
+```json
+{
+  "_embedded": {
+    "longTermHodlerSupplyBtcs": [
+      { "unixTs": 1781654400, "longTermHodlerSupplyBtc": 16578152.10, "_links": {...} },
+      { "unixTs": 1781568000, "longTermHodlerSupplyBtc": 16583869.77, "_links": {...} }
+    ]
+  },
+  "page": { "totalElements": 6369, "totalPages": 3185 }
+}
+```
+
+- HATEOAS 래퍼 (`_embedded.longTermHodlerSupplyBtcs[]`)
+- 행당 필드 2개: `unixTs` (Unix 초) + `longTermHodlerSupplyBtc` (단일 LTH supply 값, BTC)
+- 약 17년치 일별 데이터 (6,369 elements). page/size/sort 파라미터로 페이징.
+- ⚠️ **1y/2y/3y/5y/7y/10y 버킷 분리 데이터는 없음** — single LTH aggregate만 제공
+
+### 결론
+
+spec의 1y/2y/3y 멀티 시리즈 설계와 bitcoin-data.com 무료 API는 데이터 모델이 근본적으로 호환되지 않는다. 따라서:
+
+- **이번 PoC**: fallback은 비활성 상태 유지 (`.catch(() => null/[])`로 graceful degrade). CoinMetrics primary가 정상 동작하므로 폴링 자체는 문제 없음.
+- **후속 PR 옵션**:
+  1. `longTermHodlerSupplyBtcs` 단일 시리즈로 fallback 재설계. dormant 1y/2y/3y 멀티 비교 대신 LTH supply 합계 vs CoinMetrics `SplyAct1yr`/`SplyCur` 정도의 sanity check만 수행.
+  2. fallback 완전 제거. `fetchFromBitcoinData`, `BD_LONG_TERM_BUCKETS`, reconcile 일부 로직 제거.
+  3. 유료 데이터 소스(Glassnode 등)로 이전해서 진짜 hodl waves 멀티버킷 확보.
+- CoinMetrics community API는 인증 불필요 확인 (200 OK).
