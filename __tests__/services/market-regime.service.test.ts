@@ -1,0 +1,255 @@
+// market-regime.service.ts 전체 TDD 테스트 모음
+// Cycle A (Task 4) ~ Cycle F (Task 9)
+
+import { classifyRegime, REGIME_THRESHOLDS } from '../../src/config/market-regime'
+import { fetchFromCoinMetrics, fetchFromBitcoinData, withRetry, computeSnapshotRow, reconcile, runBackfill, runDailyPoll } from '../../src/services/market-regime.service'
+import { prisma } from '../../__mocks__/database'
+
+// ============================================================
+// 글로벌 fetch mock 복원용
+// ============================================================
+const originalFetch = global.fetch
+afterEach(() => { global.fetch = originalFetch })
+
+// ============================================================
+// Cycle A — classifyRegime boundary
+// ============================================================
+
+describe('classifyRegime', () => {
+  it('2y series boundary — 0.65 → BOTTOM', () => {
+    expect(classifyRegime(0.65, '2y')).toBe('BOTTOM')
+  })
+  it('2y series boundary — 0.649 → NEUTRAL', () => {
+    expect(classifyRegime(0.649, '2y')).toBe('NEUTRAL')
+  })
+  it('2y series boundary — 0.55 → TOP', () => {
+    expect(classifyRegime(0.55, '2y')).toBe('TOP')
+  })
+  it('2y series boundary — 0.551 → NEUTRAL', () => {
+    expect(classifyRegime(0.551, '2y')).toBe('NEUTRAL')
+  })
+  it('1y series uses +5pt offset', () => {
+    expect(classifyRegime(0.7, '1y')).toBe('BOTTOM')
+    expect(classifyRegime(0.69, '1y')).toBe('NEUTRAL')
+  })
+  it('3y series uses -5pt offset', () => {
+    expect(classifyRegime(0.6, '3y')).toBe('BOTTOM')
+    expect(classifyRegime(0.5, '3y')).toBe('TOP')
+  })
+})
+
+// ============================================================
+// Cycle B — fetchFromCoinMetrics
+// ============================================================
+
+describe('fetchFromCoinMetrics', () => {
+  it('단일 일자 fetch 정상 응답', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{
+          asset: 'btc', time: '2026-06-17T00:00:00Z',
+          SplyAct1yr: '5000000', SplyAct2yr: '4500000', SplyAct3yr: '4200000',
+          SplyCur: '19700000', PriceUSD: '91234.56',
+        }],
+      }),
+    }) as any
+    const rows = await fetchFromCoinMetrics(new Date('2026-06-17'), new Date('2026-06-17'))
+    expect(rows).toHaveLength(1)
+    expect(rows[0].SplyAct2yr).toBe(4500000)
+  })
+
+  it('HTTP 5xx → throw', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 503 }) as any
+    await expect(
+      fetchFromCoinMetrics(new Date('2026-06-17'), new Date('2026-06-17')),
+    ).rejects.toThrow(/503/)
+  })
+})
+
+// ============================================================
+// Cycle C — fetchFromBitcoinData + withRetry
+// ============================================================
+
+describe('fetchFromBitcoinData', () => {
+  it('hodl-waves 응답을 배열로 반환', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ([
+        { d: '2026-06-17', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 },
+      ]),
+    }) as any
+    const rows = await fetchFromBitcoinData()
+    expect(rows[0]['2y']).toBe(0.08)
+  })
+})
+
+describe('withRetry', () => {
+  it('첫 시도 성공 시 1회만 호출', async () => {
+    const fn = jest.fn().mockResolvedValue('ok')
+    await withRetry(fn, [10, 10, 10])
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+  it('2회 실패 후 3번째 성공', async () => {
+    const fn = jest.fn()
+      .mockRejectedValueOnce(new Error('fail'))
+      .mockRejectedValueOnce(new Error('fail'))
+      .mockResolvedValueOnce('ok')
+    const out = await withRetry(fn, [10, 10, 10])
+    expect(out).toBe('ok')
+    expect(fn).toHaveBeenCalledTimes(3)
+  }, 1000)
+})
+
+// ============================================================
+// Cycle D — reconcile + computeSnapshotRow
+// ============================================================
+
+describe('reconcile', () => {
+  it('5%p 미만 차이 → 경고 없음', () => {
+    expect(reconcile(0.6234, 0.65)).toBe(false)
+  })
+  it('5.1%p 차이 → 경고', () => {
+    expect(reconcile(0.6234, 0.6745)).toBe(true)
+  })
+})
+
+describe('computeSnapshotRow', () => {
+  it('CoinMetrics + bitcoin-data 둘 다 있을 때 BOTH로 저장', () => {
+    const cm = {
+      asset: 'btc', time: '2026-06-17T00:00:00Z',
+      SplyAct1yr: 5000000, SplyAct2yr: 4500000, SplyAct3yr: 4200000,
+      SplyCur: 19700000, PriceUSD: 91234.56,
+    } as any
+    const bd = { d: '2026-06-17', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 } as any
+    const row = computeSnapshotRow(new Date('2026-06-17'), cm, bd)
+    expect(row.dataSource).toBe('BOTH')
+    expect(row.dormant2yRatio).toBeCloseTo(1 - 4500000 / 19700000, 5)
+    expect(row.btcPriceUsd).toBe(91234.56)
+  })
+
+  it('CoinMetrics 만 있을 때 PRIMARY', () => {
+    const cm = {
+      asset: 'btc', time: '2026-06-17T00:00:00Z',
+      SplyAct1yr: 5000000, SplyAct2yr: 4500000, SplyAct3yr: 4200000,
+      SplyCur: 19700000, PriceUSD: 91234.56,
+    } as any
+    const row = computeSnapshotRow(new Date('2026-06-17'), cm, null)
+    expect(row.dataSource).toBe('PRIMARY')
+    expect(row.reconcileWarning).toBe(false)
+  })
+
+  it('bitcoin-data 만 있을 때 FALLBACK', () => {
+    const bd = { d: '2026-06-17', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 } as any
+    const row = computeSnapshotRow(new Date('2026-06-17'), null, bd, 88000)
+    expect(row.dataSource).toBe('FALLBACK')
+    expect(row.dormant2yRatio).toBeCloseTo(0.08 + 0.07 + 0.05 + 0.04 + 0.03, 5)
+    expect(row.btcPriceUsd).toBe(88000)
+  })
+})
+
+// ============================================================
+// Cycle E — runBackfill
+// ============================================================
+
+describe('runBackfill', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  it('DB 0건 + fetch 정상 → createMany 호출', async () => {
+    ;(prisma.btcDormantSnapshot.count as jest.Mock).mockResolvedValue(0)
+    ;(prisma.btcDormantSnapshot.createMany as jest.Mock).mockResolvedValue({ count: 3650 })
+
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: Array.from({ length: 3 }, (_, i) => ({
+            asset: 'btc',
+            time: `2026-06-${15 + i}T00:00:00Z`,
+            SplyAct1yr: '5000000', SplyAct2yr: '4500000', SplyAct3yr: '4200000',
+            SplyCur: '19700000', PriceUSD: '91234.56',
+          })),
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ([
+          { d: '2026-06-15', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 },
+          { d: '2026-06-16', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 },
+          { d: '2026-06-17', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 },
+        ]),
+      }) as any
+
+    const result = await runBackfill()
+    expect(result.inserted).toBeGreaterThan(0)
+    expect(prisma.btcDormantSnapshot.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skipDuplicates: true }),
+    )
+  })
+
+  it('DB에 이미 데이터 있으면 skip', async () => {
+    ;(prisma.btcDormantSnapshot.count as jest.Mock).mockResolvedValue(100)
+    const result = await runBackfill()
+    expect(result.skipped).toBe(true)
+    expect(prisma.btcDormantSnapshot.createMany).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================
+// Cycle F — runDailyPoll
+// ============================================================
+
+describe('runDailyPoll', () => {
+  const originalDelays = [...[10_000, 30_000, 90_000]]
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    // 재시도 지연을 0으로 패치 (테스트 속도)
+    const { MARKET_REGIME_CONFIG } = require('../../src/config/market-regime')
+    ;(MARKET_REGIME_CONFIG as any).retryDelaysMs = [0, 0, 0]
+  })
+
+  it('어제 날짜 row 이미 있으면 skip', async () => {
+    ;(prisma.btcDormantSnapshot.findUnique as jest.Mock).mockResolvedValue({ date: 'x' })
+    const r = await runDailyPoll()
+    expect(r.status).toBe('skipped_existing')
+  })
+
+  it('두 소스 모두 실패 → status=failed', async () => {
+    jest.setTimeout(30_000)
+    ;(prisma.btcDormantSnapshot.findUnique as jest.Mock).mockResolvedValue(null)
+    global.fetch = jest.fn().mockRejectedValue(new Error('net')) as any
+    const r = await runDailyPoll()
+    expect(r.status).toBe('failed')
+  })
+
+  it('CoinMetrics 정상 → upsert 호출', async () => {
+    ;(prisma.btcDormantSnapshot.findUnique as jest.Mock).mockResolvedValue(null)
+    ;(prisma.btcDormantSnapshot.upsert as jest.Mock).mockResolvedValue({})
+    const yesterdayIso = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [{
+            asset: 'btc',
+            time: yesterdayIso + 'T00:00:00Z',
+            SplyAct1yr: '5000000', SplyAct2yr: '4500000', SplyAct3yr: '4200000',
+            SplyCur: '19700000', PriceUSD: '91234.56',
+          }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ([
+          { d: yesterdayIso, '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 },
+        ]),
+      }) as any
+
+    const r = await runDailyPoll()
+    expect(r.status).toBe('ok')
+    expect(prisma.btcDormantSnapshot.upsert).toHaveBeenCalled()
+  })
+})

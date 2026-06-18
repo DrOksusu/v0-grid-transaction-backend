@@ -13,6 +13,7 @@ import { maIndicatorService } from './services/ma-indicator.service';
 import { binancePriceManager } from './services/binance-price-manager';
 import { agentManager, GridAgent, InfiniteBuyAgent, VRAgent, MakerTakerSimulatorAgent, PairScannerAgent, GeneralArbScannerAgent, UpbitListingMonitorAgent, BtcRsiAgent, RebalancerAgent, VolatilityBreakoutAgent } from './agents';
 import { sendDailyReport } from './services/daily-report.service';
+import { startMarketRegimeScheduler } from './services/market-regime-scheduler.service';
 
 const startServer = async () => {
   try {
@@ -113,6 +114,10 @@ const startServer = async () => {
         // MA 지표 서비스 시작
         maIndicatorService.start();
         console.log('MA indicator service started');
+
+        // BTC LTH regime 스케줄러 시작 (백필 + 일별 폴링)
+        startMarketRegimeScheduler().catch((e) => console.error('scheduler start failed', e));
+        console.log('[market-regime] scheduler started');
 
         // 일일 수익 리포트 — 매일 오전 6시 KST (= UTC 21:00)
         cron.schedule('0 21 * * *', async () => {

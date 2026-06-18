@@ -1,5 +1,12 @@
 // Prisma 클라이언트 Mock
 const prisma = {
+  // BTC LTH regime 스냅샷 테이블
+  btcDormantSnapshot: {
+    count: jest.fn(),
+    createMany: jest.fn(),
+    findUnique: jest.fn(),
+    upsert: jest.fn(),
+  },
   crossExchangeSnapshot: {
     createMany: jest.fn().mockResolvedValue({ count: 5 }),
   },
