@@ -57,3 +57,47 @@ export async function getCurrent(
     next(e)
   }
 }
+
+const RANGE_YEARS = { '1y': 1, '3y': 3, '5y': 5, '10y': 10 } as const
+
+export async function getTimeseries(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const rangeParam = (req.query.range as string) ?? '5y'
+    const years = (RANGE_YEARS as Record<string, number>)[rangeParam]
+    if (!years) {
+      res.status(400).json({ error: 'invalid range (use 1y|3y|5y|10y)' })
+      return
+    }
+
+    const start = new Date()
+    start.setUTCFullYear(start.getUTCFullYear() - years)
+
+    const rows = await prisma.btcDormantSnapshot.findMany({
+      where: { date: { gte: start } },
+      orderBy: { date: 'asc' },
+      select: {
+        date: true,
+        dormant1yRatio: true,
+        dormant2yRatio: true,
+        dormant3yRatio: true,
+        btcPriceUsd: true,
+      },
+    })
+
+    res.json(
+      rows.map((r) => ({
+        date: r.date.toISOString().slice(0, 10),
+        dormant1y: Number(r.dormant1yRatio),
+        dormant2y: Number(r.dormant2yRatio),
+        dormant3y: Number(r.dormant3yRatio),
+        btcPriceUsd: Number(r.btcPriceUsd),
+      })),
+    )
+  } catch (e) {
+    next(e)
+  }
+}
