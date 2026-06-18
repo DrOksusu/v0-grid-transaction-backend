@@ -86,3 +86,87 @@ export async function fetchFromCoinMetrics(
     clearTimeout(to)
   }
 }
+
+// ============================================================
+// reconcile — 두 소스 간 dormant2y 비율 차이가 5%p 초과 시 경고
+// ============================================================
+
+export function reconcile(cmDormant2y: number, bdDormant2y: number): boolean {
+  return Math.abs(cmDormant2y - bdDormant2y) > MARKET_REGIME_CONFIG.reconcileThreshold
+}
+
+// ============================================================
+// computeSnapshotRow — 두 소스를 합산해 저장 가능한 행 생성
+// ============================================================
+
+export interface SnapshotInput {
+  date: Date
+  dormant1yRatio: number
+  dormant2yRatio: number
+  dormant3yRatio: number
+  btcPriceUsd: number
+  rawCoinmetrics: unknown | null
+  rawBitcoinData: unknown | null
+  reconcileWarning: boolean
+  dataSource: 'PRIMARY' | 'FALLBACK' | 'BOTH' | 'NONE'
+}
+
+// BitcoinDataHodlWavesRow의 특정 키 합산 헬퍼
+function sumBuckets(bd: Record<string, number | string>, keys: readonly string[]): number {
+  return keys.reduce((s, k) => s + (typeof bd[k] === 'number' ? (bd[k] as number) : 0), 0)
+}
+
+export function computeSnapshotRow(
+  date: Date,
+  cm: CoinmetricsRow | null,
+  bd: BitcoinDataHodlWavesRow | null,
+  fallbackBtcPriceUsd?: number,
+): SnapshotInput {
+  if (cm && bd) {
+    const d1 = 1 - cm.SplyAct1yr / cm.SplyCur
+    const d2 = 1 - cm.SplyAct2yr / cm.SplyCur
+    const d3 = 1 - cm.SplyAct3yr / cm.SplyCur
+    const bdDormant2y = sumBuckets(bd as any, BD_LONG_TERM_BUCKETS)
+    return {
+      date,
+      dormant1yRatio: d1,
+      dormant2yRatio: d2,
+      dormant3yRatio: d3,
+      btcPriceUsd: cm.PriceUSD,
+      rawCoinmetrics: cm,
+      rawBitcoinData: bd,
+      reconcileWarning: reconcile(d2, bdDormant2y),
+      dataSource: 'BOTH',
+    }
+  }
+  if (cm) {
+    return {
+      date,
+      dormant1yRatio: 1 - cm.SplyAct1yr / cm.SplyCur,
+      dormant2yRatio: 1 - cm.SplyAct2yr / cm.SplyCur,
+      dormant3yRatio: 1 - cm.SplyAct3yr / cm.SplyCur,
+      btcPriceUsd: cm.PriceUSD,
+      rawCoinmetrics: cm,
+      rawBitcoinData: null,
+      reconcileWarning: false,
+      dataSource: 'PRIMARY',
+    }
+  }
+  if (bd) {
+    const sum1 = sumBuckets(bd as any, ['1y', ...BD_LONG_TERM_BUCKETS])
+    const sum2 = sumBuckets(bd as any, BD_LONG_TERM_BUCKETS)
+    const sum3 = sumBuckets(bd as any, ['3y', '5y', '7y', '10y'])
+    return {
+      date,
+      dormant1yRatio: sum1,
+      dormant2yRatio: sum2,
+      dormant3yRatio: sum3,
+      btcPriceUsd: fallbackBtcPriceUsd ?? 0,
+      rawCoinmetrics: null,
+      rawBitcoinData: bd,
+      reconcileWarning: false,
+      dataSource: 'FALLBACK',
+    }
+  }
+  throw new Error('computeSnapshotRow: both sources null')
+}

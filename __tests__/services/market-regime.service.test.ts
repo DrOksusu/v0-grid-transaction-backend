@@ -2,7 +2,7 @@
 // Cycle A (Task 4) ~ Cycle F (Task 9)
 
 import { classifyRegime, REGIME_THRESHOLDS } from '../../src/config/market-regime'
-import { fetchFromCoinMetrics, fetchFromBitcoinData, withRetry } from '../../src/services/market-regime.service'
+import { fetchFromCoinMetrics, fetchFromBitcoinData, withRetry, computeSnapshotRow, reconcile } from '../../src/services/market-regime.service'
 
 // ============================================================
 // 글로벌 fetch mock 복원용
@@ -98,4 +98,51 @@ describe('withRetry', () => {
     expect(out).toBe('ok')
     expect(fn).toHaveBeenCalledTimes(3)
   }, 1000)
+})
+
+// ============================================================
+// Cycle D — reconcile + computeSnapshotRow
+// ============================================================
+
+describe('reconcile', () => {
+  it('5%p 미만 차이 → 경고 없음', () => {
+    expect(reconcile(0.6234, 0.65)).toBe(false)
+  })
+  it('5.1%p 차이 → 경고', () => {
+    expect(reconcile(0.6234, 0.6745)).toBe(true)
+  })
+})
+
+describe('computeSnapshotRow', () => {
+  it('CoinMetrics + bitcoin-data 둘 다 있을 때 BOTH로 저장', () => {
+    const cm = {
+      asset: 'btc', time: '2026-06-17T00:00:00Z',
+      SplyAct1yr: 5000000, SplyAct2yr: 4500000, SplyAct3yr: 4200000,
+      SplyCur: 19700000, PriceUSD: 91234.56,
+    } as any
+    const bd = { d: '2026-06-17', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 } as any
+    const row = computeSnapshotRow(new Date('2026-06-17'), cm, bd)
+    expect(row.dataSource).toBe('BOTH')
+    expect(row.dormant2yRatio).toBeCloseTo(1 - 4500000 / 19700000, 5)
+    expect(row.btcPriceUsd).toBe(91234.56)
+  })
+
+  it('CoinMetrics 만 있을 때 PRIMARY', () => {
+    const cm = {
+      asset: 'btc', time: '2026-06-17T00:00:00Z',
+      SplyAct1yr: 5000000, SplyAct2yr: 4500000, SplyAct3yr: 4200000,
+      SplyCur: 19700000, PriceUSD: 91234.56,
+    } as any
+    const row = computeSnapshotRow(new Date('2026-06-17'), cm, null)
+    expect(row.dataSource).toBe('PRIMARY')
+    expect(row.reconcileWarning).toBe(false)
+  })
+
+  it('bitcoin-data 만 있을 때 FALLBACK', () => {
+    const bd = { d: '2026-06-17', '1y': 0.12, '2y': 0.08, '3y': 0.07, '5y': 0.05, '7y': 0.04, '10y': 0.03 } as any
+    const row = computeSnapshotRow(new Date('2026-06-17'), null, bd, 88000)
+    expect(row.dataSource).toBe('FALLBACK')
+    expect(row.dormant2yRatio).toBeCloseTo(0.08 + 0.07 + 0.05 + 0.04 + 0.03, 5)
+    expect(row.btcPriceUsd).toBe(88000)
+  })
 })
