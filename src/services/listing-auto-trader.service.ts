@@ -355,8 +355,18 @@ class ListingAutoTraderService {
 
       const orderId = String(data.orderId ?? '');
       const filledQty = parseFloat(data.executedQty ?? '0');
-      const filledPrice = filledQty > 0 ? usdtAmount / filledQty : 0;
 
+      // Binance MARKET 주문은 즉시 체결이 원칙. 미체결이면 거래 정지 또는 심볼 미존재 상태로 간주
+      if (filledQty <= 0) {
+        const errMsg = 'Binance 매수 미체결 (MARKET executedQty=0 — 신규상장 거래 미시작 또는 심볼 비활성 추정)';
+        await (prisma as any).listingAutoOrder.update({
+          where: { id: dbRow.id },
+          data: { orderId, amountUsdt: usdtAmount, status: 'failed', errorMsg: errMsg },
+        });
+        return { exchange, status: 'failed', orderId, amountKrw, amountUsdt: usdtAmount, errorMsg: errMsg };
+      }
+
+      const filledPrice = usdtAmount / filledQty;
       await (prisma as any).listingAutoOrder.update({
         where: { id: dbRow.id },
         data: { orderId, amountUsdt: usdtAmount, status: 'filled', filledQty, filledPrice },
@@ -416,13 +426,23 @@ class ListingAutoTraderService {
         filledPrice = currentKrwPrice ?? null;
       }
 
+      // 폴링·현재가 폴백 모두 실패하면 failed 처리 (filledQty=null/0 으로 filled 마킹하지 않음)
+      if (filledQty === null || filledQty <= 0) {
+        const errMsg = 'Bithumb 매수 체결량 확인 실패 (폴링·현재가 폴백 모두 실패)';
+        await (prisma as any).listingAutoOrder.update({
+          where: { id: dbRow.id },
+          data: { orderId: placed.orderId, status: 'failed', errorMsg: errMsg },
+        });
+        return { exchange, status: 'failed', orderId: placed.orderId, amountKrw, errorMsg: errMsg };
+      }
+
       await (prisma as any).listingAutoOrder.update({
         where: { id: dbRow.id },
         data: {
           orderId: placed.orderId,
           status: 'filled',
           filledPrice: filledPrice ?? undefined,
-          filledQty: filledQty ?? undefined,
+          filledQty,
         },
       });
       return { exchange, status: 'filled', orderId: placed.orderId, amountKrw };
@@ -489,8 +509,23 @@ class ListingAutoTraderService {
       if (filledQty <= 0 && orderId) {
         filledQty = await this.pollMexcFilledQty(cred.apiKey, cred.secretKey, `${ticker}USDT`, orderId);
       }
-      const filledPrice = filledQty > 0 ? usdtAmount / filledQty : 0;
 
+      // 폴링 후에도 미체결이면 failed 처리 (자동매도가 빈 포지션을 매도하려고 시도하는 것을 방지)
+      if (filledQty <= 0) {
+        if (orderId) {
+          try {
+            await this.cancelMexcOrder(cred.apiKey, cred.secretKey, `${ticker}USDT`, orderId);
+          } catch { /* 이미 종료된 주문일 수 있음 — 무시 */ }
+        }
+        const errMsg = 'MEXC 매수 미체결 (폴링 후 executedQty=0, 신규상장 거래 미시작 또는 호가창 비어있음 추정)';
+        await (prisma as any).listingAutoOrder.update({
+          where: { id: dbRow.id },
+          data: { orderId, amountUsdt: usdtAmount, status: 'failed', errorMsg: errMsg },
+        });
+        return { exchange, status: 'failed', orderId, amountKrw, amountUsdt: usdtAmount, errorMsg: errMsg };
+      }
+
+      const filledPrice = usdtAmount / filledQty;
       await (prisma as any).listingAutoOrder.update({
         where: { id: dbRow.id },
         data: { orderId, amountUsdt: usdtAmount, status: 'filled', filledQty, filledPrice },
@@ -544,8 +579,18 @@ class ListingAutoTraderService {
       if (filledQty <= 0 && orderId) {
         filledQty = await this.pollGateioFilledQty(cred.apiKey, cred.secretKey, orderId, ticker);
       }
-      const filledPrice = avgDealPrice > 0 ? avgDealPrice : (filledQty > 0 ? usdtAmount / filledQty : 0);
 
+      // 폴링 후에도 미체결이면 failed 처리 (Gate.io IOC는 매칭 실패 시 자동 취소되므로 별도 cancel 불필요)
+      if (filledQty <= 0) {
+        const errMsg = 'Gate.io 매수 미체결 (IOC 매칭 실패 — 호가창 비어있거나 거래 미시작 추정)';
+        await (prisma as any).listingAutoOrder.update({
+          where: { id: dbRow.id },
+          data: { orderId, amountUsdt: usdtAmount, status: 'failed', errorMsg: errMsg },
+        });
+        return { exchange, status: 'failed', orderId, amountKrw, amountUsdt: usdtAmount, errorMsg: errMsg };
+      }
+
+      const filledPrice = avgDealPrice > 0 ? avgDealPrice : usdtAmount / filledQty;
       await (prisma as any).listingAutoOrder.update({
         where: { id: dbRow.id },
         data: { orderId, amountUsdt: usdtAmount, status: 'filled', filledQty, filledPrice },
@@ -576,6 +621,7 @@ class ListingAutoTraderService {
   }
 
   // MEXC 주문 체결량 폴링 (quoteOrderQty 매수 후 executedQty=0 대응)
+  // 주문 상태(NEW/FILLED/CANCELED/REJECTED/EXPIRED)가 종료 상태면 더 폴링하지 않고 즉시 반환
   private async pollMexcFilledQty(apiKey: string, secretKey: string, symbol: string, orderId: string, maxRetries = 4): Promise<number> {
     for (let i = 0; i < maxRetries; i++) {
       if (i > 0) await new Promise<void>(r => setTimeout(r, 1500));
@@ -583,9 +629,39 @@ class ListingAutoTraderService {
         const data = await signedGet(MEXC.baseUrl, MEXC.apiKeyHeader, apiKey, secretKey, '/api/v3/order', { symbol, orderId });
         const qty = parseFloat(data.executedQty ?? '0');
         if (qty > 0) return qty;
+        // 종료 상태면 더 기다려도 의미 없음
+        const status = String(data.status ?? '');
+        if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'PARTIALLY_CANCELED'].includes(status)) return qty;
       } catch {}
     }
     return 0;
+  }
+
+  // MEXC 미체결 주문 취소 (filledQty=0 으로 failed 처리하기 직전에 호출)
+  // 이미 만료/취소된 경우 예외가 발생할 수 있으므로 호출 측에서 무시
+  private async cancelMexcOrder(apiKey: string, secretKey: string, symbol: string, orderId: string): Promise<void> {
+    const timestamp = Date.now().toString();
+    const allParams = { symbol, orderId, timestamp };
+    const signature = hmacSign(secretKey, allParams);
+    const qs = new URLSearchParams({ ...allParams, signature }).toString();
+    await new Promise<void>((resolve, reject) => {
+      const req = https.request(
+        {
+          hostname: 'api.mexc.com',
+          path: `/api/v3/order?${qs}`,
+          method: 'DELETE',
+          headers: { 'X-MEXC-APIKEY': apiKey },
+          timeout: 8000,
+        },
+        (res) => {
+          res.on('data', () => {});
+          res.on('end', () => resolve());
+        },
+      );
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('MEXC cancel timeout')); });
+      req.end();
+    });
   }
 
   // ── Private: 헬퍼 ────────────────────────────────────────────────────────

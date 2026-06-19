@@ -79,6 +79,22 @@ class ListingAutoSellerService {
     const ticker = order.announcement?.ticker;
     if (!ticker) return;
 
+    // 가드: 매수 미체결 주문(filledQty<=0)은 매도 대상에서 즉시 제외
+    // — listing-auto-trader 측에서 미체결을 status='failed'로 분류하므로 평상시 이 분기는 도달하지 않음
+    // — 과거 데이터(이 fix 이전 status='filled' && filledQty=0)나 동시성 race 안전망
+    if (!order.filledQty || order.filledQty <= 0) {
+      await (prisma as any).listingAutoOrder.update({
+        where: { id: order.id },
+        data: {
+          sellStatus: 'failed',
+          sellReason: 'no_position',
+          sellErrorMsg: '매수 미체결 — 매도 대상 아님 (filledQty<=0)',
+        },
+      });
+      console.warn(`[AutoSeller] ${ticker} ${order.exchange} 매수 미체결 주문 매도 스킵 (orderId=${order.orderId})`);
+      return;
+    }
+
     // 매수 주문 생성 시점 기준 경과 시간 (분)
     const elapsedMinutes = (Date.now() - new Date(order.createdAt).getTime()) / 60000;
     const buyAvgPrice = order.filledPrice; // 매수 평균가 (Binance/MEXC: USDT, Bithumb: KRW)
