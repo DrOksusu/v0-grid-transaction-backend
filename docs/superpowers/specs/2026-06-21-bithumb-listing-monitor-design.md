@@ -188,7 +188,22 @@ async checkAndSell(): Promise<void> {
 
 ## 7. DB 스키마 변경
 
-### Prisma 모델
+### 실제 기존 모델 (변경 전)
+
+현재 `prisma/schema.prisma`에 다음 모델이 존재한다 (이 spec 작성 후 실측 확인):
+
+- `UpbitListingAnnouncement` (table `upbit_listing_announcements`) — `noticeId Int @unique`
+- `ListingAutoTradeConfig` (table `listing_auto_trade_config`) — **싱글톤 패턴 (id=1 고정)**, 코드에서 `findUnique({ where: { id: 1 } })`로 접근. `userId`/`killSwitch`/`minTakerBalance` 컬럼은 **존재하지 않음**
+- `ListingAutoOrder` (table `listing_auto_orders`) — `announcementId` FK to `UpbitListingAnnouncement`
+- `ListingPriceSnapshot` (table `listing_price_snapshots`) — `announcementId` FK to `UpbitListingAnnouncement`
+
+### 변경 원칙
+
+1. **모델/테이블명은 유지** — `UpbitListingAnnouncement`, `ListingAutoOrder` 그대로. production 데이터 손실 위험 회피 (CLAUDE.md destructive 쿼리 금지 원칙)
+2. **싱글톤 → source별 row** — `ListingAutoTradeConfig`에 `source` enum 추가 + `@unique`. `userId` 추가 안 함 (코드가 이미 `ADMIN_USER_ID = 2` 하드코딩, 멀티유저 요구사항 없음)
+3. **신규 컬럼은 신규로 명시** — `killSwitch`, `minTakerBalance`는 NEW
+
+### Prisma 모델 (변경 후)
 
 ```prisma
 enum ListingSource {
@@ -196,87 +211,113 @@ enum ListingSource {
   BITHUMB
 }
 
+// 모델명은 "Upbit*" 그대로 유지 (production 테이블 보존 위해)
+// 빗썸 데이터도 같은 테이블에 source='BITHUMB'로 저장
+model UpbitListingAnnouncement {
+  id          Int           @id @default(autoincrement())
+  source      ListingSource @default(UPBIT)              // NEW
+  noticeId    Int                                        // @unique 제거 (composite로 교체)
+  title       String
+  ticker      String?
+  url         String
+  announcedAt DateTime      @default(now())
+  listedAt    DateTime?
+  status      String        @default("announced")
+  snapshots   ListingPriceSnapshot[]
+  autoOrders  ListingAutoOrder[]
+
+  @@unique([source, noticeId])                           // NEW (기존 noticeId @unique 교체)
+  @@index([announcedAt])
+  @@index([ticker])
+  @@index([status])
+  @@index([source, announcedAt])                         // NEW
+  @@map("upbit_listing_announcements")
+}
+
 model ListingAutoTradeConfig {
-  id                  Int           @id @default(autoincrement())
-  userId              Int
-  source              ListingSource @default(UPBIT)
-  enabled             Boolean       @default(false)
-  killSwitch          Boolean       @default(false)
-  amountKrw           Int           @default(10000)
-  useBinance          Boolean       @default(true)
-  useBithumb          Boolean       @default(false)  // 빗썸 자체 매수는 비활성 (전략상 글로벌만)
-  useMexc             Boolean       @default(true)
-  useGateio           Boolean       @default(true)
-  autoSellEnabled     Boolean       @default(true)
-  takeProfitPct       Float         @default(10)     // 빗썸 default (업비트는 20)
-  stopLossPct         Float         @default(5)      // 빗썸 default (업비트는 10)
-  maxHoldMinutes      Int           @default(15)     // 빗썸 default (업비트는 30)
-  useTrailingStop     Boolean       @default(true)
-  trailingStopPct     Float         @default(10)     // 빗썸 default (업비트는 20)
-  minTakerBalance     Float?
-  createdAt           DateTime      @default(now())
-  updatedAt           DateTime      @updatedAt
+  id              Int           @id @default(autoincrement())
+  source          ListingSource @unique @default(UPBIT)  // NEW (싱글톤 패턴 폐기, source가 unique key)
+  enabled         Boolean       @default(false)
+  killSwitch      Boolean       @default(false)          // NEW
+  amountKrw       Int           @default(100000)
+  useBinance      Boolean       @default(true)
+  useBithumb      Boolean       @default(true)
+  useMexc         Boolean       @default(false)
+  useGateio       Boolean       @default(false)
+  autoSellEnabled Boolean       @default(true)
+  takeProfitPct   Float         @default(20)
+  stopLossPct     Float         @default(10)
+  maxHoldMinutes  Int           @default(30)
+  useTrailingStop Boolean       @default(false)
+  trailingStopPct Float         @default(20)
+  minTakerBalance Float?                                 // NEW
+  updatedAt       DateTime      @updatedAt
 
-  @@unique([userId, source])
+  @@map("listing_auto_trade_config")
 }
 
-model ListingAnnouncement {
-  // ... 기존 필드
-  source              ListingSource @default(UPBIT)
+model ListingAutoOrder {
+  // 기존 필드 그대로 + source 추가
+  // ...
+  source         ListingSource @default(UPBIT)           // NEW
+  // ...
 
-  @@unique([source, noticeId])
-  @@index([source, announcedAt])
-}
-
-model ListingOrder {
-  // ... 기존 필드
-  source              ListingSource @default(UPBIT)
-
-  @@index([source, createdAt])
+  @@index([source, createdAt])                           // NEW
+  // 기존 @@unique([announcementId, exchange])는 유지 — announcement.source 따라가므로 자동 분리
 }
 ```
 
-**중요**: `ListingAutoTradeConfig`의 default 값은 **빗썸용 보수적 기본값**이다. 기존 업비트 config row는 마이그레이션으로 이미 들어있어서 default가 적용되지 않으며, 신규 빗썸 row 생성 시에만 위 default가 사용된다.
+**중요 — Default 값 정책**:
+- 기존 row(id=1)는 마이그레이션의 `DEFAULT 'UPBIT'`로 자동 백필됨 → 위 default 값(`takeProfitPct: 20` 등)이 적용되지 않음 (기존 row의 실제 값 유지)
+- 빗썸 신규 row 생성 시에는 위 default가 적용되지 않고, **코드에서 source별 default를 분기 처리** (Task 6에서 구현):
+  ```typescript
+  if (source === 'BITHUMB') {
+    return { source, enabled: false, amountKrw: 10000, takeProfitPct: 10, stopLossPct: 5, maxHoldMinutes: 15, useTrailingStop: true, trailingStopPct: 10, ... };
+  }
+  ```
 
-### 마이그레이션 SQL (1단계)
+### 마이그레이션 SQL (단순화됨)
 
 ```sql
 -- 1) 컬럼 추가 (DEFAULT로 기존 row 자동 백필)
-ALTER TABLE `ListingAutoTradeConfig`
+ALTER TABLE `upbit_listing_announcements`
   ADD COLUMN `source` ENUM('UPBIT', 'BITHUMB') NOT NULL DEFAULT 'UPBIT';
 
-ALTER TABLE `ListingAnnouncement`
+ALTER TABLE `listing_auto_trade_config`
+  ADD COLUMN `source` ENUM('UPBIT', 'BITHUMB') NOT NULL DEFAULT 'UPBIT',
+  ADD COLUMN `killSwitch` BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN `minTakerBalance` DOUBLE NULL;
+
+ALTER TABLE `listing_auto_orders`
   ADD COLUMN `source` ENUM('UPBIT', 'BITHUMB') NOT NULL DEFAULT 'UPBIT';
 
-ALTER TABLE `ListingOrder`
-  ADD COLUMN `source` ENUM('UPBIT', 'BITHUMB') NOT NULL DEFAULT 'UPBIT';
+-- 2) Unique 제약 교체 (UpbitListingAnnouncement.noticeId @unique → composite)
+ALTER TABLE `upbit_listing_announcements`
+  DROP INDEX `upbit_listing_announcements_noticeId_key`,
+  ADD UNIQUE INDEX `upbit_listing_announcements_source_noticeId_key` (`source`, `noticeId`);
 
--- 2) Unique 제약 교체
-ALTER TABLE `ListingAutoTradeConfig`
-  DROP INDEX `ListingAutoTradeConfig_userId_key`,
-  ADD UNIQUE INDEX `ListingAutoTradeConfig_userId_source_key` (`userId`, `source`);
+-- 3) ListingAutoTradeConfig: 기존 id=1 row에 source='UPBIT' 백필 후 source @unique 추가
+ALTER TABLE `listing_auto_trade_config`
+  ADD UNIQUE INDEX `listing_auto_trade_config_source_key` (`source`);
 
-ALTER TABLE `ListingAnnouncement`
-  DROP INDEX `ListingAnnouncement_noticeId_key`,
-  ADD UNIQUE INDEX `ListingAnnouncement_source_noticeId_key` (`source`, `noticeId`);
+-- 4) source별 빠른 조회 인덱스
+ALTER TABLE `upbit_listing_announcements`
+  ADD INDEX `upbit_listing_announcements_source_announcedAt_idx` (`source`, `announcedAt`);
 
--- 3) source별 빠른 조회 인덱스
-ALTER TABLE `ListingAnnouncement`
-  ADD INDEX `ListingAnnouncement_source_announcedAt_idx` (`source`, `announcedAt`);
-
-ALTER TABLE `ListingOrder`
-  ADD INDEX `ListingOrder_source_createdAt_idx` (`source`, `createdAt`);
+ALTER TABLE `listing_auto_orders`
+  ADD INDEX `listing_auto_orders_source_createdAt_idx` (`source`, `createdAt`);
 ```
 
 **실행 순서 (CLAUDE.md production DB 안전 규칙 준수)**:
 1. 운영 DB 수동 스냅샷: `aws lightsail create-relational-database-snapshot --relational-database-name <db> --relational-database-snapshot-name pre-bithumb-listing-$(date -u +%Y%m%d-%H%M%S) --profile route53`
 2. 로컬 dev DB에서 마이그레이션 dry-run → 기존 row 정상 백필 확인
-3. Production: `npx prisma migrate deploy` (`migrate dev` 금지)
-4. 백엔드 재시작 → `BithumbListingMonitorAgent` 자동 시작 (단, `enabled=false`라 매수 안 함)
+3. **사전 검증** (advisor 권고): dev DB에서 `SELECT COUNT(*) FROM upbit_listing_announcements WHERE noticeId IS NULL` → 0 확인 (NULL이면 unique 제약 변경 시 에러). production도 동일 확인.
+4. Production: `npx prisma migrate deploy` (`migrate dev` 금지)
+5. 백엔드 재시작 → `BithumbListingMonitorAgent` 자동 시작 (단, `enabled=false`라 매수 안 함)
 
 ### 정확한 인덱스명은 마이그레이션 생성 후 확인
 
-Prisma migrate가 자동 생성하는 unique key 이름은 환경마다 다를 수 있다. 마이그레이션 SQL의 `DROP INDEX` 이름은 운영 DB에서 `SHOW INDEX FROM ListingAutoTradeConfig` 확인 후 정확한 이름으로 교체한다.
+Prisma가 자동 생성한 unique key 이름은 환경마다 다를 수 있다. `DROP INDEX` 이름은 dev DB에서 `SHOW INDEX FROM upbit_listing_announcements` 확인 후 실제 이름으로 교체한다.
 
 ## 8. 합성 noticeId 대역
 
