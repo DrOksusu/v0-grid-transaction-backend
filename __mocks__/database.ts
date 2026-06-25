@@ -35,6 +35,14 @@ const prisma = {
   user: {
     findUnique: jest.fn(),
   },
+  // 업비트/빗썸 신규상장 announcement 테이블 (source enum으로 구분)
+  upbitListingAnnouncement: {
+    findUnique: jest.fn(),
+    findFirst: jest.fn(),
+    findMany: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+  },
 };
 
 // Stablecoin Prisma 클라이언트 Mock
