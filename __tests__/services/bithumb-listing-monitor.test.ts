@@ -70,7 +70,7 @@ https://feed.bithumb.com/notice/1653785</div>
         }),
       }),
     );
-    expect(mockExecuteBuy).toHaveBeenCalledWith(1, 'RE');
+    expect(mockExecuteBuy).toHaveBeenCalledWith(1, 'RE', 'BITHUMB');
     expect(mockSendToMe).toHaveBeenCalledTimes(1);
   });
 
@@ -190,7 +190,7 @@ https://feed.bithumb.com/notice/100002</div>
     await flushAsync();
 
     // 두 번째 메시지는 정상 처리되어야
-    expect(mockExecuteBuy).toHaveBeenCalledWith(200, 'OK2');
+    expect(mockExecuteBuy).toHaveBeenCalledWith(200, 'OK2', 'BITHUMB');
   });
 });
 
@@ -247,7 +247,7 @@ describe('bithumbListingMonitorService.checkNewBithumbMarkets', () => {
         }),
       }),
     );
-    expect(mockExecuteBuy).toHaveBeenCalledWith(42, 'NEW');
+    expect(mockExecuteBuy).toHaveBeenCalledWith(42, 'NEW', 'BITHUMB');
     expect(mockSendToMe).toHaveBeenCalledTimes(1);
   });
 
@@ -333,7 +333,7 @@ describe('bithumbListingMonitorService.checkNewBithumbMarkets', () => {
     await service.checkNewBithumbMarkets();
     await flushAsync();
 
-    expect(mockExecuteBuy).toHaveBeenCalledWith(300, 'NEW2');
+    expect(mockExecuteBuy).toHaveBeenCalledWith(300, 'NEW2', 'BITHUMB');
   });
 });
 

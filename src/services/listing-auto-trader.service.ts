@@ -4,6 +4,7 @@
 import axios from 'axios';
 import crypto from 'crypto';
 import https from 'https';
+import { ListingSource } from '@prisma/client';
 import prisma from '../config/database';
 import { decrypt } from '../utils/encryption';
 import { BithumbClient } from './exchange/bithumb-client';
@@ -11,8 +12,13 @@ import { kakaoNotifyService } from './kakao-notify.service';
 
 const ADMIN_USER_ID = 2; // Binance/Bithumb 인증정보 소유 유저
 
+// source 파라미터 타입 — Prisma generated enum 그대로 사용
+export type ListingSourceType = ListingSource; // 'UPBIT' | 'BITHUMB'
+
 interface AutoTradeConfig {
+  source: ListingSourceType;
   enabled: boolean;
+  killSwitch: boolean;
   amountKrw: number;
   useBinance: boolean;
   useBithumb: boolean;
@@ -24,6 +30,48 @@ interface AutoTradeConfig {
   maxHoldMinutes: number;
   useTrailingStop: boolean;
   trailingStopPct: number;
+  minTakerBalance: number | null;
+}
+
+// source별 default config (DB에 row 없을 때 / upsert create 분기)
+// UPBIT: 기존 운영 default 유지 (amountKrw=100k, useBinance/Bithumb)
+// BITHUMB: 빗썸은 빗썸 자체 매수가 빠지고 Binance/MEXC/Gate.io 위주로 더 보수적인 값
+function defaultsFor(source: ListingSourceType): Omit<AutoTradeConfig, 'source'> {
+  if (source === 'BITHUMB') {
+    return {
+      enabled: false,
+      killSwitch: false,
+      amountKrw: 10000,
+      useBinance: true,
+      useBithumb: false,
+      useMexc: true,
+      useGateio: true,
+      autoSellEnabled: true,
+      takeProfitPct: 10,
+      stopLossPct: 5,
+      maxHoldMinutes: 15,
+      useTrailingStop: true,
+      trailingStopPct: 10,
+      minTakerBalance: null,
+    };
+  }
+  // UPBIT default — 기존 값 유지
+  return {
+    enabled: false,
+    killSwitch: false,
+    amountKrw: 100000,
+    useBinance: true,
+    useBithumb: true,
+    useMexc: false,
+    useGateio: false,
+    autoSellEnabled: true,
+    takeProfitPct: 20,
+    stopLossPct: 10,
+    maxHoldMinutes: 30,
+    useTrailingStop: false,
+    trailingStopPct: 20,
+    minTakerBalance: null,
+  };
 }
 
 interface OrderResult {
@@ -162,73 +210,58 @@ function mexcPost(apiKey: string, secretKey: string, endpoint: string, params: R
 // ── 설정 관리 ──────────────────────────────────────────────────────────────────
 
 class ListingAutoTraderService {
-  async getConfig(): Promise<AutoTradeConfig> {
-    const row = await (prisma as any).listingAutoTradeConfig.findUnique({ where: { id: 1 } });
+  // source별 자동매수 설정 조회 (DB에 row 없으면 source별 default 반환)
+  async getConfig(source: ListingSourceType = 'UPBIT'): Promise<AutoTradeConfig> {
+    const row = await prisma.listingAutoTradeConfig.findUnique({ where: { source } });
     if (!row) {
-      // DB에 설정이 없으면 기본값 반환
-      return {
-        enabled: false,
-        amountKrw: 100000,
-        useBinance: true,
-        useBithumb: true,
-        useMexc: false,
-        useGateio: false,
-        autoSellEnabled: true,
-        takeProfitPct: 20,
-        stopLossPct: 10,
-        maxHoldMinutes: 30,
-        useTrailingStop: false,
-        trailingStopPct: 20,
-      };
+      // DB에 설정이 없으면 source별 기본값 반환
+      return { source, ...defaultsFor(source) };
     }
     return {
+      source: row.source,
       enabled: row.enabled,
+      killSwitch: row.killSwitch,
       amountKrw: row.amountKrw,
       useBinance: row.useBinance,
       useBithumb: row.useBithumb,
-      useMexc: row.useMexc ?? false,
-      useGateio: row.useGateio ?? false,
-      autoSellEnabled: row.autoSellEnabled ?? true,
-      takeProfitPct: row.takeProfitPct ?? 20,
-      stopLossPct: row.stopLossPct ?? 10,
-      maxHoldMinutes: row.maxHoldMinutes ?? 30,
-      useTrailingStop: row.useTrailingStop ?? false,
-      trailingStopPct: row.trailingStopPct ?? 20,
+      useMexc: row.useMexc,
+      useGateio: row.useGateio,
+      autoSellEnabled: row.autoSellEnabled,
+      takeProfitPct: row.takeProfitPct,
+      stopLossPct: row.stopLossPct,
+      maxHoldMinutes: row.maxHoldMinutes,
+      useTrailingStop: row.useTrailingStop,
+      trailingStopPct: row.trailingStopPct,
+      minTakerBalance: row.minTakerBalance,
     };
   }
 
-  async updateConfig(data: Partial<AutoTradeConfig>): Promise<AutoTradeConfig> {
-    const row = await (prisma as any).listingAutoTradeConfig.upsert({
-      where: { id: 1 },
-      create: {
-        enabled: data.enabled ?? false,
-        amountKrw: data.amountKrw ?? 100000,
-        useBinance: data.useBinance ?? true,
-        useBithumb: data.useBithumb ?? true,
-        useMexc: data.useMexc ?? false,
-        useGateio: data.useGateio ?? false,
-        autoSellEnabled: data.autoSellEnabled ?? true,
-        takeProfitPct: data.takeProfitPct ?? 20,
-        stopLossPct: data.stopLossPct ?? 10,
-        maxHoldMinutes: data.maxHoldMinutes ?? 30,
-        useTrailingStop: data.useTrailingStop ?? false,
-        trailingStopPct: data.trailingStopPct ?? 20,
-      },
+  // source별 자동매수 설정 upsert (DB row 없으면 source default + 전달된 patch로 생성)
+  async updateConfig(
+    source: ListingSourceType,
+    data: Partial<Omit<AutoTradeConfig, 'source'>>,
+  ): Promise<AutoTradeConfig> {
+    const row = await prisma.listingAutoTradeConfig.upsert({
+      where: { source },
+      create: { source, ...defaultsFor(source), ...data },
       update: data,
     });
     return {
+      source: row.source,
       enabled: row.enabled,
+      killSwitch: row.killSwitch,
       amountKrw: row.amountKrw,
       useBinance: row.useBinance,
       useBithumb: row.useBithumb,
-      useMexc: row.useMexc ?? false,
-      useGateio: row.useGateio ?? false,
-      autoSellEnabled: row.autoSellEnabled ?? true,
-      takeProfitPct: row.takeProfitPct ?? 20,
-      stopLossPct: row.stopLossPct ?? 10,
-      maxHoldMinutes: row.maxHoldMinutes ?? 30,
-      useTrailingStop: row.useTrailingStop ?? false,
-      trailingStopPct: row.trailingStopPct ?? 20,
+      useMexc: row.useMexc,
+      useGateio: row.useGateio,
+      autoSellEnabled: row.autoSellEnabled,
+      takeProfitPct: row.takeProfitPct,
+      stopLossPct: row.stopLossPct,
+      maxHoldMinutes: row.maxHoldMinutes,
+      useTrailingStop: row.useTrailingStop,
+      trailingStopPct: row.trailingStopPct,
+      minTakerBalance: row.minTakerBalance,
     };
   }
 
@@ -254,38 +287,56 @@ class ListingAutoTraderService {
 
   // ── 자동매수 실행 ─────────────────────────────────────────────────────────
 
-  async executeBuy(announcementId: number, ticker: string): Promise<OrderResult[]> {
-    const config = await this.getConfig();
-    if (!config.enabled) return [];
+  // announcement.source 기반으로 source별 config 로드 + 매수.
+  // source default 'UPBIT' — 기존 호출처 backward-compat.
+  async executeBuy(
+    announcementId: number,
+    ticker: string,
+    source: ListingSourceType = 'UPBIT',
+  ): Promise<OrderResult[]> {
+    const config = await this.getConfig(source);
+    if (!config.enabled || config.killSwitch) return [];
 
-    // 이미 업비트 KRW 마켓에 등록된 코인은 신규상장이 아님 — 매수 skip (false positive 차단)
-    // 예: "인터넷컴퓨터(ICP) 신규 거래지원 안내 (KRW, BTC, USDT 마켓)" — KRW-ICP가 이미 존재하면 BTC/USDT 마켓 추가 공지일 가능성
-    const existingKrwMarket = await (prisma as any).upbitKnownMarket.findUnique({
-      where: { market: `KRW-${ticker}` },
-    });
-    if (existingKrwMarket) {
-      const msg = `[Listing Skip] ${ticker} 이미 업비트 KRW 마켓 존재 — 신규상장 아님으로 판단해 매수 차단`;
-      console.log(`[AutoTrader] ${msg}`);
-      kakaoNotifyService.sendToMe(msg).catch(() => {
-        /* 알림 실패는 무시 */
+    // 업비트 신규상장 false-positive 차단:
+    // 이미 업비트 KRW 마켓에 등록된 코인은 신규상장이 아님 — 매수 skip.
+    // 예: "인터넷컴퓨터(ICP) 신규 거래지원 안내 (KRW, BTC, USDT 마켓)" — KRW-ICP가 이미 존재하면 BTC/USDT 마켓 추가 공지일 가능성.
+    // 빗썸 source는 별도의 이중 채널(텔레그램 + 마켓 diff)에서 이미 중복 차단되므로 이 체크는 UPBIT에만 적용.
+    if (source === 'UPBIT') {
+      const existingKrwMarket = await prisma.upbitKnownMarket.findUnique({
+        where: { market: `KRW-${ticker}` },
       });
-      return [];
+      if (existingKrwMarket) {
+        const msg = `[Listing Skip] ${ticker} 이미 업비트 KRW 마켓 존재 — 신규상장 아님으로 판단해 매수 차단`;
+        console.log(`[AutoTrader] ${msg}`);
+        kakaoNotifyService.sendToMe(msg).catch(() => {
+          /* 알림 실패는 무시 */
+        });
+        return [];
+      }
     }
 
-    // 같은 ticker에 대해 다른 announcement에서 이미 주문이 진행됐으면 중복 매수 방지
-    const existingOrder = await (prisma as any).listingAutoOrder.findFirst({
-      where: { ticker, status: { in: ['pending', 'filled'] }, announcementId: { not: announcementId } },
+    // 같은 source + ticker에 대해 다른 announcement에서 이미 주문이 진행됐으면 중복 매수 방지.
+    // source 분리 후에도 두 source가 같은 ticker를 동시에 매수하지 않도록 source까지 좁힌다.
+    const existingOrder = await prisma.listingAutoOrder.findFirst({
+      where: {
+        source,
+        ticker,
+        status: { in: ['pending', 'filled'] },
+        announcementId: { not: announcementId },
+      },
     });
     if (existingOrder) {
-      console.log(`[AutoTrader] ticker=${ticker} 중복 매수 skip (기존 announcementId=${existingOrder.announcementId})`);
+      console.log(
+        `[AutoTrader] source=${source} ticker=${ticker} 중복 매수 skip (기존 announcementId=${existingOrder.announcementId})`,
+      );
       return [];
     }
 
     const results = await Promise.allSettled([
-      config.useBinance ? this.buyOnBinance(announcementId, ticker, config.amountKrw) : null,
-      config.useBithumb ? this.buyOnBithumb(announcementId, ticker, config.amountKrw) : null,
-      config.useMexc ? this.buyOnMexc(announcementId, ticker, config.amountKrw) : null,
-      config.useGateio ? this.buyOnGateio(announcementId, ticker, config.amountKrw) : null,
+      config.useBinance ? this.buyOnBinance(announcementId, ticker, config.amountKrw, source) : null,
+      config.useBithumb ? this.buyOnBithumb(announcementId, ticker, config.amountKrw, source) : null,
+      config.useMexc ? this.buyOnMexc(announcementId, ticker, config.amountKrw, source) : null,
+      config.useGateio ? this.buyOnGateio(announcementId, ticker, config.amountKrw, source) : null,
     ]);
 
     const orders: OrderResult[] = [];
@@ -325,15 +376,20 @@ class ListingAutoTraderService {
 
   // ── Private: Binance 시장가 매수 ──────────────────────────────────────────
 
-  private async buyOnBinance(announcementId: number, ticker: string, amountKrw: number): Promise<OrderResult> {
+  private async buyOnBinance(
+    announcementId: number,
+    ticker: string,
+    amountKrw: number,
+    source: ListingSourceType,
+  ): Promise<OrderResult> {
     const exchange = 'binance';
-    const existing = await (prisma as any).listingAutoOrder.findUnique({
+    const existing = await prisma.listingAutoOrder.findUnique({
       where: { announcementId_exchange: { announcementId, exchange } },
     });
-    if (existing) return { exchange, status: 'skipped', amountKrw, orderId: existing.orderId };
+    if (existing) return { exchange, status: 'skipped', amountKrw, orderId: existing.orderId ?? undefined };
 
-    const dbRow = await (prisma as any).listingAutoOrder.create({
-      data: { announcementId, exchange, ticker, amountKrw, status: 'pending' },
+    const dbRow = await prisma.listingAutoOrder.create({
+      data: { source, announcementId, exchange, ticker, amountKrw, status: 'pending' },
     });
 
     const cred = await this.getBinanceCreds();
@@ -381,15 +437,20 @@ class ListingAutoTraderService {
 
   // ── Private: Bithumb 시장가 매수 ─────────────────────────────────────────
 
-  private async buyOnBithumb(announcementId: number, ticker: string, amountKrw: number): Promise<OrderResult> {
+  private async buyOnBithumb(
+    announcementId: number,
+    ticker: string,
+    amountKrw: number,
+    source: ListingSourceType,
+  ): Promise<OrderResult> {
     const exchange = 'bithumb';
-    const existing = await (prisma as any).listingAutoOrder.findUnique({
+    const existing = await prisma.listingAutoOrder.findUnique({
       where: { announcementId_exchange: { announcementId, exchange } },
     });
-    if (existing) return { exchange, status: 'skipped', amountKrw, orderId: existing.orderId };
+    if (existing) return { exchange, status: 'skipped', amountKrw, orderId: existing.orderId ?? undefined };
 
-    const dbRow = await (prisma as any).listingAutoOrder.create({
-      data: { announcementId, exchange, ticker, amountKrw, status: 'pending' },
+    const dbRow = await prisma.listingAutoOrder.create({
+      data: { source, announcementId, exchange, ticker, amountKrw, status: 'pending' },
     });
 
     const cred = await this.getBithumbCreds();
@@ -474,15 +535,20 @@ class ListingAutoTraderService {
 
   // ── Private: MEXC 시장가 매수 ─────────────────────────────────────────────
 
-  private async buyOnMexc(announcementId: number, ticker: string, amountKrw: number): Promise<OrderResult> {
+  private async buyOnMexc(
+    announcementId: number,
+    ticker: string,
+    amountKrw: number,
+    source: ListingSourceType,
+  ): Promise<OrderResult> {
     const exchange = 'mexc';
-    const existing = await (prisma as any).listingAutoOrder.findUnique({
+    const existing = await prisma.listingAutoOrder.findUnique({
       where: { announcementId_exchange: { announcementId, exchange } },
     });
-    if (existing) return { exchange, status: 'skipped', amountKrw, orderId: existing.orderId };
+    if (existing) return { exchange, status: 'skipped', amountKrw, orderId: existing.orderId ?? undefined };
 
-    const dbRow = await (prisma as any).listingAutoOrder.create({
-      data: { announcementId, exchange, ticker, amountKrw, status: 'pending' },
+    const dbRow = await prisma.listingAutoOrder.create({
+      data: { source, announcementId, exchange, ticker, amountKrw, status: 'pending' },
     });
 
     const cred = await this.getMexcCreds();
@@ -540,15 +606,20 @@ class ListingAutoTraderService {
 
   // ── Private: Gate.io 시장가 매수 ──────────────────────────────────────────
 
-  private async buyOnGateio(announcementId: number, ticker: string, amountKrw: number): Promise<OrderResult> {
+  private async buyOnGateio(
+    announcementId: number,
+    ticker: string,
+    amountKrw: number,
+    source: ListingSourceType,
+  ): Promise<OrderResult> {
     const exchange = 'gateio';
-    const existing = await (prisma as any).listingAutoOrder.findUnique({
+    const existing = await prisma.listingAutoOrder.findUnique({
       where: { announcementId_exchange: { announcementId, exchange } },
     });
-    if (existing) return { exchange, status: 'skipped', amountKrw, orderId: existing.orderId };
+    if (existing) return { exchange, status: 'skipped', amountKrw, orderId: existing.orderId ?? undefined };
 
-    const dbRow = await (prisma as any).listingAutoOrder.create({
-      data: { announcementId, exchange, ticker, amountKrw, status: 'pending' },
+    const dbRow = await prisma.listingAutoOrder.create({
+      data: { source, announcementId, exchange, ticker, amountKrw, status: 'pending' },
     });
 
     const cred = await this.getGateioCreds();

@@ -118,7 +118,8 @@ export const fetchCurrentPrices = async (req: AuthRequest, res: Response, next: 
  */
 export const getAutoTradeConfig = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const config = await listingAutoTraderService.getConfig();
+    // 본 컨트롤러는 업비트 전용 — Task 9에서 통합 admin으로 source 분기 추가 예정.
+    const config = await listingAutoTraderService.getConfig('UPBIT');
     return successResponse(res, config);
   } catch (error) {
     next(error);
@@ -136,7 +137,8 @@ export const updateAutoTradeConfig = async (req: AuthRequest, res: Response, nex
       enabled, amountKrw, useBinance, useBithumb, useMexc, useGateio,
       autoSellEnabled, takeProfitPct, stopLossPct, maxHoldMinutes,
     } = req.body;
-    const config = await listingAutoTraderService.updateConfig({
+    // 본 컨트롤러는 업비트 전용 — Task 9에서 통합 admin으로 source 분기 추가 예정.
+    const config = await listingAutoTraderService.updateConfig('UPBIT', {
       enabled, amountKrw, useBinance, useBithumb, useMexc, useGateio,
       autoSellEnabled, takeProfitPct, stopLossPct, maxHoldMinutes,
     });

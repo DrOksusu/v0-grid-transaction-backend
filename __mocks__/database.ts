@@ -43,6 +43,25 @@ const prisma = {
     create: jest.fn(),
     update: jest.fn(),
   },
+  // 업비트 KRW 마켓 캐시 — listing-auto-trader가 false-positive 차단 시 조회
+  upbitKnownMarket: {
+    findUnique: jest.fn(),
+    findMany: jest.fn(),
+    createMany: jest.fn(),
+  },
+  // 신규상장 자동매수 설정 (source @unique — UPBIT/BITHUMB 별 1 row)
+  listingAutoTradeConfig: {
+    findUnique: jest.fn(),
+    upsert: jest.fn(),
+  },
+  // 신규상장 자동매수 주문 기록 (source enum 필드)
+  listingAutoOrder: {
+    findUnique: jest.fn(),
+    findFirst: jest.fn(),
+    findMany: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+  },
 };
 
 // Stablecoin Prisma 클라이언트 Mock

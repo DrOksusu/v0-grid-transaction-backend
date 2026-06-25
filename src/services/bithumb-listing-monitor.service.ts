@@ -255,7 +255,7 @@ class BithumbListingMonitorService {
               ),
             );
           listingAutoTraderService
-            .executeBuy(record.id, parsed.ticker)
+            .executeBuy(record.id, parsed.ticker, 'BITHUMB')
             .catch((err: Error) =>
               console.error(
                 '[BithumbListingMonitor] 자동매수 실패:',
@@ -389,7 +389,7 @@ class BithumbListingMonitorService {
               ),
             );
           listingAutoTraderService
-            .executeBuy(record.id, ticker)
+            .executeBuy(record.id, ticker, 'BITHUMB')
             .catch((err: Error) =>
               console.error(
                 '[BithumbListingMonitor] 자동매수 실패:',

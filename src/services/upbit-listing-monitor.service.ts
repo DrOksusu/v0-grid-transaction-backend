@@ -285,7 +285,7 @@ class UpbitListingMonitorService {
 
     // 자동매수 + 즉시 스냅샷 병렬 실행
     await Promise.all([
-      listingAutoTraderService.executeBuy(announcement.id, ticker).catch(e =>
+      listingAutoTraderService.executeBuy(announcement.id, ticker, 'UPBIT').catch(e =>
         console.error('[ListingMonitor] 수동등록 자동매수 오류:', e)
       ),
       this.captureSnapshots(announcement.id, ticker, 'announced'),
@@ -492,7 +492,7 @@ class UpbitListingMonitorService {
 
       // 자동매수 + 공지 시점 스냅샷 병렬 실행 (속도 우선)
       await Promise.all([
-        listingAutoTraderService.executeBuy(announcement.id, ticker).catch(e =>
+        listingAutoTraderService.executeBuy(announcement.id, ticker, 'UPBIT').catch(e =>
           console.error('[ListingMonitor] 자동매수 오류:', e)
         ),
         this.captureSnapshots(announcement.id, ticker, 'announced'),
@@ -542,7 +542,7 @@ class UpbitListingMonitorService {
         );
 
         await Promise.all([
-          listingAutoTraderService.executeBuy(announcement.id, ticker).catch(e =>
+          listingAutoTraderService.executeBuy(announcement.id, ticker, 'UPBIT').catch(e =>
             console.error('[ListingMonitor] 마켓 감지 자동매수 오류:', e)
           ),
           this.captureSnapshots(announcement.id, ticker, 'announced'),
@@ -829,7 +829,7 @@ class UpbitListingMonitorService {
     );
 
     await Promise.all([
-      listingAutoTraderService.executeBuy(announcement.id, ticker).catch((e: Error) =>
+      listingAutoTraderService.executeBuy(announcement.id, ticker, 'UPBIT').catch((e: Error) =>
         console.error('[ListingMonitor] 트위터 자동매수 오류:', e)
       ),
       this.captureSnapshots(announcement.id, ticker, 'announced'),
@@ -902,7 +902,7 @@ class UpbitListingMonitorService {
     );
 
     await Promise.all([
-      listingAutoTraderService.executeBuy(announcement.id, ticker).catch((e: Error) =>
+      listingAutoTraderService.executeBuy(announcement.id, ticker, 'UPBIT').catch((e: Error) =>
         console.error('[ListingMonitor] 텔레그램 자동매수 오류:', e)
       ),
       this.captureSnapshots(announcement.id, ticker, 'announced'),

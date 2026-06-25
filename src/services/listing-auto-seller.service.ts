@@ -54,7 +54,9 @@ class ListingAutoSellerService {
     if (this.checking) return;
     this.checking = true;
     try {
-      const config = await listingAutoTraderService.getConfig();
+      // TODO(Task 7): autoSell도 source별 config 분기 필요 (현재 UPBIT 명시 — 빗썸 주문도 UPBIT 매도 로직 적용 중).
+      // Task 7에서 openOrders 루프에서 order.announcement.source로 source별 config 로드하도록 변경.
+      const config = await listingAutoTraderService.getConfig('UPBIT');
       if (!config.autoSellEnabled) return;
 
       // 매수 체결됐지만 매도 미시작인 주문 조회
