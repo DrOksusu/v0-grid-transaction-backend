@@ -352,8 +352,9 @@ class ListingAutoTraderService {
 
   // ── 최근 주문 조회 ────────────────────────────────────────────────────────
 
-  async listRecentOrders(limit = 50): Promise<any[]> {
+  async listRecentOrders(limit = 50, source?: ListingSourceType): Promise<any[]> {
     const rows = await (prisma as any).listingAutoOrder.findMany({
+      where: source ? { source } : undefined,
       orderBy: { createdAt: 'desc' },
       take: limit,
       include: {

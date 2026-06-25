@@ -301,9 +301,10 @@ class UpbitListingMonitorService {
     return this.toDto(result);
   }
 
-  // 모든 상장 공지 조회
+  // 모든 상장 공지 조회 (source=UPBIT만 — Task 9: source 분리 후 cross-source leak 방지)
   async listAnnouncements(limit = 50): Promise<ListingAnnouncementDto[]> {
     const rows = await (prisma as any).upbitListingAnnouncement.findMany({
+      where: { source: 'UPBIT' },
       orderBy: { announcedAt: 'desc' },
       take: limit,
       include: { snapshots: { orderBy: { recordedAt: 'asc' } } },
@@ -311,10 +312,10 @@ class UpbitListingMonitorService {
     return rows.map(this.toDto);
   }
 
-  // 개별 공지 조회
+  // 개별 공지 조회 (source=UPBIT만)
   async getAnnouncement(id: number): Promise<ListingAnnouncementDto | null> {
-    const row = await (prisma as any).upbitListingAnnouncement.findUnique({
-      where: { id },
+    const row = await (prisma as any).upbitListingAnnouncement.findFirst({
+      where: { id, source: 'UPBIT' },
       include: { snapshots: { orderBy: { recordedAt: 'asc' } } },
     });
     return row ? this.toDto(row) : null;

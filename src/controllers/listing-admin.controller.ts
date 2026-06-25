@@ -2,15 +2,53 @@ import { Response, NextFunction } from 'express';
 import { AuthRequest } from '../types';
 import { successResponse } from '../utils/response';
 import { upbitListingMonitorService } from '../services/upbit-listing-monitor.service';
-import { listingAutoTraderService } from '../services/listing-auto-trader.service';
+import { bithumbListingMonitorService } from '../services/bithumb-listing-monitor.service';
+import {
+  listingAutoTraderService,
+  ListingSourceType,
+} from '../services/listing-auto-trader.service';
 
 /**
- * POST /api/admin/upbit-listings/manual
- * 공지를 수동으로 등록하고 즉시 가격 스냅샷 수집
- * Body: { ticker: string, title?: string }
+ * 요청에서 source 추출 (UPBIT 기본값).
+ * query/body 모두 string으로 들어오므로 대문자 정규화 후 'BITHUMB'만 BITHUMB로 매핑.
+ * 알 수 없는 값은 UPBIT fallback — 기존 클라이언트(source 미전송)와 호환 보장.
+ */
+function extractSource(value: unknown): ListingSourceType {
+  return typeof value === 'string' && value.toUpperCase() === 'BITHUMB'
+    ? 'BITHUMB'
+    : 'UPBIT';
+}
+
+/**
+ * UPBIT 전용 핸들러용 가드 — BITHUMB 요청 시 400 응답.
+ * createManual / triggerSnapshot / fetchCurrentPrices 등 빗썸 서비스에 해당 메서드가
+ * 없는 핸들러에서 silent 라우팅 사고 방지.
+ */
+function rejectIfBithumb(
+  source: ListingSourceType,
+  res: Response,
+  operation: string,
+): boolean {
+  if (source === 'BITHUMB') {
+    res.status(400).json({
+      success: false,
+      message: `${operation}은(는) 현재 UPBIT에서만 지원됩니다. (BITHUMB 미지원)`,
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * POST /api/admin/listings/manual
+ * 공지를 수동으로 등록하고 즉시 가격 스냅샷 수집 (현재 UPBIT 전용)
+ * Body: { ticker: string, title?: string, source?: string }
  */
 export const createManual = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const source = extractSource(req.body?.source);
+    if (rejectIfBithumb(source, res, '수동 공지 등록')) return;
+
     const { ticker, title } = req.body as { ticker: string; title?: string };
     if (!ticker) {
       res.status(400).json({ success: false, message: 'ticker 필드가 필요합니다.' });
@@ -33,13 +71,17 @@ export const createManual = async (req: AuthRequest, res: Response, next: NextFu
 };
 
 /**
- * GET /api/admin/upbit-listings
- * 상장 공지 목록 조회 (최신순)
+ * GET /api/admin/listings
+ * 상장 공지 목록 조회 (최신순, source별 분기)
+ * Query: ?source=UPBIT|BITHUMB&limit=50
  */
 export const listAnnouncements = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const source = extractSource(req.query.source);
     const limit = Math.min(Number(req.query.limit) || 50, 200);
-    const data = await upbitListingMonitorService.listAnnouncements(limit);
+    const data = source === 'BITHUMB'
+      ? await bithumbListingMonitorService.listAnnouncements(limit)
+      : await upbitListingMonitorService.listAnnouncements(limit);
     return successResponse(res, data);
   } catch (error) {
     next(error);
@@ -47,13 +89,16 @@ export const listAnnouncements = async (req: AuthRequest, res: Response, next: N
 };
 
 /**
- * GET /api/admin/upbit-listings/:id
- * 개별 공지 + 전체 스냅샷 조회
+ * GET /api/admin/listings/:id
+ * 개별 공지 + 전체 스냅샷 조회 (source별 필터 적용)
  */
 export const getAnnouncement = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const source = extractSource(req.query.source);
     const id = Number(req.params.id);
-    const data = await upbitListingMonitorService.getAnnouncement(id);
+    const data = source === 'BITHUMB'
+      ? await bithumbListingMonitorService.getAnnouncement(id)
+      : await upbitListingMonitorService.getAnnouncement(id);
     if (!data) {
       res.status(404).json({ success: false, message: '공지를 찾을 수 없습니다.' });
       return;
@@ -65,12 +110,15 @@ export const getAnnouncement = async (req: AuthRequest, res: Response, next: Nex
 };
 
 /**
- * POST /api/admin/upbit-listings/:id/snapshot
- * 특정 공지에 대해 지금 즉시 가격 스냅샷 수동 실행
- * Body: { snapshotType: string }
+ * POST /api/admin/listings/:id/snapshot
+ * 특정 공지에 대해 지금 즉시 가격 스냅샷 수동 실행 (현재 UPBIT 전용)
+ * Body: { snapshotType: string, source?: string }
  */
 export const triggerSnapshot = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const source = extractSource(req.body?.source ?? req.query.source);
+    if (rejectIfBithumb(source, res, '수동 스냅샷 실행')) return;
+
     const id = Number(req.params.id);
     const { snapshotType = 'manual' } = req.body;
 
@@ -93,11 +141,14 @@ export const triggerSnapshot = async (req: AuthRequest, res: Response, next: Nex
 };
 
 /**
- * GET /api/admin/upbit-listings/:id/prices
- * 특정 티커의 현재 멀티거래소 가격 즉시 조회 (DB 저장 없음)
+ * GET /api/admin/listings/:id/prices
+ * 특정 티커의 현재 멀티거래소 가격 즉시 조회 (DB 저장 없음, 현재 UPBIT 전용)
  */
 export const fetchCurrentPrices = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const source = extractSource(req.query.source);
+    if (rejectIfBithumb(source, res, '실시간 가격 조회')) return;
+
     const id = Number(req.params.id);
     const announcement = await upbitListingMonitorService.getAnnouncement(id);
     if (!announcement?.ticker) {
@@ -113,13 +164,13 @@ export const fetchCurrentPrices = async (req: AuthRequest, res: Response, next: 
 };
 
 /**
- * GET /api/admin/upbit-listings/auto-trade/config
- * 자동매수 설정 조회
+ * GET /api/admin/listings/auto-trade/config?source=UPBIT|BITHUMB
+ * 자동매수 설정 조회 (source별)
  */
 export const getAutoTradeConfig = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    // 본 컨트롤러는 업비트 전용 — Task 9에서 통합 admin으로 source 분기 추가 예정.
-    const config = await listingAutoTraderService.getConfig('UPBIT');
+    const source = extractSource(req.query.source);
+    const config = await listingAutoTraderService.getConfig(source);
     return successResponse(res, config);
   } catch (error) {
     next(error);
@@ -127,18 +178,18 @@ export const getAutoTradeConfig = async (req: AuthRequest, res: Response, next: 
 };
 
 /**
- * PUT /api/admin/upbit-listings/auto-trade/config
- * 자동매수/매도 설정 변경
- * Body: { enabled?, amountKrw?, useBinance?, useBithumb?, useMexc?, autoSellEnabled?, takeProfitPct?, stopLossPct?, maxHoldMinutes? }
+ * PUT /api/admin/listings/auto-trade/config
+ * 자동매수/매도 설정 변경 (source별)
+ * Body: { source?, enabled?, amountKrw?, useBinance?, useBithumb?, useMexc?, autoSellEnabled?, takeProfitPct?, stopLossPct?, maxHoldMinutes? }
  */
 export const updateAutoTradeConfig = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const source = extractSource(req.body?.source);
     const {
       enabled, amountKrw, useBinance, useBithumb, useMexc, useGateio,
       autoSellEnabled, takeProfitPct, stopLossPct, maxHoldMinutes,
     } = req.body;
-    // 본 컨트롤러는 업비트 전용 — Task 9에서 통합 admin으로 source 분기 추가 예정.
-    const config = await listingAutoTraderService.updateConfig('UPBIT', {
+    const config = await listingAutoTraderService.updateConfig(source, {
       enabled, amountKrw, useBinance, useBithumb, useMexc, useGateio,
       autoSellEnabled, takeProfitPct, stopLossPct, maxHoldMinutes,
     });
@@ -149,13 +200,14 @@ export const updateAutoTradeConfig = async (req: AuthRequest, res: Response, nex
 };
 
 /**
- * GET /api/admin/upbit-listings/auto-trade/orders
- * 최근 자동매수 주문 이력 조회
+ * GET /api/admin/listings/auto-trade/orders?source=UPBIT|BITHUMB&limit=50
+ * 최근 자동매수 주문 이력 조회 (source 필터)
  */
 export const listAutoOrders = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const source = extractSource(req.query.source);
     const limit = Math.min(Number(req.query.limit) || 50, 200);
-    const orders = await listingAutoTraderService.listRecentOrders(limit);
+    const orders = await listingAutoTraderService.listRecentOrders(limit, source);
     return successResponse(res, orders);
   } catch (error) {
     next(error);
@@ -163,8 +215,9 @@ export const listAutoOrders = async (req: AuthRequest, res: Response, next: Next
 };
 
 /**
- * PATCH /api/admin/upbit-listings/auto-trade/orders/:id
- * 매수 체결 수량/평균가 수동 보정 (잘못 기록된 주문 정정)
+ * PATCH /api/admin/listings/auto-trade/orders/:id
+ * 매수 체결 수량/평균가 수동 보정 (잘못 기록된 주문 정정).
+ * 주문 id가 PK이므로 source 분기 없음 — listingAutoOrder는 source 정보를 자체적으로 보유.
  * Body: { filledQty?: number, filledPrice?: number }
  */
 export const correctAutoOrder = async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -204,8 +257,8 @@ export const correctAutoOrder = async (req: AuthRequest, res: Response, next: Ne
 };
 
 /**
- * GET /api/admin/upbit-listings/auto-trade/check-permissions
- * Binance API 키 스팟 거래 권한 확인
+ * GET /api/admin/listings/auto-trade/check-permissions
+ * Binance API 키 스팟 거래 권한 확인 (source 무관 — Binance 계정 단일)
  */
 export const checkBinancePermissions = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {

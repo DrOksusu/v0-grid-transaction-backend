@@ -5,6 +5,7 @@ import { parse as parseHtml } from 'node-html-parser';
 import prisma from '../config/database';
 import { listingAutoTraderService } from './listing-auto-trader.service';
 import { kakaoNotifyService } from './kakao-notify.service';
+import type { ListingAnnouncementDto } from './upbit-listing-monitor.service';
 
 // ── 파서 (단위 테스트 대상) ─────────────────────────────────────────────
 
@@ -406,6 +407,56 @@ class BithumbListingMonitorService {
         );
       }
     }
+  }
+
+  /**
+   * 빗썸 상장 공지 목록 조회 (source=BITHUMB만, 최신순).
+   * upbit listAnnouncements와 동일한 ListingAnnouncementDto[] 반환 — 컨트롤러 source 분기 시 동일 인터페이스.
+   */
+  async listAnnouncements(limit = 50): Promise<ListingAnnouncementDto[]> {
+    const rows = await prisma.upbitListingAnnouncement.findMany({
+      where: { source: 'BITHUMB' },
+      orderBy: { announcedAt: 'desc' },
+      take: limit,
+      include: { snapshots: { orderBy: { recordedAt: 'asc' } } },
+    });
+    return rows.map(row => this.toDto(row));
+  }
+
+  /**
+   * 빗썸 단일 공지 조회 (source=BITHUMB만).
+   * id는 PK이지만 source 필터를 추가해 다른 source 공지가 잘못 노출되지 않도록 방어.
+   */
+  async getAnnouncement(id: number): Promise<ListingAnnouncementDto | null> {
+    const row = await prisma.upbitListingAnnouncement.findFirst({
+      where: { id, source: 'BITHUMB' },
+      include: { snapshots: { orderBy: { recordedAt: 'asc' } } },
+    });
+    return row ? this.toDto(row) : null;
+  }
+
+  /**
+   * Prisma row → ListingAnnouncementDto. upbit 모니터의 toDto와 동일 shape (snapshots 포함).
+   */
+  private toDto(row: any): ListingAnnouncementDto {
+    return {
+      id: row.id,
+      noticeId: row.noticeId,
+      title: row.title,
+      ticker: row.ticker,
+      url: row.url,
+      announcedAt: row.announcedAt,
+      listedAt: row.listedAt,
+      status: row.status,
+      snapshots: (row.snapshots ?? []).map((s: any) => ({
+        id: s.id,
+        exchange: s.exchange,
+        price: Number(s.price),
+        volume24h: s.volume24h !== null ? Number(s.volume24h) : null,
+        snapshotType: s.snapshotType,
+        recordedAt: s.recordedAt,
+      })),
+    };
   }
 
   /**
