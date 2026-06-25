@@ -55,7 +55,7 @@ class ListingAutoSellerService {
     this.checking = true;
     try {
       // TODO(Task 7): autoSell도 source별 config 분기 필요 (현재 UPBIT 명시 — 빗썸 주문도 UPBIT 매도 로직 적용 중).
-      // Task 7에서 openOrders 루프에서 order.announcement.source로 source별 config 로드하도록 변경.
+      // Task 7에서 openOrders 루프에서 order.source로 source별 config 로드하도록 변경.
       const config = await listingAutoTraderService.getConfig('UPBIT');
       if (!config.autoSellEnabled) return;
 
@@ -67,6 +67,11 @@ class ListingAutoSellerService {
 
       // 순차 처리 (거래소 API rate limit 고려)
       for (const order of openOrders) {
+        // TODO(Task 7 머지 후 제거): BITHUMB 주문 매도 가드.
+        // 현재 config가 UPBIT 하드코딩이라 빗썸 주문에 UPBIT의 maxHoldMinutes(30)/takeProfitPct(20) 등이
+        // 적용되는 의미상 결함을 막기 위해 BITHUMB 주문은 매도 스킵.
+        // Task 7에서 source별 config 분기 완료 후 이 가드 제거.
+        if (order.source === 'BITHUMB') continue;
         await this.evaluateOrder(order, config);
       }
     } finally {

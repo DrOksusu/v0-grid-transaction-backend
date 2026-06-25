@@ -294,7 +294,21 @@ describe('executeBuy source 라우팅', () => {
     expect(prisma.listingAutoOrder.create).toHaveBeenCalled();
   });
 
-  it('executeBuy(id, ticker) 2-arg 호출은 default source=UPBIT로 분기 (backward compat)', async () => {
+  // 이 케이스는 "source 필수 인자" 회귀 가드 — TS 컴파일 단계에서 잡히지만,
+  // 런타임에 source=undefined가 들어와도 무조건 매수하지 않도록 한 번 더 검증.
+  // (호출처 누락 시 default UPBIT로 silent fallback되던 이전 동작의 회귀 방지)
+  it('source=undefined가 어쩌다 들어와도 UPBIT default fallback 없음 — config 조회/매수 진행 안 함', async () => {
+    prisma.listingAutoTradeConfig.findUnique.mockResolvedValue(null);
+    // 런타임 안전망: TS는 잡지만 JS 코드에서 undefined가 들어왔을 때 동작 검증
+    // — getConfig(undefined) → findUnique({where:{source:undefined}}) → null → defaultsFor(undefined)
+    //   → 사실상 UPBIT default가 잠재적으로 적용될 수도 있음. 그래서 enabled가 false이면 즉시 return.
+    const results = await (service.executeBuy as any)(7, 'NEW2');
+    // enabled=false default라 어떤 source든 매수 시작 안 함
+    expect(results).toEqual([]);
+    expect(prisma.listingAutoOrder.create).not.toHaveBeenCalled();
+  });
+
+  it('24h 중복 체크: findFirst 호출의 where에 createdAt gte 24h가 포함됨 (status 필터는 제거됨)', async () => {
     prisma.listingAutoTradeConfig.findUnique.mockResolvedValue({
       source: 'UPBIT',
       enabled: true,
@@ -312,15 +326,82 @@ describe('executeBuy source 라우팅', () => {
       trailingStopPct: 20,
       minTakerBalance: null,
     });
-    await service.executeBuy(5, 'BC');
-    expect(prisma.listingAutoTradeConfig.findUnique).toHaveBeenCalledWith({
-      where: { source: 'UPBIT' },
+    prisma.listingAutoOrder.findFirst.mockResolvedValue(null);
+
+    const before = Date.now();
+    await service.executeBuy(8, 'WIN', 'UPBIT');
+    const after = Date.now();
+
+    const callArgs = prisma.listingAutoOrder.findFirst.mock.calls[0][0];
+    expect(callArgs.where.source).toBe('UPBIT');
+    expect(callArgs.where.ticker).toBe('WIN');
+    // createdAt gte 윈도우가 적용됐는지 — 24h ± 1초 허용
+    expect(callArgs.where.createdAt).toBeDefined();
+    expect(callArgs.where.createdAt.gte).toBeInstanceOf(Date);
+    const gteMs = (callArgs.where.createdAt.gte as Date).getTime();
+    const expectedGteMin = before - 24 * 60 * 60 * 1000 - 1000;
+    const expectedGteMax = after - 24 * 60 * 60 * 1000 + 1000;
+    expect(gteMs).toBeGreaterThanOrEqual(expectedGteMin);
+    expect(gteMs).toBeLessThanOrEqual(expectedGteMax);
+    // status 필터가 제거됐는지 (실패/스킵 상태든 24h 내면 차단)
+    expect(callArgs.where.status).toBeUndefined();
+  });
+
+  it('25h 전 같은 ticker 주문은 차단되지 않음 (findFirst null 리턴 = 윈도우 벗어남)', async () => {
+    prisma.listingAutoTradeConfig.findUnique.mockResolvedValue({
+      source: 'UPBIT',
+      enabled: true,
+      killSwitch: false,
+      amountKrw: 100000,
+      useBinance: true,
+      useBithumb: false,
+      useMexc: false,
+      useGateio: false,
+      autoSellEnabled: true,
+      takeProfitPct: 20,
+      stopLossPct: 10,
+      maxHoldMinutes: 30,
+      useTrailingStop: false,
+      trailingStopPct: 20,
+      minTakerBalance: null,
     });
-    expect(prisma.listingAutoOrder.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ source: 'UPBIT' }),
-      }),
-    );
+    // DB에 같은 ticker로 25h 전 주문이 있어도 findFirst의 createdAt gte 24h 필터로 인해 null 리턴
+    prisma.listingAutoOrder.findFirst.mockResolvedValue(null);
+    await service.executeBuy(9, 'OLDREPLAY', 'UPBIT');
+    // 매수 진행 — create 호출
+    expect(prisma.listingAutoOrder.create).toHaveBeenCalled();
+  });
+
+  it('23h 전 같은 ticker 주문은 차단 (findFirst가 row 리턴 = 윈도우 내)', async () => {
+    prisma.listingAutoTradeConfig.findUnique.mockResolvedValue({
+      source: 'UPBIT',
+      enabled: true,
+      killSwitch: false,
+      amountKrw: 100000,
+      useBinance: true,
+      useBithumb: false,
+      useMexc: false,
+      useGateio: false,
+      autoSellEnabled: true,
+      takeProfitPct: 20,
+      stopLossPct: 10,
+      maxHoldMinutes: 30,
+      useTrailingStop: false,
+      trailingStopPct: 20,
+      minTakerBalance: null,
+    });
+    // 23h 전 주문이 윈도우 안이라 findFirst가 row 리턴
+    prisma.listingAutoOrder.findFirst.mockResolvedValue({
+      id: 555,
+      source: 'UPBIT',
+      ticker: 'SOON',
+      announcementId: 99,
+      status: 'failed', // failed 상태여도 24h 내면 차단 (status 필터 제거됐으므로)
+      createdAt: new Date(Date.now() - 23 * 60 * 60 * 1000),
+    });
+    const results = await service.executeBuy(10, 'SOON', 'UPBIT');
+    expect(results).toEqual([]);
+    expect(prisma.listingAutoOrder.create).not.toHaveBeenCalled();
   });
 
   it('source=UPBIT + 업비트 KRW 마켓에 이미 있는 ticker는 false-positive 차단', async () => {

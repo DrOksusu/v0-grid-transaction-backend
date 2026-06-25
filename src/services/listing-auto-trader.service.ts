@@ -288,11 +288,12 @@ class ListingAutoTraderService {
   // ── 자동매수 실행 ─────────────────────────────────────────────────────────
 
   // announcement.source 기반으로 source별 config 로드 + 매수.
-  // source default 'UPBIT' — 기존 호출처 backward-compat.
+  // source는 필수 인자 — 누락 시 silent하게 UPBIT config로 빗썸 공지를 매수하는 사고 방지.
+  // 새 source(예: COINBASE) 추가 시 컴파일러가 호출처 누락을 강제로 잡도록 default 없음.
   async executeBuy(
     announcementId: number,
     ticker: string,
-    source: ListingSourceType = 'UPBIT',
+    source: ListingSourceType,
   ): Promise<OrderResult[]> {
     const config = await this.getConfig(source);
     if (!config.enabled || config.killSwitch) return [];
@@ -315,19 +316,22 @@ class ListingAutoTraderService {
       }
     }
 
-    // 같은 source + ticker에 대해 다른 announcement에서 이미 주문이 진행됐으면 중복 매수 방지.
-    // source 분리 후에도 두 source가 같은 ticker를 동시에 매수하지 않도록 source까지 좁힌다.
-    const existingOrder = await prisma.listingAutoOrder.findFirst({
+    // 24h 중복 매수 방지: 같은 source + ticker로 24h 내 주문 이력이 있으면 status 무관하게 skip.
+    // 이전 버전은 status: {in:['pending','filled']}로만 차단했는데, pending/filled가 한 번 들어가면
+    // 영구 차단되고 (24h 이후에도) failed/skipped는 재시도 무한 루프를 일으킬 수 있어 createdAt 윈도우로 변경.
+    // 빗썸 monitor의 24h 중복 체크와 동일한 의미 — 두 채널이 빠르게 같은 ticker를 두 번 트리거할 때
+    // 두 번째 매수를 차단하면서, 24h 이후 정상 재상장은 허용한다.
+    const duplicate = await prisma.listingAutoOrder.findFirst({
       where: {
         source,
         ticker,
-        status: { in: ['pending', 'filled'] },
+        createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
         announcementId: { not: announcementId },
       },
     });
-    if (existingOrder) {
+    if (duplicate) {
       console.log(
-        `[AutoTrader] source=${source} ticker=${ticker} 중복 매수 skip (기존 announcementId=${existingOrder.announcementId})`,
+        `[AutoTrader] source=${source} ticker=${ticker} 24h 내 중복 매수 skip (기존 announcementId=${duplicate.announcementId})`,
       );
       return [];
     }

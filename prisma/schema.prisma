@@ -649,6 +649,8 @@ model ListingAutoOrder {
   @@index([sellStatus])
   @@index([createdAt])
   @@index([source, createdAt])
+  // 24h 중복 매수 체크 쿼리 (source + ticker + createdAt gte) 핫 path 최적화
+  @@index([source, ticker, createdAt])
   @@map("listing_auto_orders")
 }
 
