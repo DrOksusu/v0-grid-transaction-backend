@@ -19,7 +19,7 @@ import stablecoinAdminRoutes from './stablecoin-admin';
 import volatilityAdminRoutes from './volatility-admin';
 import pairScannerRoutes from './pair-scanner';
 import generalArbAdminRoutes from './general-arb-admin';
-import upbitListingAdminRoutes from './upbit-listing-admin';
+import listingAdminRoutes from './listing-admin';
 import kakaoAdminRoutes from './kakao-admin';
 import transferRoutes from './transfer';
 import internalRoutes from './internal';
@@ -56,7 +56,8 @@ router.use('/admin/stablecoin', stablecoinAdminRoutes);
 router.use('/admin/volatility', volatilityAdminRoutes);
 router.use('/pair-scanner', pairScannerRoutes);
 router.use('/admin/general-arb', generalArbAdminRoutes);
-router.use('/admin/upbit-listings', upbitListingAdminRoutes);
+router.use('/admin/listings', listingAdminRoutes);
+router.use('/admin/upbit-listings', listingAdminRoutes); // 1주일 별칭 유지 (Task 13 후 제거)
 router.use('/admin/btc-rsi', kakaoAdminRoutes);
 router.use('/transfer', transferRoutes);
 router.use('/internal', internalRoutes);

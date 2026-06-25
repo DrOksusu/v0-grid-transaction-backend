@@ -505,6 +505,12 @@ enum WhaleSignal {
   neutral
 }
 
+// 신규상장 데이터 소스 (UPBIT / BITHUMB 한 테이블에서 source 분기)
+enum ListingSource {
+  UPBIT
+  BITHUMB
+}
+
 // Upbit-Bithumb 거래소 간 호가 스냅샷 (크로스 거래소 관찰용)
 model CrossExchangeSnapshot {
   id           BigInt   @id @default(autoincrement())
@@ -567,50 +573,57 @@ model GeneralArbConfig {
   @@map("general_arb_config")
 }
 
-// 업비트 신규 상장 공지 감지 기록
+// 신규 상장 공지 감지 기록 (UPBIT/BITHUMB 공용 — source로 분기)
 model UpbitListingAnnouncement {
-  id          Int      @id @default(autoincrement())
-  noticeId    Int      @unique
+  id          Int           @id @default(autoincrement())
+  source      ListingSource @default(UPBIT)
+  noticeId    Int
   title       String
   ticker      String?
   url         String
-  announcedAt DateTime @default(now())
+  announcedAt DateTime      @default(now())
   listedAt    DateTime?
-  status      String   @default("announced") // announced | listed | complete
+  status      String        @default("announced") // announced | listed | complete
   snapshots   ListingPriceSnapshot[]
   autoOrders  ListingAutoOrder[]
 
+  @@unique([source, noticeId])
   @@index([announcedAt])
   @@index([ticker])
   @@index([status])
+  @@index([source, announcedAt])
   @@map("upbit_listing_announcements")
 }
 
-// 신규상장 자동매수 설정 (싱글톤 — id=1 고정)
+// 신규상장 자동매수 설정 (source별 1 row — UPBIT/BITHUMB 분리 운영)
 model ListingAutoTradeConfig {
-  id              Int      @id @default(autoincrement())
-  enabled         Boolean  @default(false)
-  amountKrw       Int      @default(100000)
-  useBinance      Boolean  @default(true)
-  useBithumb      Boolean  @default(true)
-  useMexc         Boolean  @default(false)
-  useGateio       Boolean  @default(false)
-  autoSellEnabled Boolean  @default(true)
-  takeProfitPct   Float    @default(20)   // +20% 목표 수익
-  stopLossPct     Float    @default(10)   // -10% 손절
-  maxHoldMinutes   Int      @default(30)   // 30분 시간 컷
-  useTrailingStop  Boolean  @default(false) // trailing stop 사용 여부
-  trailingStopPct  Float    @default(20)    // 최고가 대비 X% 하락 시 매도
-  updatedAt        DateTime @updatedAt
+  id              Int           @id @default(autoincrement())
+  source          ListingSource @unique @default(UPBIT)
+  enabled         Boolean       @default(false)
+  killSwitch      Boolean       @default(false)
+  amountKrw       Int           @default(100000)
+  useBinance      Boolean       @default(true)
+  useBithumb      Boolean       @default(true)
+  useMexc         Boolean       @default(false)
+  useGateio       Boolean       @default(false)
+  autoSellEnabled Boolean       @default(true)
+  takeProfitPct   Float         @default(20)   // +20% 목표 수익
+  stopLossPct     Float         @default(10)   // -10% 손절
+  maxHoldMinutes  Int           @default(30)   // 30분 시간 컷
+  useTrailingStop Boolean       @default(false) // trailing stop 사용 여부
+  trailingStopPct Float         @default(20)    // 최고가 대비 X% 하락 시 매도
+  minTakerBalance Float?
+  updatedAt       DateTime      @updatedAt
 
   @@map("listing_auto_trade_config")
 }
 
 // 신규상장 자동매수 주문 기록
 model ListingAutoOrder {
-  id             Int       @id @default(autoincrement())
+  id             Int           @id @default(autoincrement())
   announcementId Int
-  exchange       String    // binance | bithumb | mexc
+  source         ListingSource @default(UPBIT)
+  exchange       String        // binance | bithumb | mexc
   ticker         String
   amountKrw      Int
   amountUsdt     Float?    // Binance/MEXC 주문 시 환산된 USDT 금액
@@ -635,6 +648,9 @@ model ListingAutoOrder {
   @@index([status])
   @@index([sellStatus])
   @@index([createdAt])
+  @@index([source, createdAt])
+  // 24h 중복 매수 체크 쿼리 (source + ticker + createdAt gte) 핫 path 최적화
+  @@index([source, ticker, createdAt])
   @@map("listing_auto_orders")
 }
 

@@ -49,22 +49,35 @@ class ListingAutoSellerService {
   /**
    * 매도 조건 점검 (5초마다 에이전트에서 호출)
    * 매수 체결(status=filled) 상태이고 매도 미완료(sellStatus=null)인 주문을 대상으로 함
+   *
+   * source별 config 분기 (Task 7):
+   *   - 각 주문의 order.source(UPBIT|BITHUMB)에 따라 별도 config 로드
+   *   - 빗썸 주문은 BITHUMB config의 TP/SL/maxHold/trailing 적용
+   *   - autoSellEnabled=false 또는 killSwitch=true 인 source의 주문은 skip
    */
   async checkAndSell(): Promise<void> {
     if (this.checking) return;
     this.checking = true;
     try {
-      const config = await listingAutoTraderService.getConfig();
-      if (!config.autoSellEnabled) return;
-
-      // 매수 체결됐지만 매도 미시작인 주문 조회
+      // 매수 체결됐지만 매도 미시작인 주문 조회 (source 무관 일괄 조회)
       const openOrders = await (prisma as any).listingAutoOrder.findMany({
         where: { status: 'filled', sellStatus: null },
         include: { announcement: { select: { ticker: true } } },
       });
 
+      // source별 config 캐시 (한 사이클 내 동일 source는 DB 조회 1회만)
+      const configCache = new Map<string, any>();
+
       // 순차 처리 (거래소 API rate limit 고려)
       for (const order of openOrders) {
+        // order.source 기반으로 config 로드 (UPBIT|BITHUMB)
+        let config = configCache.get(order.source);
+        if (!config) {
+          config = await listingAutoTraderService.getConfig(order.source);
+          configCache.set(order.source, config);
+        }
+        // 해당 source가 매도 비활성 또는 kill switch 상태면 해당 주문 skip
+        if (!config.autoSellEnabled || config.killSwitch) continue;
         await this.evaluateOrder(order, config);
       }
     } finally {

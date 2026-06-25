@@ -12,7 +12,7 @@ import {
   listAutoOrders,
   correctAutoOrder,
   checkBinancePermissions,
-} from '../controllers/upbit-listing-admin.controller';
+} from '../controllers/listing-admin.controller';
 
 const router = Router();
 
