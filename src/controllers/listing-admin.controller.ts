@@ -180,18 +180,20 @@ export const getAutoTradeConfig = async (req: AuthRequest, res: Response, next: 
 /**
  * PUT /api/admin/listings/auto-trade/config
  * 자동매수/매도 설정 변경 (source별)
- * Body: { source?, enabled?, amountKrw?, useBinance?, useBithumb?, useMexc?, autoSellEnabled?, takeProfitPct?, stopLossPct?, maxHoldMinutes? }
+ * Body: { source?, enabled?, killSwitch?, amountKrw?, useBinance?, useBithumb?, useMexc?, useGateio?, autoSellEnabled?, takeProfitPct?, stopLossPct?, maxHoldMinutes?, useTrailingStop?, trailingStopPct?, minTakerBalance? }
  */
 export const updateAutoTradeConfig = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const source = extractSource(req.body?.source);
     const {
-      enabled, amountKrw, useBinance, useBithumb, useMexc, useGateio,
+      enabled, killSwitch, amountKrw, useBinance, useBithumb, useMexc, useGateio,
       autoSellEnabled, takeProfitPct, stopLossPct, maxHoldMinutes,
+      useTrailingStop, trailingStopPct, minTakerBalance,
     } = req.body;
     const config = await listingAutoTraderService.updateConfig(source, {
-      enabled, amountKrw, useBinance, useBithumb, useMexc, useGateio,
+      enabled, killSwitch, amountKrw, useBinance, useBithumb, useMexc, useGateio,
       autoSellEnabled, takeProfitPct, stopLossPct, maxHoldMinutes,
+      useTrailingStop, trailingStopPct, minTakerBalance,
     });
     return successResponse(res, config);
   } catch (error) {
