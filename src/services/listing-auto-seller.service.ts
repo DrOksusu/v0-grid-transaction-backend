@@ -49,29 +49,35 @@ class ListingAutoSellerService {
   /**
    * 매도 조건 점검 (5초마다 에이전트에서 호출)
    * 매수 체결(status=filled) 상태이고 매도 미완료(sellStatus=null)인 주문을 대상으로 함
+   *
+   * source별 config 분기 (Task 7):
+   *   - 각 주문의 order.source(UPBIT|BITHUMB)에 따라 별도 config 로드
+   *   - 빗썸 주문은 BITHUMB config의 TP/SL/maxHold/trailing 적용
+   *   - autoSellEnabled=false 또는 killSwitch=true 인 source의 주문은 skip
    */
   async checkAndSell(): Promise<void> {
     if (this.checking) return;
     this.checking = true;
     try {
-      // TODO(Task 7): autoSell도 source별 config 분기 필요 (현재 UPBIT 명시 — 빗썸 주문도 UPBIT 매도 로직 적용 중).
-      // Task 7에서 openOrders 루프에서 order.source로 source별 config 로드하도록 변경.
-      const config = await listingAutoTraderService.getConfig('UPBIT');
-      if (!config.autoSellEnabled) return;
-
-      // 매수 체결됐지만 매도 미시작인 주문 조회
+      // 매수 체결됐지만 매도 미시작인 주문 조회 (source 무관 일괄 조회)
       const openOrders = await (prisma as any).listingAutoOrder.findMany({
         where: { status: 'filled', sellStatus: null },
         include: { announcement: { select: { ticker: true } } },
       });
 
+      // source별 config 캐시 (한 사이클 내 동일 source는 DB 조회 1회만)
+      const configCache = new Map<string, any>();
+
       // 순차 처리 (거래소 API rate limit 고려)
       for (const order of openOrders) {
-        // TODO(Task 7 머지 후 제거): BITHUMB 주문 매도 가드.
-        // 현재 config가 UPBIT 하드코딩이라 빗썸 주문에 UPBIT의 maxHoldMinutes(30)/takeProfitPct(20) 등이
-        // 적용되는 의미상 결함을 막기 위해 BITHUMB 주문은 매도 스킵.
-        // Task 7에서 source별 config 분기 완료 후 이 가드 제거.
-        if (order.source === 'BITHUMB') continue;
+        // order.source 기반으로 config 로드 (UPBIT|BITHUMB)
+        let config = configCache.get(order.source);
+        if (!config) {
+          config = await listingAutoTraderService.getConfig(order.source);
+          configCache.set(order.source, config);
+        }
+        // 해당 source가 매도 비활성 또는 kill switch 상태면 해당 주문 skip
+        if (!config.autoSellEnabled || config.killSwitch) continue;
         await this.evaluateOrder(order, config);
       }
     } finally {
