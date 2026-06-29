@@ -68,6 +68,13 @@ export const config = {
     apiKey: process.env.GATEWAY_API_KEY || '',
     secretKey: process.env.GATEWAY_SECRET_KEY || '',
   },
+  // 토스증권 Open API (한국주식 그리드)
+  toss: {
+    apiUrl: process.env.TOSS_API_URL || 'https://wts-openapi.tossinvest.com',
+    // 종목 마스터 sync용 관리자 키 (미설정 시 sync skip)
+    adminClientId: process.env.TOSS_ADMIN_CLIENT_ID || '',
+    adminClientSecret: process.env.TOSS_ADMIN_CLIENT_SECRET || '',
+  },
 };
 
 // startup 검증 — 미설정 시 즉시 throw
