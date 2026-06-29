@@ -62,6 +62,10 @@ const prisma = {
     create: jest.fn(),
     update: jest.fn(),
   },
+  // 한국 주식시장 영업일/휴장일 캘린더
+  koreanMarketCalendar: {
+    findUnique: jest.fn(),
+  },
 };
 
 // Stablecoin Prisma 클라이언트 Mock
