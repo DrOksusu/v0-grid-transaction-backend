@@ -26,6 +26,7 @@ import internalRoutes from './internal';
 import costBasisRoutes from './cost-basis';
 import marketRegimeRoutes from './market-regime';
 import koreanStockRoutes from './korean-stock';
+import tossCredentialRoutes from './toss-credential';
 
 const router = Router();
 
@@ -65,5 +66,6 @@ router.use('/internal', internalRoutes);
 router.use('/cost-basis', costBasisRoutes);
 router.use('/market-regime', marketRegimeRoutes);
 router.use('/korean-stocks', koreanStockRoutes);
+router.use('/toss-credentials', tossCredentialRoutes);
 
 export default router;
