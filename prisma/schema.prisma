@@ -67,6 +67,9 @@ model Bot {
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
   deletedAt          DateTime?
+  market             Market      @default(CRYPTO)
+  feeRate            Float?      // 봇별 토스 수수료율 (한국주식만 사용, default 0.00015 = 0.015%)
+  taxRate            Float?      // 매도 거래세 (한국주식만 사용, default 0.0018 = 0.18%)
   user               User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   gridLevels         GridLevel[]
   trades             Trade[]
@@ -75,6 +78,8 @@ model Bot {
   @@index([status])
   @@index([userId, status])
   @@index([deletedAt])
+  @@index([market])
+  @@index([userId, market])
   @@map("bots")
 }
 
@@ -149,6 +154,7 @@ model Credential {
   isPaper         Boolean           @default(true)
   tokenExpireAt   DateTime?
   purpose         CredentialPurpose @default(default)
+  accountSeq      String?           // 토스 계좌 시퀀스 (평문, 시크릿 아님)
   user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, exchange, purpose])
@@ -408,6 +414,13 @@ enum Exchange {
   mexc
   gateio
   coinone
+  toss
+}
+
+// 봇 시장 구분 (CRYPTO/KOREAN_STOCK 분기)
+enum Market {
+  CRYPTO
+  KOREAN_STOCK
 }
 
 enum BotStatus {
@@ -811,4 +824,25 @@ model BtcDormantSnapshot {
 
   @@index([date])
   @@map("btc_dormant_snapshots")
+}
+
+// 한국주식 종목 마스터 (KOSPI/KOSDAQ)
+model KoreanStockSymbol {
+  code      String   @id @db.VarChar(10)
+  name      String
+  market    String   // "KOSPI" or "KOSDAQ"
+  sector    String?
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@map("korean_stock_symbols")
+}
+
+// 한국 주식시장 영업일/휴장일 캘린더
+model KoreanMarketCalendar {
+  date    DateTime @id @db.Date
+  isOpen  Boolean
+  reason  String?
+
+  @@map("korean_market_calendar")
 }
