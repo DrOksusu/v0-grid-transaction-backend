@@ -14,3 +14,4 @@ export { BtcRsiAgent } from './btc-rsi-agent';
 export { RebalancerAgent } from './rebalancer-agent';
 export { VolatilityBreakoutAgent } from './volatility-breakout-agent';
 export { KoreanStockGridAgent, koreanStockGridAgent } from './korean-stock-grid-agent';
+export { KoreanStockSymbolSyncAgent, koreanStockSymbolSyncAgent } from './korean-stock-symbol-sync-agent';
