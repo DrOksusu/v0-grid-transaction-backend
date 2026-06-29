@@ -57,6 +57,102 @@ export class TossService {
   }
 
   /**
+   * 인증 헤더 생성 (Bearer + 선택적 X-Tossinvest-Account)
+   * 모든 API 호출 메서드가 공유.
+   */
+  private async authHeaders(
+    clientId: string,
+    clientSecret: string,
+    accountSeq?: string,
+  ): Promise<Record<string, string>> {
+    const token = await this.getAccessToken(clientId, clientSecret);
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+    if (accountSeq) headers['X-Tossinvest-Account'] = accountSeq;
+    return headers;
+  }
+
+  /**
+   * 종목 시세 조회 (단일 종목)
+   * endpoint path는 토스 공식 문서로 보정 필요 (현재는 추정값)
+   */
+  async getQuote(
+    clientId: string,
+    clientSecret: string,
+    code: string,
+  ): Promise<{ code: string; price: number; timestamp: string }> {
+    const headers = await this.authHeaders(clientId, clientSecret);
+    const res = await axios.get(`${TOSS_BASE_URL}/v1/market/quote/${code}`, { headers, timeout: 10_000 });
+    return res.data;
+  }
+
+  /**
+   * 계좌 잔액 + 보유 주식 조회
+   */
+  async getAccountBalance(
+    clientId: string,
+    clientSecret: string,
+    accountSeq: string,
+  ): Promise<{ krwBalance: number; holdings: Array<{ code: string; quantity: number; avgPrice: number }> }> {
+    const headers = await this.authHeaders(clientId, clientSecret, accountSeq);
+    const res = await axios.get(`${TOSS_BASE_URL}/v1/account/balance`, { headers, timeout: 10_000 });
+    return res.data;
+  }
+
+  /**
+   * 주문 생성 (매수/매도, 지정가/시장가)
+   */
+  async placeOrder(
+    clientId: string,
+    clientSecret: string,
+    accountSeq: string,
+    order: { code: string; side: 'BUY' | 'SELL'; quantity: number; price: number; orderType: 'LIMIT' | 'MARKET' },
+  ): Promise<{ orderId: string; status: string }> {
+    const headers = await this.authHeaders(clientId, clientSecret, accountSeq);
+    const res = await axios.post(`${TOSS_BASE_URL}/v1/order`, order, { headers, timeout: 10_000 });
+    return res.data;
+  }
+
+  /**
+   * 주문 취소
+   */
+  async cancelOrder(
+    clientId: string,
+    clientSecret: string,
+    accountSeq: string,
+    orderId: string,
+  ): Promise<{ orderId: string; status: string }> {
+    const headers = await this.authHeaders(clientId, clientSecret, accountSeq);
+    const res = await axios.delete(`${TOSS_BASE_URL}/v1/order/${orderId}`, { headers, timeout: 10_000 });
+    return res.data;
+  }
+
+  /**
+   * 전체 종목 마스터 조회 (KOSPI + KOSDAQ)
+   * 일일 sync 에이전트가 사용
+   */
+  async getSymbolMaster(
+    clientId: string,
+    clientSecret: string,
+  ): Promise<Array<{ code: string; name: string; market: string }>> {
+    const headers = await this.authHeaders(clientId, clientSecret);
+    const res = await axios.get(`${TOSS_BASE_URL}/v1/market/symbols`, { headers, timeout: 30_000 });
+    return res.data.symbols;
+  }
+
+  /**
+   * 연도 단위 휴장일 캘린더 조회
+   */
+  async getMarketCalendar(
+    clientId: string,
+    clientSecret: string,
+    year: number,
+  ): Promise<{ holidays: Array<{ date: string; reason: string }> }> {
+    const headers = await this.authHeaders(clientId, clientSecret);
+    const res = await axios.get(`${TOSS_BASE_URL}/v1/market/calendar?year=${year}`, { headers, timeout: 10_000 });
+    return res.data;
+  }
+
+  /**
    * 테스트 전용 — production 호출 금지
    */
   _resetCacheForTests(): void {

@@ -65,3 +65,108 @@ describe('TossService.getAccessToken', () => {
     await expect(service.getAccessToken('bad_id', 'bad_secret')).rejects.toThrow(/OAuth/);
   });
 });
+
+describe('TossService.getQuote', () => {
+  let service: TossService;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    service = new TossService();
+  });
+
+  it('시세 조회 (Authorization Bearer 헤더)', async () => {
+    mockedAxios.post.mockResolvedValueOnce({ data: { access_token: 'tok', expires_in: 3600 } });
+    mockedAxios.get.mockResolvedValueOnce({ data: { code: '005930', price: 75000, timestamp: '2026-06-29T09:00:00+09:00' } });
+    const quote = await service.getQuote('client_id', 'client_secret', '005930');
+    expect(quote.price).toBe(75000);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/market/quote/005930'),
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer tok' }) }),
+    );
+  });
+});
+
+describe('TossService.getAccountBalance', () => {
+  let service: TossService;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    service = new TossService();
+  });
+
+  it('계좌 잔액 조회 (X-Tossinvest-Account 헤더)', async () => {
+    mockedAxios.post.mockResolvedValueOnce({ data: { access_token: 'tok', expires_in: 3600 } });
+    mockedAxios.get.mockResolvedValueOnce({ data: { krwBalance: 1000000, holdings: [] } });
+    const balance = await service.getAccountBalance('client_id', 'client_secret', 'acc_seq_x');
+    expect(balance.krwBalance).toBe(1000000);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ headers: expect.objectContaining({ 'X-Tossinvest-Account': 'acc_seq_x' }) }),
+    );
+  });
+});
+
+describe('TossService.placeOrder', () => {
+  let service: TossService;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    service = new TossService();
+  });
+
+  it('매수 주문 (BUY, 지정가)', async () => {
+    mockedAxios.post.mockResolvedValueOnce({ data: { access_token: 'tok', expires_in: 3600 } });
+    mockedAxios.post.mockResolvedValueOnce({ data: { orderId: 'ord_001', status: 'pending' } });
+    const result = await service.placeOrder('client_id', 'client_secret', 'acc_seq', {
+      code: '005930', side: 'BUY', quantity: 1, price: 75000, orderType: 'LIMIT',
+    });
+    expect(result.orderId).toBe('ord_001');
+  });
+});
+
+describe('TossService.cancelOrder', () => {
+  let service: TossService;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    service = new TossService();
+  });
+
+  it('주문 취소 (DELETE)', async () => {
+    mockedAxios.post.mockResolvedValueOnce({ data: { access_token: 'tok', expires_in: 3600 } });
+    mockedAxios.delete.mockResolvedValueOnce({ data: { orderId: 'ord_001', status: 'cancelled' } });
+    const result = await service.cancelOrder('client_id', 'client_secret', 'acc_seq', 'ord_001');
+    expect(result.status).toBe('cancelled');
+  });
+});
+
+describe('TossService.getSymbolMaster', () => {
+  let service: TossService;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    service = new TossService();
+  });
+
+  it('전체 종목 마스터 조회', async () => {
+    mockedAxios.post.mockResolvedValueOnce({ data: { access_token: 'tok', expires_in: 3600 } });
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { symbols: [{ code: '005930', name: '삼성전자', market: 'KOSPI' }] },
+    });
+    const symbols = await service.getSymbolMaster('client_id', 'client_secret');
+    expect(symbols.length).toBeGreaterThan(0);
+    expect(symbols[0].code).toBe('005930');
+  });
+});
+
+describe('TossService.getMarketCalendar', () => {
+  let service: TossService;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    service = new TossService();
+  });
+
+  it('연도 단위 휴장일 조회', async () => {
+    mockedAxios.post.mockResolvedValueOnce({ data: { access_token: 'tok', expires_in: 3600 } });
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { holidays: [{ date: '2026-01-01', reason: '신정' }] },
+    });
+    const calendar = await service.getMarketCalendar('client_id', 'client_secret', 2026);
+    expect(calendar.holidays.length).toBeGreaterThan(0);
+  });
+});
