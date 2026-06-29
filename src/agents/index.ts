@@ -13,3 +13,4 @@ export { BithumbListingMonitorAgent, bithumbListingMonitorAgent } from './bithum
 export { BtcRsiAgent } from './btc-rsi-agent';
 export { RebalancerAgent } from './rebalancer-agent';
 export { VolatilityBreakoutAgent } from './volatility-breakout-agent';
+export { KoreanStockGridAgent, koreanStockGridAgent } from './korean-stock-grid-agent';
