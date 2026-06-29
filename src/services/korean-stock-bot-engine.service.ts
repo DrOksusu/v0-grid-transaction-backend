@@ -74,7 +74,7 @@ export class KoreanStockBotEngine {
     for (const level of bot.gridLevels) {
       if (level.status !== 'available') continue;
 
-      if (level.type === 'BUY' && currentPrice <= level.price) {
+      if (level.type === 'buy' && currentPrice <= level.price) {
         // 매수 수량 = floor(주문금액 / level 가격)
         const qty = Math.floor(bot.orderAmount / level.price);
         if (qty < 1) continue;
@@ -90,7 +90,7 @@ export class KoreanStockBotEngine {
           where: { id: level.id },
           data: { status: 'pending', orderId: order.orderId },
         });
-      } else if (level.type === 'SELL' && currentPrice >= level.price) {
+      } else if (level.type === 'sell' && currentPrice >= level.price) {
         // 매도 수량 산정에는 매수 시점 단가(buyPrice) 우선
         const referencePrice = level.buyPrice ?? level.price;
         const qty = Math.floor(bot.orderAmount / referencePrice);

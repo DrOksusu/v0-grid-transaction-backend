@@ -64,7 +64,7 @@ describe('KoreanStockBotEngine.runCycle', () => {
         userId: 2,
         ticker: '005930',
         orderAmount: 100000,
-        gridLevels: [{ id: 11, type: 'BUY', price: 75000, status: 'available' }],
+        gridLevels: [{ id: 11, type: 'buy', price: 75000, status: 'available' }],
       },
     ]);
     dbMock.credential.findFirst.mockResolvedValueOnce({
@@ -110,7 +110,7 @@ describe('KoreanStockBotEngine.runCycle', () => {
         ticker: '005930',
         orderAmount: 100000,
         gridLevels: [
-          { id: 22, type: 'SELL', price: 78000, buyPrice: 75000, status: 'available' },
+          { id: 22, type: 'sell', price: 78000, buyPrice: 75000, status: 'available' },
         ],
       },
     ]);
