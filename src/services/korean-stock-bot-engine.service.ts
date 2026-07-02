@@ -1,5 +1,5 @@
 import prisma from '../config/database';
-import { tossService } from './toss.service';
+import { tossService, TossCredentials, TossApiError } from './toss.service';
 import {
   isMarketOpen,
   shouldCancelPendingOrders,
@@ -10,6 +10,7 @@ import { decrypt } from '../utils/encryption';
 /**
  * 한국 주식 그리드 봇 전용 엔진.
  *
+ * 자세한 사양: docs/superpowers/specs/2026-06-29-korean-stock-grid-design.md
  * - 코인 bot-engine.service.ts는 절대 건드리지 않는다 (별도 엔진).
  * - 5초마다 1 cycle 실행 (KoreanStockGridAgent가 호출):
  *   1) 장 시간 외이고 shouldCancelPendingOrders=true면 미체결 일괄 취소 후 return
@@ -18,7 +19,7 @@ import { decrypt } from '../utils/encryption';
  * - 각 봇의 gridLevel.status='available' 중
  *   - BUY: currentPrice <= level.price → 매수 주문
  *   - SELL: currentPrice >= level.price → 매도 주문
- *   - 주문 성공 시 status='pending' + orderId 저장
+ *   - 주문 성공 시 status='pending' + orderId + clientOrderId 저장
  * - 체결 감지/SELL level 생성은 본 task 범위 밖 (후속 task).
  */
 export class KoreanStockBotEngine {
@@ -58,18 +59,15 @@ export class KoreanStockBotEngine {
    * 봇 1개 처리: credential 로드 → 시세 조회 → grid level별 매수/매도 판단.
    */
   private async processBot(bot: any): Promise<void> {
-    const cred = await (prisma as any).credential.findFirst({
-      where: { userId: bot.userId, exchange: 'toss', purpose: 'default' },
-    });
-    // credential 없거나 accountSeq 비어있으면 skip (getQuote 호출 X)
-    if (!cred || !cred.accountSeq) return;
+    const cred = await this.loadTossCredentials(bot.userId);
+    // credential 없거나 accountSeq 비어있으면 skip
+    if (!cred) return;
 
-    const clientId = decrypt(cred.apiKey);
-    const clientSecret = decrypt(cred.secretKey);
-    const accountSeq = cred.accountSeq;
-
-    const quote = await tossService.getQuote(clientId, clientSecret, bot.ticker);
-    const currentPrice = quote.price;
+    const prices = await tossService.getPrices(cred, [bot.ticker]);
+    const priceEntry = prices.find((p) => p.symbol === bot.ticker);
+    if (!priceEntry) return;
+    const currentPrice = Number(priceEntry.lastPrice);
+    if (!Number.isFinite(currentPrice) || currentPrice <= 0) return;
 
     for (const level of bot.gridLevels) {
       if (level.status !== 'available') continue;
@@ -78,34 +76,44 @@ export class KoreanStockBotEngine {
         // 매수 수량 = floor(주문금액 / level 가격)
         const qty = Math.floor(bot.orderAmount / level.price);
         if (qty < 1) continue;
+        const snapped = snapToTickSize(level.price);
 
-        const order = await tossService.placeOrder(clientId, clientSecret, accountSeq, {
-          code: bot.ticker,
+        const order = await tossService.placeOrder(cred, {
+          symbol: bot.ticker,
           side: 'BUY',
-          quantity: qty,
-          price: snapToTickSize(level.price),
           orderType: 'LIMIT',
+          quantity: String(qty),
+          price: String(snapped),
         });
         await (prisma as any).gridLevel.update({
           where: { id: level.id },
-          data: { status: 'pending', orderId: order.orderId },
+          data: {
+            status: 'pending',
+            orderId: order.orderId,
+            clientOrderId: order.clientOrderId,
+          },
         });
       } else if (level.type === 'sell' && currentPrice >= level.price) {
         // 매도 수량 산정에는 매수 시점 단가(buyPrice) 우선
         const referencePrice = level.buyPrice ?? level.price;
         const qty = Math.floor(bot.orderAmount / referencePrice);
         if (qty < 1) continue;
+        const snapped = snapToTickSize(level.price);
 
-        const order = await tossService.placeOrder(clientId, clientSecret, accountSeq, {
-          code: bot.ticker,
+        const order = await tossService.placeOrder(cred, {
+          symbol: bot.ticker,
           side: 'SELL',
-          quantity: qty,
-          price: snapToTickSize(level.price),
           orderType: 'LIMIT',
+          quantity: String(qty),
+          price: String(snapped),
         });
         await (prisma as any).gridLevel.update({
           where: { id: level.id },
-          data: { status: 'pending', orderId: order.orderId },
+          data: {
+            status: 'pending',
+            orderId: order.orderId,
+            clientOrderId: order.clientOrderId,
+          },
         });
       }
     }
@@ -128,20 +136,30 @@ export class KoreanStockBotEngine {
 
     for (const level of pendingLevels) {
       try {
-        const cred = await (prisma as any).credential.findFirst({
-          where: { userId: level.bot.userId, exchange: 'toss', purpose: 'default' },
-        });
-        if (!cred || !cred.accountSeq) continue;
+        const cred = await this.loadTossCredentials(level.bot.userId);
+        if (!cred) continue;
 
-        await tossService.cancelOrder(
-          decrypt(cred.apiKey),
-          decrypt(cred.secretKey),
-          cred.accountSeq,
-          level.orderId!,
-        );
+        try {
+          await tossService.cancelOrder(cred, level.orderId!);
+        } catch (e) {
+          // already-filled/canceled/modified/rejected는 서버 상태로 확정된 것 → 로컬 상태 재동기화
+          if (
+            e instanceof TossApiError &&
+            (e.code === 'already-filled' ||
+              e.code === 'already-canceled' ||
+              e.code === 'already-modified' ||
+              e.code === 'already-rejected' ||
+              e.code === 'order-not-found')
+          ) {
+            // 로그만 남기고 GridLevel은 아래에서 정리
+          } else {
+            throw e;
+          }
+        }
+
         await (prisma as any).gridLevel.update({
           where: { id: level.id },
-          data: { status: 'available', orderId: null },
+          data: { status: 'available', orderId: null, clientOrderId: null },
         });
       } catch (e: any) {
         console.error(
@@ -150,6 +168,22 @@ export class KoreanStockBotEngine {
         );
       }
     }
+  }
+
+  /**
+   * userId로 토스 credential 로드 후 { clientId, clientSecret, accountSeq } 반환.
+   * accountSeq 미등록 시 null.
+   */
+  private async loadTossCredentials(userId: number): Promise<TossCredentials | null> {
+    const cred = await (prisma as any).credential.findFirst({
+      where: { userId, exchange: 'toss', purpose: 'default' },
+    });
+    if (!cred || !cred.accountSeq) return null;
+    return {
+      clientId: decrypt(cred.apiKey),
+      clientSecret: decrypt(cred.secretKey),
+      accountSeq: cred.accountSeq,
+    };
   }
 }
 

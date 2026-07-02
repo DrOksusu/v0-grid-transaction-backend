@@ -89,7 +89,8 @@ model GridLevel {
   price     Float
   type      TradeType
   status    GridLevelStatus @default(available)
-  orderId   String?
+  orderId       String?
+  clientOrderId String?   @db.VarChar(64)
   filledAt  DateTime?
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt

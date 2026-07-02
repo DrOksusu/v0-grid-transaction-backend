@@ -1,0 +1,2004 @@
+[
+  {
+    "method": "POST",
+    "path": "/oauth2/token",
+    "summary": "OAuth2 액세스 토큰 발급",
+    "description": "OAuth 2.0 Client Credentials Grant 로 access token 을 발급합니다.\n\n- 요청 본문은 `application/x-www-form-urlencoded` 으로 전송합니다.\n- 발급된 token 은 다른 모든 API 의 `Authorization: Bearer {access_token}` 헤더에 사용합니다.\n- 응답 형식은 BFF 공통 envelope 이 아닌 OAuth2 표준 형식을 따릅니다.\n- refresh token 은 제공되지 않습니다. 만료 시 동일 엔드포인트로 재발급합니다.\n- client 당 유효한 access token 은 1 개입니다. 재발급 시 이전에 발급된 token 은 즉시 무효화됩니다.\n\n**Rate Limits Group**: `AUTH`\n",
+    "operationId": "issueOAuth2Token",
+    "tags": [
+      "Auth"
+    ],
+    "parameters": [],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/x-www-form-urlencoded": {
+          "schema": {
+            "type": "[max depth]",
+            "description": "[max depth]",
+            "required": "[max depth]",
+            "properties": "[max depth]"
+          },
+          "example": {
+            "grant_type": "client_credentials",
+            "client_id": "c_01HXYZABCDEFG123456789",
+            "client_secret": "s_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "토큰 발급 성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "example": {
+              "access_token": "eyJraWQiOiIyMDI2LTA0LTAxLWtleSIsImFsZyI6IlJTMjU2In0.eyJzdWIiOiJjXzAxSFhZWiJ9...",
+              "token_type": "Bearer",
+              "expires_in": 86400
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "잘못된 요청.\n필수 파라미터 누락, 지원하지 않는 grant_type 등.\n",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "invalidRequest": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "unsupportedGrantType": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "401": {
+        "description": "클라이언트 인증 실패.\n`client_id` / `client_secret` 가 잘못되었거나 클라이언트가 비활성 상태인 경우.\n",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "Basic 인증 챌린지. 토큰 엔드포인트는 `Basic realm=\"openapi\"` 로 응답합니다.\n",
+            "schema": {
+              "type": "string"
+            },
+            "example": "Basic realm=\"openapi\""
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "example": {
+              "error": "invalid_client",
+              "error_description": "Client authentication failed."
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/prices",
+    "summary": "현재가 조회",
+    "description": "종목의 현재가 정보를 조회합니다. 최대 200건 까지 다건 조회를 지원하며 콤마(`,`)로 구분합니다.\n\n**Rate Limits Group**: `MARKET_DATA`\n",
+    "operationId": "getPrices",
+    "tags": [
+      "Market Data"
+    ],
+    "parameters": [
+      {
+        "name": "symbols",
+        "in": "query",
+        "required": true,
+        "description": "종목 심볼. 최대 200 개를 콤마(`,`)로 구분. 예: `005930,000660` 또는 `AAPL,MSFT`. 영문 대/소문자, 숫자, '.', '-' 만 허용한다.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9.,\\-]+$"
+        },
+        "example": "005930,000660"
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                "[max depth]",
+                "[max depth]"
+              ]
+            },
+            "examples": {
+              "krStock": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "usStock": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "잘못된 요청",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "invalidBatchSize": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "404": {
+        "description": "종목을 찾을 수 없음",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "시세 조회 중 일시적 오류",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/stocks",
+    "summary": "종목 기본 정보 조회",
+    "description": "종목의 기본 정보를 조회합니다. `symbols` 를 콤마로 구분하여 최대 200건 까지 다건 조회를 지원합니다.\n종목명, 시장, 통화, 상장 상태, 거래정지 여부 등 트레이딩에서 필요한 참조 데이터를 제공합니다.\n\n**Rate Limits Group**: `STOCK`\n",
+    "operationId": "getStocks",
+    "tags": [
+      "Stock Info"
+    ],
+    "parameters": [
+      {
+        "name": "symbols",
+        "in": "query",
+        "required": true,
+        "description": "종목 심볼. 콤마로 구분하여 최대 200건. 예: 005930 또는 005930,AAPL. 영문 대/소문자, 숫자, '.', '-' 만 허용한다.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9.,\\-]+$"
+        },
+        "example": "005930,AAPL"
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                "[max depth]",
+                "[max depth]"
+              ]
+            },
+            "examples": {
+              "multiple": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "krxStock": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "usStock": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "etf": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "잘못된 요청",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "tooManySymbols": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "401": {
+        "description": "인증 실패. `WWW-Authenticate: Bearer ...` 헤더가 함께 내려갑니다.\n",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "OAuth 2.0 Bearer 토큰 챌린지. 메시지에 non-ASCII 문자가 포함되는 경우\n`error_description` 파라미터는 생략됩니다.\n",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": "Bearer realm=\"openapi\", error=\"invalid_token\", error_description=\"Token has expired\""
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "examples": {
+              "invalidToken": "[max depth]",
+              "expiredToken": "[max depth]",
+              "loginUserNotFound": "[max depth]"
+            }
+          }
+        }
+      },
+      "403": {
+        "description": "권한 부족",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "종목 심볼 조회 중 일시적 오류",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/price-limits",
+    "summary": "상/하한가 조회",
+    "description": "종목의 당일 상한가 및 하한가를 조회합니다.\n\n**Rate Limits Group**: `MARKET_DATA`\n",
+    "operationId": "getPriceLimit",
+    "tags": [
+      "Market Data"
+    ],
+    "parameters": [
+      {
+        "name": "symbol",
+        "in": "query",
+        "required": true,
+        "description": "종목 심볼. KRX: 6자리 숫자 (예: 005930), US: 영문 티커 (예: AAPL). 영문 대/소문자, 숫자, '.', '-' 만 허용한다.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9.\\-]+$"
+        },
+        "examples": {
+          "krx": {
+            "summary": "삼성전자",
+            "value": "005930"
+          },
+          "us": {
+            "summary": "Apple",
+            "value": "AAPL"
+          }
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                "[max depth]",
+                "[max depth]"
+              ]
+            },
+            "examples": {
+              "krStock": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "usStock": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "404": {
+        "description": "종목을 찾을 수 없음",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "시세 조회 중 일시적 오류",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/accounts",
+    "summary": "계좌 목록 조회",
+    "description": "사용자의 계좌 목록을 조회합니다.\n\n- 현재는 **종합매매 (`BROKERAGE`) 계좌만 반환**하며, 계좌가 없으면 빈 배열. 자녀계좌는 사용할 수 없습니다.\n- 응답의 `accountSeq` 는 **다른 모든 사용자 컨텍스트 API** (보유 주식, 주문, 매수가능금액 등) 의 `X-Tossinvest-Account` 헤더에 사용합니다.\n- `accountType` enum 은 `BROKERAGE` / `OVERSEAS_DERIVATIVES` / `PENSION_SAVINGS` / `RESHORING_INVESTMENT` 가 정의되어 있으나 본 API 에서는 현재 `BROKERAGE` 만 노출됩니다. enum 의미는 `Account.accountType` schema 참조.\n\n**Rate Limits Group**: `ACCOUNT`\n",
+    "operationId": "getAccounts",
+    "tags": [
+      "Account"
+    ],
+    "parameters": [],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                "[max depth]",
+                "[max depth]"
+              ]
+            },
+            "examples": {
+              "brokerageAccount": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "emptyAccounts": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "401": {
+        "description": "인증 실패. `WWW-Authenticate: Bearer ...` 헤더가 함께 내려갑니다.\n",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "OAuth 2.0 Bearer 토큰 챌린지. 메시지에 non-ASCII 문자가 포함되는 경우\n`error_description` 파라미터는 생략됩니다.\n",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": "Bearer realm=\"openapi\", error=\"invalid_token\", error_description=\"Token has expired\""
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "examples": {
+              "invalidToken": "[max depth]",
+              "expiredToken": "[max depth]",
+              "loginUserNotFound": "[max depth]"
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "서비스 일시 불가",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/holdings",
+    "summary": "보유 주식 조회",
+    "description": "보유 주식 정보를 조회합니다.\n국내(KR)·미국(US) 주식만 포함하며, 해외 옵션·채권은 제외합니다.\n보유 종목이 없으면 요약 금액은 0이고 items는 빈 배열입니다.\n\n**Rate Limits Group**: `ASSET`\n",
+    "operationId": "getHoldings",
+    "tags": [
+      "Asset"
+    ],
+    "parameters": [
+      {
+        "name": "X-Tossinvest-Account",
+        "in": "header",
+        "required": true,
+        "description": "API 요청 시 사용할 계좌의 accountSeq.\n`GET /api/v1/accounts` 응답의 `accountSeq` 값을 사용합니다.\n",
+        "schema": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "example": 1
+      },
+      {
+        "name": "symbol",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9.\\-]+$"
+        },
+        "description": "종목 심볼. KR: 6자리 숫자 (예: 005930), US: 티커 (예: AAPL).\n영문 대/소문자, 숫자, '.', '-' 만 허용한다.\n제공 시 해당 종목만 필터링하여 반환하며, 요약 필드도 해당 종목 기준으로 재계산합니다.\n미제공 시 전체 보유 종목을 반환합니다.\n",
+        "example": "005930"
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                "[max depth]",
+                "[max depth]"
+              ]
+            },
+            "examples": {
+              "withHoldings": {
+                "summary": "[max depth]",
+                "description": "[max depth]",
+                "value": "[max depth]"
+              },
+              "filteredBySymbol": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "filteredByUsSymbol": {
+                "summary": "[max depth]",
+                "description": "[max depth]",
+                "value": "[max depth]"
+              },
+              "filteredBySymbolNotFound": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "emptyHoldings": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "X-Tossinvest-Account 헤더 누락",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "401": {
+        "description": "인증 실패. `WWW-Authenticate: Bearer ...` 헤더가 함께 내려갑니다.\n",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "OAuth 2.0 Bearer 토큰 챌린지. 메시지에 non-ASCII 문자가 포함되는 경우\n`error_description` 파라미터는 생략됩니다.\n",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": "Bearer realm=\"openapi\", error=\"invalid_token\", error_description=\"Token has expired\""
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "examples": {
+              "invalidToken": "[max depth]",
+              "expiredToken": "[max depth]",
+              "loginUserNotFound": "[max depth]"
+            }
+          }
+        }
+      },
+      "404": {
+        "description": "종목을 찾을 수 없음",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "보유 자산 조회 중 일시적 오류",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/orders",
+    "summary": "주문 생성",
+    "description": "매수 또는 매도 주문을 생성합니다.\n\n**수량 지정 방식** — `quantity`, `orderAmount` 중 정확히 하나를 사용:\n- `quantity`: 주문 수량 (주 단위). 지정한 수량만큼 주문. 소수점 수량은 미국 주식 시장가 매도(`MARKET`+`SELL`)에만 허용 (그 외는 정수만)\n- `orderAmount`: 주문 금액 (달러). 지정한 금액만큼 주문하며, 체결 수량은 시장가에 따라 결정. US MARKET 전용\n\n**금액 주문 (`orderAmount`)**: 정규장 시간에만 가능합니다. 정규장 외 시간에 호출 시 `422 amount-order-outside-regular-hours` 를 반환합니다.\n\n**Rate Limits Group**: `ORDER`\n",
+    "operationId": "createOrder",
+    "tags": [
+      "Order"
+    ],
+    "parameters": [
+      {
+        "name": "X-Tossinvest-Account",
+        "in": "header",
+        "required": true,
+        "description": "API 요청 시 사용할 계좌의 accountSeq.\n`GET /api/v1/accounts` 응답의 `accountSeq` 값을 사용합니다.\n",
+        "schema": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "example": 1
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "oneOf": "[max depth]"
+          },
+          "examples": {
+            "krLimitBuy": {
+              "summary": "[max depth]",
+              "value": "[max depth]"
+            },
+            "usMarketBuyAmount": {
+              "summary": "[max depth]",
+              "value": "[max depth]"
+            },
+            "usMarketSellFractionalQuantity": {
+              "summary": "[max depth]",
+              "value": "[max depth]"
+            },
+            "usLocBuy": {
+              "summary": "[max depth]",
+              "value": "[max depth]"
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                "[max depth]",
+                "[max depth]"
+              ]
+            },
+            "example": {
+              "result": {
+                "orderId": "[max depth]",
+                "clientOrderId": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "잘못된 요청",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "invalidOrderType": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "invalidTimeInForce": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "clsConditionNotMet": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "invalidSide": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "quantityOrAmountRequired": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "limitPriceRequired": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "invalidTickSize": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "confirmHighValueRequired": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "amountUsMarketOnly": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "invalidQuantityFormat": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "fractionalQuantityUsSellOnly": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "fractionalQuantityScaleExceeded": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "accountHeaderRequired": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "401": {
+        "description": "인증 실패. `WWW-Authenticate: Bearer ...` 헤더가 함께 내려갑니다.\n",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "OAuth 2.0 Bearer 토큰 챌린지. 메시지에 non-ASCII 문자가 포함되는 경우\n`error_description` 파라미터는 생략됩니다.\n",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": "Bearer realm=\"openapi\", error=\"invalid_token\", error_description=\"Token has expired\""
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "examples": {
+              "invalidToken": "[max depth]",
+              "expiredToken": "[max depth]",
+              "loginUserNotFound": "[max depth]"
+            }
+          }
+        }
+      },
+      "409": {
+        "description": "중복 요청",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "requestInProgress": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "비즈니스 규칙 위반",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "insufficientBuyingPower": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "outsideOrderHours": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "stockRestricted": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "priceOutOfRange": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "oppositePendingOrderExists": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "orderTypeNotAllowed": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "prerequisiteRequired": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "marketNotSupportedForStock": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "investorExchangeNotIntegrated": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "amountOrderOutsideRegularHours": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "fractionalQuantityOutsideRegularHours": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "accountRestricted": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "maxOrderAmountExceeded": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "idempotencyKeyConflict": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "주문 처리 중 일시적 오류 또는 시스템 점검",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "internalError": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "maintenance": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/orders/{orderId}/cancel",
+    "summary": "주문 취소",
+    "description": "기존 주문을 취소합니다. 이미 체결된 주문은 취소할 수 없습니다.\n\n**Rate Limits Group**: `ORDER`\n",
+    "operationId": "cancelOrder",
+    "tags": [
+      "Order"
+    ],
+    "parameters": [
+      {
+        "name": "X-Tossinvest-Account",
+        "in": "header",
+        "required": true,
+        "description": "API 요청 시 사용할 계좌의 accountSeq.\n`GET /api/v1/accounts` 응답의 `accountSeq` 값을 사용합니다.\n",
+        "schema": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "example": 1
+      },
+      {
+        "name": "orderId",
+        "in": "path",
+        "required": true,
+        "description": "주문 식별자.\n서버에서 발급한 opaque token 입니다.\n",
+        "schema": {
+          "type": "string"
+        },
+        "example": "0d5QIHjmtksbsmM-hBRAgP-ExI8iodGm9fAR5txelPfnMM8XQ_swoJdwL5RpGWMo"
+      }
+    ],
+    "requestBody": {
+      "required": false,
+      "content": {
+        "application/json": {
+          "schema": {
+            "type": "object"
+          },
+          "example": {}
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                "[max depth]",
+                "[max depth]"
+              ]
+            },
+            "example": {
+              "result": {
+                "orderId": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "X-Tossinvest-Account 헤더 누락",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "401": {
+        "description": "인증 실패. `WWW-Authenticate: Bearer ...` 헤더가 함께 내려갑니다.\n",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "OAuth 2.0 Bearer 토큰 챌린지. 메시지에 non-ASCII 문자가 포함되는 경우\n`error_description` 파라미터는 생략됩니다.\n",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": "Bearer realm=\"openapi\", error=\"invalid_token\", error_description=\"Token has expired\""
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "examples": {
+              "invalidToken": "[max depth]",
+              "expiredToken": "[max depth]",
+              "loginUserNotFound": "[max depth]"
+            }
+          }
+        }
+      },
+      "404": {
+        "description": "주문을 찾을 수 없음",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "409": {
+        "description": "취소 불가 상태",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "alreadyFilled": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "alreadyCanceled": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "alreadyModified": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "rejectedOrder": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "alreadyProcessing": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "비즈니스 규칙 위반",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "cancelRestricted": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "outsideOrderHours": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "주문 처리 중 일시적 오류",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/market-calendar/KR",
+    "summary": "국내 장 운영 정보 조회",
+    "description": "국내 시장의 거래 가능 시간을 조회합니다. 통합 모드 (KRX+NXT) 기준이며, 특수장(시간외종가/시간외단일가)은 제외됩니다. 전일/당일/익일 3영업일 정보를 반환합니다. 모든 시간은 KST(+09:00) 기준.\n\n**Rate Limits Group**: `MARKET_INFO`\n",
+    "operationId": "getKrMarketCalendar",
+    "tags": [
+      "Market Info"
+    ],
+    "parameters": [
+      {
+        "name": "date",
+        "in": "query",
+        "required": false,
+        "description": "조회 기준일 (YYYY-MM-DD)",
+        "schema": {
+          "type": "string",
+          "format": "date"
+        },
+        "example": "2026-03-25"
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                "[max depth]",
+                "[max depth]"
+              ]
+            },
+            "examples": {
+              "businessDay": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "holidayToday": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "nxtPreMarketHoliday": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "잘못된 요청",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "unsupportedDate": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "시장 정보 조회 중 일시적 오류",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/buying-power",
+    "summary": "매수 가능 금액 조회",
+    "description": "매수 주문 시 사용할 수 있는 매수 가능 금액을 조회합니다.\n미수거래를 제외한 현금 기반 매수 가능 금액(미수 미발생 기준)을 반환합니다.\n\n**Rate Limits Group**: `ORDER_INFO`\n",
+    "operationId": "getBuyingPower",
+    "tags": [
+      "Order Info"
+    ],
+    "parameters": [
+      {
+        "name": "X-Tossinvest-Account",
+        "in": "header",
+        "required": true,
+        "description": "API 요청 시 사용할 계좌의 accountSeq.\n`GET /api/v1/accounts` 응답의 `accountSeq` 값을 사용합니다.\n",
+        "schema": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "example": 1
+      },
+      {
+        "name": "currency",
+        "in": "query",
+        "required": true,
+        "description": "통화 코드",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "KRW",
+            "USD"
+          ],
+          "description": "통화 코드.\n- KRW: 한국 원화\n- USD: 미국 달러\n\n클라이언트는 unknown enum 값을 허용하도록 구현해야 합니다.\n"
+        },
+        "examples": {
+          "krw": {
+            "summary": "원화",
+            "value": "KRW"
+          },
+          "usd": {
+            "summary": "달러",
+            "value": "USD"
+          }
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                "[max depth]",
+                "[max depth]"
+              ]
+            },
+            "examples": {
+              "krw": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "usd": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "잘못된 요청",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "unsupportedCurrency": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "accountHeaderRequired": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "401": {
+        "description": "인증 실패. `WWW-Authenticate: Bearer ...` 헤더가 함께 내려갑니다.\n",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "OAuth 2.0 Bearer 토큰 챌린지. 메시지에 non-ASCII 문자가 포함되는 경우\n`error_description` 파라미터는 생략됩니다.\n",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": "Bearer realm=\"openapi\", error=\"invalid_token\", error_description=\"Token has expired\""
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "examples": {
+              "invalidToken": "[max depth]",
+              "expiredToken": "[max depth]",
+              "loginUserNotFound": "[max depth]"
+            }
+          }
+        }
+      },
+      "404": {
+        "description": "계좌 없음",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "accountNotFound": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "거래 가능 정보 조회 중 일시적 오류",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/sellable-quantity",
+    "summary": "판매 가능 수량 조회",
+    "description": "특정 종목의 판매 가능 수량을 조회합니다.\n\n**Rate Limits Group**: `ORDER_INFO`\n",
+    "operationId": "getSellableQuantity",
+    "tags": [
+      "Order Info"
+    ],
+    "parameters": [
+      {
+        "name": "X-Tossinvest-Account",
+        "in": "header",
+        "required": true,
+        "description": "API 요청 시 사용할 계좌의 accountSeq.\n`GET /api/v1/accounts` 응답의 `accountSeq` 값을 사용합니다.\n",
+        "schema": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "example": 1
+      },
+      {
+        "name": "symbol",
+        "in": "query",
+        "required": true,
+        "description": "종목 심볼. KRX: 6자리 숫자 (예: 005930), US: 영문 티커 (예: AAPL). 영문 대/소문자, 숫자, '.', '-' 만 허용한다.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9.\\-]+$"
+        },
+        "examples": {
+          "krx": {
+            "summary": "삼성전자",
+            "value": "005930"
+          },
+          "us": {
+            "summary": "Apple",
+            "value": "AAPL"
+          }
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                "[max depth]",
+                "[max depth]"
+              ]
+            },
+            "examples": {
+              "kr": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "us": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "잘못된 요청",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "accountNotFound": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "accountHeaderRequired": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "401": {
+        "description": "인증 실패. `WWW-Authenticate: Bearer ...` 헤더가 함께 내려갑니다.\n",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "OAuth 2.0 Bearer 토큰 챌린지. 메시지에 non-ASCII 문자가 포함되는 경우\n`error_description` 파라미터는 생략됩니다.\n",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": "Bearer realm=\"openapi\", error=\"invalid_token\", error_description=\"Token has expired\""
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "examples": {
+              "invalidToken": "[max depth]",
+              "expiredToken": "[max depth]",
+              "loginUserNotFound": "[max depth]"
+            }
+          }
+        }
+      },
+      "404": {
+        "description": "종목을 찾을 수 없음",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "거래 가능 정보 조회 중 일시적 오류",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/commissions",
+    "summary": "매매 수수료 조회",
+    "description": "현재 계좌의 시장별 매매 수수료율을 조회합니다.\n국내주식과 해외주식의 수수료 정보를 배열로 반환합니다.\n\n**Rate Limits Group**: `ORDER_INFO`\n",
+    "operationId": "getCommissions",
+    "tags": [
+      "Order Info"
+    ],
+    "parameters": [
+      {
+        "name": "X-Tossinvest-Account",
+        "in": "header",
+        "required": true,
+        "description": "API 요청 시 사용할 계좌의 accountSeq.\n`GET /api/v1/accounts` 응답의 `accountSeq` 값을 사용합니다.\n",
+        "schema": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "example": 1
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "성공",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                "[max depth]",
+                "[max depth]"
+              ]
+            },
+            "examples": {
+              "standard": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "unlimited": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "잘못된 요청",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "[max depth]",
+              "description": "[max depth]",
+              "required": "[max depth]",
+              "properties": "[max depth]"
+            },
+            "examples": {
+              "accountNotFound": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              },
+              "accountHeaderRequired": {
+                "summary": "[max depth]",
+                "value": "[max depth]"
+              }
+            }
+          }
+        }
+      },
+      "401": {
+        "description": "인증 실패. `WWW-Authenticate: Bearer ...` 헤더가 함께 내려갑니다.\n",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "OAuth 2.0 Bearer 토큰 챌린지. 메시지에 non-ASCII 문자가 포함되는 경우\n`error_description` 파라미터는 생략됩니다.\n",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": "Bearer realm=\"openapi\", error=\"invalid_token\", error_description=\"Token has expired\""
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "examples": {
+              "invalidToken": "[max depth]",
+              "expiredToken": "[max depth]",
+              "loginUserNotFound": "[max depth]"
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "요청 한도 초과. 포함 헤더의 의미는 아래 `headers` 정의를 참조합니다.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "description": "현재 허용된 초당 요청 수 (burst capacity)",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 10
+          },
+          "X-RateLimit-Remaining": {
+            "description": "현재 버킷에 남은 토큰 수. 429 시 0.",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 0
+          },
+          "X-RateLimit-Reset": {
+            "description": "토큰 1 개가 재충전될 때까지 예상 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          },
+          "Retry-After": {
+            "description": "재시도 권장 초",
+            "schema": {
+              "type": "[max depth]"
+            },
+            "example": 1
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "거래 가능 정보 조회 중 일시적 오류",
+        "content": {
+          "application/json": {
+            "schema": "[max depth]",
+            "example": {
+              "error": "[max depth]"
+            }
+          }
+        }
+      }
+    }
+  }
+]

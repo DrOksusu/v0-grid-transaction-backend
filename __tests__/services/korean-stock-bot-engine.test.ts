@@ -1,13 +1,18 @@
 import { koreanStockBotEngine } from '../../src/services/korean-stock-bot-engine.service';
 import * as marketHours from '../../src/services/korean-stock-market-hours.service';
-import { tossService } from '../../src/services/toss.service';
+import { tossService, TossApiError } from '../../src/services/toss.service';
 
 jest.mock('../../src/services/korean-stock-market-hours.service');
 jest.mock('../../src/services/toss.service', () => ({
   tossService: {
-    getQuote: jest.fn(),
+    getPrices: jest.fn(),
     placeOrder: jest.fn(),
     cancelOrder: jest.fn(),
+  },
+  TossApiError: class TossApiError extends Error {
+    constructor(public code: string, message: string, public httpStatus: number) {
+      super(message);
+    }
   },
 }));
 // encryption / database 모킹은 jest.config의 moduleNameMapper로 자동 적용됨.
@@ -38,7 +43,7 @@ describe('KoreanStockBotEngine.runCycle', () => {
 
     await koreanStockBotEngine.runCycle();
 
-    expect(tossService.getQuote).not.toHaveBeenCalled();
+    expect(tossService.getPrices).not.toHaveBeenCalled();
     expect(dbMock.gridLevel.findMany).not.toHaveBeenCalled();
     expect(dbMock.bot.findMany).not.toHaveBeenCalled();
   });
@@ -56,7 +61,7 @@ describe('KoreanStockBotEngine.runCycle', () => {
     );
   });
 
-  it('장 시간 + BUY level 현재가 도달 → placeOrder BUY + gridLevel pending', async () => {
+  it('장 시간 + BUY level 현재가 도달 → placeOrder BUY(decimal string) + gridLevel pending', async () => {
     mockIsMarketOpen.mockResolvedValue(true);
     dbMock.bot.findMany.mockResolvedValueOnce([
       {
@@ -70,34 +75,36 @@ describe('KoreanStockBotEngine.runCycle', () => {
     dbMock.credential.findFirst.mockResolvedValueOnce({
       apiKey: 'encrypted_id',
       secretKey: 'encrypted_sec',
-      accountSeq: 'acc_1',
+      accountSeq: '1',
     });
-    (tossService.getQuote as jest.Mock).mockResolvedValueOnce({
-      code: '005930',
-      price: 74500,
-      timestamp: '',
-    });
+    (tossService.getPrices as jest.Mock).mockResolvedValueOnce([
+      { symbol: '005930', lastPrice: '74500', currency: 'KRW' },
+    ]);
     (tossService.placeOrder as jest.Mock).mockResolvedValueOnce({
       orderId: 'ord_42',
-      status: 'pending',
+      clientOrderId: 'cli_42',
     });
 
     await koreanStockBotEngine.runCycle();
 
+    // cred 객체로 호출
     expect(tossService.placeOrder).toHaveBeenCalledWith(
-      'id',
-      'sec',
-      'acc_1',
       expect.objectContaining({
-        code: '005930',
+        clientId: 'id',
+        clientSecret: 'sec',
+        accountSeq: '1',
+      }),
+      expect.objectContaining({
+        symbol: '005930',
         side: 'BUY',
-        price: 75000,
         orderType: 'LIMIT',
+        quantity: '1', // floor(100000/75000)=1
+        price: '75000',
       }),
     );
     expect(dbMock.gridLevel.update).toHaveBeenCalledWith({
       where: { id: 11 },
-      data: { status: 'pending', orderId: 'ord_42' },
+      data: { status: 'pending', orderId: 'ord_42', clientOrderId: 'cli_42' },
     });
   });
 
@@ -117,29 +124,25 @@ describe('KoreanStockBotEngine.runCycle', () => {
     dbMock.credential.findFirst.mockResolvedValueOnce({
       apiKey: 'encrypted_e1',
       secretKey: 'encrypted_e2',
-      accountSeq: 'a1',
+      accountSeq: '9',
     });
-    (tossService.getQuote as jest.Mock).mockResolvedValueOnce({
-      code: '005930',
-      price: 78500,
-      timestamp: '',
-    });
+    (tossService.getPrices as jest.Mock).mockResolvedValueOnce([
+      { symbol: '005930', lastPrice: '78500', currency: 'KRW' },
+    ]);
     (tossService.placeOrder as jest.Mock).mockResolvedValueOnce({
       orderId: 'ord_99',
-      status: 'pending',
+      clientOrderId: 'cli_99',
     });
 
     await koreanStockBotEngine.runCycle();
 
     expect(tossService.placeOrder).toHaveBeenCalledWith(
-      'e1',
-      'e2',
-      'a1',
-      expect.objectContaining({ side: 'SELL', price: 78000 }),
+      expect.objectContaining({ clientId: 'e1', clientSecret: 'e2', accountSeq: '9' }),
+      expect.objectContaining({ side: 'SELL', price: '78000', quantity: '1' }),
     );
   });
 
-  it('credentials 없으면 봇 skip (getQuote 호출 안함)', async () => {
+  it('credentials 없으면 봇 skip (getPrices 호출 안함)', async () => {
     mockIsMarketOpen.mockResolvedValue(true);
     dbMock.bot.findMany.mockResolvedValueOnce([
       {
@@ -154,7 +157,7 @@ describe('KoreanStockBotEngine.runCycle', () => {
 
     await koreanStockBotEngine.runCycle();
 
-    expect(tossService.getQuote).not.toHaveBeenCalled();
+    expect(tossService.getPrices).not.toHaveBeenCalled();
     expect(tossService.placeOrder).not.toHaveBeenCalled();
   });
 
@@ -170,11 +173,11 @@ describe('KoreanStockBotEngine.runCycle', () => {
       },
     ]);
     dbMock.credential.findFirst.mockResolvedValueOnce({
-      apiKey: 'e1',
-      secretKey: 'e2',
-      accountSeq: 'a1',
+      apiKey: 'encrypted_e1',
+      secretKey: 'encrypted_e2',
+      accountSeq: '1',
     });
-    (tossService.getQuote as jest.Mock).mockRejectedValueOnce(new Error('Toss API down'));
+    (tossService.getPrices as jest.Mock).mockRejectedValueOnce(new Error('Toss API down'));
 
     await koreanStockBotEngine.runCycle();
 

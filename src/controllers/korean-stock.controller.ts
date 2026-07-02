@@ -1,6 +1,7 @@
 import { Response, NextFunction } from 'express';
 import prisma from '../config/database';
-import { tossService } from '../services/toss.service';
+import { tossService, TossCredentials } from '../services/toss.service';
+import { resolveKoreanStockSymbol } from '../services/korean-stock-symbol.service';
 import {
   simulateGridProfit,
   DEFAULT_FEE_RATE,
@@ -15,6 +16,19 @@ import { decrypt } from '../utils/encryption';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 
+// userId → 토스 credential 로드 헬퍼. accountSeq 없으면 null.
+async function loadTossCredentials(userId: number): Promise<TossCredentials | null> {
+  const cred = await prisma.credential.findFirst({
+    where: { userId, exchange: 'toss', purpose: 'default' },
+  });
+  if (!cred || !cred.accountSeq) return null;
+  return {
+    clientId: decrypt(cred.apiKey),
+    clientSecret: decrypt(cred.secretKey),
+    accountSeq: cred.accountSeq,
+  };
+}
+
 // GET /api/korean-stocks/symbols/search?q=삼성&limit=20
 export const searchSymbols = async (
   req: AuthRequest,
@@ -22,6 +36,7 @@ export const searchSymbols = async (
   next: NextFunction
 ) => {
   try {
+    const userId = req.userId!;
     const q = String(req.query.q || '').trim();
     const limit = Math.min(Number(req.query.limit) || 20, 50);
     if (q.length < 1) return successResponse(res, []);
@@ -37,6 +52,16 @@ export const searchSymbols = async (
       take: limit,
       orderBy: { name: 'asc' },
     });
+
+    // spec § 10 lazy resolve: DB miss + q가 6자리 종목코드면 토스 stocks API로 1회 조회 후 upsert
+    if (symbols.length === 0 && /^\d{6}$/.test(q)) {
+      const cred = await loadTossCredentials(userId);
+      if (cred) {
+        const resolved = await resolveKoreanStockSymbol(cred, q);
+        if (resolved) return successResponse(res, [resolved]);
+      }
+    }
+
     return successResponse(res, symbols);
   } catch (e) {
     next(e);
@@ -74,6 +99,7 @@ export const simulate = async (
 };
 
 // GET /api/korean-stocks/balance
+// spec § 4: KRW 매수가능금액 + 보유주식 조회 조합 (accountSeq는 credential에 저장되어 있음)
 export const getBalance = async (
   req: AuthRequest,
   res: Response,
@@ -81,10 +107,8 @@ export const getBalance = async (
 ) => {
   try {
     const userId = req.userId!;
-    const cred = await prisma.credential.findFirst({
-      where: { userId, exchange: 'toss', purpose: 'default' },
-    });
-    if (!cred || !cred.accountSeq) {
+    const cred = await loadTossCredentials(userId);
+    if (!cred) {
       return errorResponse(
         res,
         'CREDENTIAL_NOT_FOUND',
@@ -92,12 +116,25 @@ export const getBalance = async (
         400
       );
     }
-    const balance = await tossService.getAccountBalance(
-      decrypt(cred.apiKey),
-      decrypt(cred.secretKey),
-      cred.accountSeq
-    );
-    return successResponse(res, balance);
+    const [buyingPower, holdings] = await Promise.all([
+      tossService.getBuyingPower(cred, 'KRW'),
+      tossService.getHoldings(cred),
+    ]);
+    return successResponse(res, {
+      currency: 'KRW',
+      cashBuyingPower: buyingPower.cashBuyingPower,
+      krwBalance: Number(buyingPower.cashBuyingPower),
+      totalPurchaseAmount: holdings.totalPurchaseAmount,
+      holdings: holdings.items.map((h) => ({
+        symbol: h.symbol,
+        name: h.name,
+        marketCountry: h.marketCountry,
+        currency: h.currency,
+        quantity: h.quantity,
+        lastPrice: h.lastPrice,
+        averagePurchasePrice: h.averagePurchasePrice,
+      })),
+    });
   } catch (e) {
     next(e);
   }
@@ -164,10 +201,29 @@ export const createBot = async (
       return errorResponse(res, 'PRICE_RANGE_INVALID', validation.reason!, 400);
     }
 
-    // 종목 존재 확인
-    const symbol = await prisma.koreanStockSymbol.findUnique({
+    // 종목 존재 확인 — spec § 10 lazy resolve
+    let symbol = await prisma.koreanStockSymbol.findUnique({
       where: { code: ticker },
     });
+    if (!symbol) {
+      const cred = await loadTossCredentials(userId);
+      if (cred) {
+        const resolved = await resolveKoreanStockSymbol(cred, ticker);
+        if (resolved) {
+          if (resolved.status && resolved.status !== 'ACTIVE') {
+            return errorResponse(
+              res,
+              'SYMBOL_NOT_TRADABLE',
+              `현재 거래 불가 종목: ${ticker} (status=${resolved.status})`,
+              400
+            );
+          }
+          symbol = await prisma.koreanStockSymbol.findUnique({
+            where: { code: ticker },
+          });
+        }
+      }
+    }
     if (!symbol) {
       return errorResponse(
         res,
