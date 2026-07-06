@@ -1,0 +1,40 @@
+# /etc/caddy/Caddyfile — grid.koco.me
+# 배포 위치: AWS Lightsail #3 (54.180.188.8), /etc/caddy/Caddyfile
+# 관리자: infra/Caddyfile을 리포에서 편집 → scp로 서버 반영 → `sudo caddy validate` → `sudo systemctl reload caddy`
+#
+# 히스토리
+# - 2026-07-06 grid.koco.me를 백엔드 전체 프록시에서 path 기반 라우팅으로 좁힘.
+#   * /api/*        → 백엔드 (기존 유지)
+#   * /socket.io/*  → 백엔드 WebSocket (기존 유지)
+#   * 그 외 path    → 신 Vercel 프론트(v0-grid-transaction.vercel.app)로 301 리다이렉트
+#   기대: 미래에 프론트를 grid.koco.me로 통합 이관하기 위한 자리 예약, 옛 프리뷰 사용자 신 배포로 유도.
+#   롤백 앵커(백엔드): 67091c2 (feat/korean-stock-grid HEAD 2026-07-03)
+#
+# 이전 버전 (백업)
+# grid.koco.me {
+#     reverse_proxy localhost:3010 {
+#         flush_interval -1
+#     }
+# }
+
+grid.koco.me {
+    # 백엔드 API (Express + Socket.IO 동일 프로세스)
+    handle /api/* {
+        reverse_proxy localhost:3010 {
+            flush_interval -1
+        }
+    }
+
+    # Socket.IO 실시간 채널 (봇 업데이트, 시세 스트림 등)
+    handle /socket.io/* {
+        reverse_proxy localhost:3010 {
+            flush_interval -1
+        }
+    }
+
+    # 프론트 이관 이전 자리 — 신 Vercel 배포로 리다이렉트하여 옛 프리뷰(v0-grid-transaction-frontend) 접근을 정리한다.
+    # 프론트가 grid.koco.me로 이관되면 이 handle 블록을 정적 산출물 서빙 또는 upstream 프록시로 교체한다.
+    handle {
+        redir https://v0-grid-transaction.vercel.app{uri} 301
+    }
+}
