@@ -3,19 +3,9 @@
 # 관리자: infra/Caddyfile을 리포에서 편집 → scp로 서버 반영 → `sudo caddy validate` → `sudo systemctl reload caddy`
 #
 # 히스토리
-# - 2026-07-06 grid.koco.me를 백엔드 전체 프록시에서 path 기반 라우팅으로 좁힘.
-#   * /api/*        → 백엔드 (기존 유지)
-#   * /socket.io/*  → 백엔드 WebSocket (기존 유지)
-#   * 그 외 path    → 신 Vercel 프론트(v0-grid-transaction.vercel.app)로 301 리다이렉트
-#   기대: 미래에 프론트를 grid.koco.me로 통합 이관하기 위한 자리 예약, 옛 프리뷰 사용자 신 배포로 유도.
-#   롤백 앵커(백엔드): 67091c2 (feat/korean-stock-grid HEAD 2026-07-03)
-#
-# 이전 버전 (백업)
-# grid.koco.me {
-#     reverse_proxy localhost:3010 {
-#         flush_interval -1
-#     }
-# }
+# - 2026-07-06 path 기반 라우팅 도입 (/api·/socket.io → 백엔드, 그 외 → Vercel 프론트 301 리다이렉트).
+# - 2026-07-07 프론트 grid.koco.me 자체호스팅 커토버 (그 외 path → 로컬 3001 컨테이너 프록시).
+# - 2026-07-09 Vercel(v0-grid-transaction) 리다이렉트 전용화 + 옛 프로젝트(v0-grid-transaction-frontend) 삭제 + 예행(grid-preview) 철거.
 
 grid.koco.me {
     # 백엔드 API (Express + Socket.IO 동일 프로세스)
@@ -32,9 +22,14 @@ grid.koco.me {
         }
     }
 
-    # 프론트 이관 이전 자리 — 신 Vercel 배포로 리다이렉트하여 옛 프리뷰(v0-grid-transaction-frontend) 접근을 정리한다.
-    # 프론트가 grid.koco.me로 이관되면 이 handle 블록을 정적 산출물 서빙 또는 upstream 프록시로 교체한다.
+    # 프론트 자체 호스팅 (2026-07-07 이관 완료): grid-frontend-prod 컨테이너(127.0.0.1:3001) 프록시.
+    #
+    # ⚠️ 롤백 주의 (2026-07-09): Vercel(v0-grid-transaction.vercel.app)은 이제 grid.koco.me로 308 영구 리다이렉트한다.
+    #    → 이 handle 블록을 `redir https://v0-grid-transaction.vercel.app{uri}` 로 되돌리면
+    #      grid.koco.me → vercel → grid.koco.me 무한 리다이렉트 루프가 되어 프론트가 완전히 다운된다. 절대 금지.
+    #    → 올바른 프론트 롤백 = 이전 grid-frontend-prod Docker 이미지를 :3001에 재기동
+    #      (서버 ~/grid-frontend-src 재빌드 또는 직전 이미지 태그로 docker run).
     handle {
-        redir https://v0-grid-transaction.vercel.app{uri} 301
+        reverse_proxy localhost:3001
     }
 }
