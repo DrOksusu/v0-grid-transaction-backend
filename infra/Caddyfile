@@ -33,3 +33,17 @@ grid.koco.me {
         reverse_proxy localhost:3001
     }
 }
+
+# 3dent.kr — DentPortal (2026-07-10 추가): auth/admin → 4300, 그 외 → 3300 (127.0.0.1 바인딩)
+# ⚠️ 공유 서버(54.180.188.8) 내 별도 프로젝트(Portal_project). grid.koco.me 블록과 독립.
+3dent.kr, www.3dent.kr {
+    handle /auth/* {
+        reverse_proxy localhost:4300
+    }
+    handle /admin/* {
+        reverse_proxy localhost:4300
+    }
+    handle {
+        reverse_proxy localhost:3300
+    }
+}
