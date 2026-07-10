@@ -338,7 +338,8 @@ class UpbitListingMonitorService {
     const res = await axios.get(workerUrl, {
       timeout: 10000,
       headers,
-      params: { page: 1, per_page: 10, category: '거래' },
+      // 업비트가 category 값을 한글 '거래'→영문 'trade'로 변경 (2026-07, 한글은 400 Bad request)
+      params: { page: 1, per_page: 10, category: 'trade' },
     });
 
     const raw: any[] = res.data?.data?.notices ?? [];
@@ -354,7 +355,7 @@ class UpbitListingMonitorService {
   // grid-bot 컨테이너 기준: 호스트(172.17.0.1)에서 실행 중인 FlareSolverr에 접근
   private async fetchNoticesViaFlare(): Promise<UpbitNotice[]> {
     const FLARESOLVERR = process.env.FLARESOLVERR_URL ?? 'http://172.17.0.1:8191';
-    const target = 'https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&per_page=10&category=%EA%B1%B0%EB%9E%98';
+    const target = 'https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&per_page=10&category=trade';
 
     const res = await axios.post(
       `${FLARESOLVERR}/v1`,
@@ -379,7 +380,7 @@ class UpbitListingMonitorService {
   // 직접 HTTP 요청 (FlareSolverr 없을 때 폴백)
   private async fetchNoticesDirect(): Promise<UpbitNotice[]> {
     const res = await axios.get(
-      'https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&per_page=10&category=%EA%B1%B0%EB%9E%98',
+      'https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&per_page=10&category=trade',
       {
         timeout: 8000,
         headers: {
