@@ -60,3 +60,14 @@ edu.3dent.kr {
         reverse_proxy localhost:3200
     }
 }
+
+# hr.3dent.kr — DentClock (2026-07-10 추가): /api/* → 4100, 그 외 → 3100 (127.0.0.1 바인딩)
+# ⚠️ 공유 서버(54.180.188.8) 내 HR_project. 3dent.kr(Portal)·edu.3dent.kr·grid.koco.me 블록과 독립.
+hr.3dent.kr {
+    handle /api/* {
+        reverse_proxy localhost:4100
+    }
+    handle {
+        reverse_proxy localhost:3100
+    }
+}
