@@ -47,3 +47,16 @@ grid.koco.me {
         reverse_proxy localhost:3300
     }
 }
+
+# edu.3dent.kr — DentEdu (2026-07-10 추가): /api/* → 4200, 그 외 → 3200 (127.0.0.1 바인딩)
+# ⚠️ 공유 서버(54.180.188.8) 내 Edu_project. 3dent.kr(Portal)·grid.koco.me 블록과 독립.
+edu.3dent.kr {
+    # API 요청 → DentEdu 백엔드
+    handle /api/* {
+        reverse_proxy localhost:4200
+    }
+    # 나머지 → DentEdu 프론트엔드
+    handle {
+        reverse_proxy localhost:3200
+    }
+}
