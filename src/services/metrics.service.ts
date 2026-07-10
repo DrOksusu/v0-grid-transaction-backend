@@ -60,6 +60,16 @@ class MetricsService {
   // 과부하 알림 쿨다운 (alertType → 마지막 발송 시각)
   private lastAlertAt: Map<string, number> = new Map();
 
+  // 과부하 알림 연속 초과 횟수 (alertType → 연속 카운트)
+  // 단발 스파이크(1회)는 무시하고 N회 연속 초과일 때만 발송 → 순간 버스트 오탐 방지
+  private readonly ALERT_CONSECUTIVE_REQUIRED = 2;
+  private consecutiveBreaches: Map<string, number> = new Map();
+
+  // 과부하 CPU 판정 전용 스냅샷 (HTTP 요청 기반 getCpuUsage의 lastCpuInfo와 격리)
+  // 매 API 요청이 lastCpuInfo를 리셋해 측정 윈도우가 짧아지는 문제를 피해,
+  // 정확히 checkOverload 호출 간격(60초)의 델타로만 CPU를 측정한다.
+  private lastCpuInfoForAlert: { idle: number; total: number } | null = null;
+
   // 시작 후 3분간 과부하 알람 억제 (재시작 직후 false positive 방지)
   private readonly STARTUP_GRACE_MS = 5 * 60 * 1000;
 
@@ -217,12 +227,14 @@ class MetricsService {
     console.log(`[Metrics] 일일 리포트 발송: ${dateKst}`);
   }
 
-  /** 임계치 초과 시 카카오 알림 (1시간 쿨다운) */
+  /** 임계치 초과 시 카카오 알림 (1시간 쿨다운, N회 연속 초과 시에만 발송) */
   private checkOverload(): void {
     // 시작 직후 false positive 방지
     if (Date.now() - this.serverStartTime < this.STARTUP_GRACE_MS) return;
 
     const sys = this.getSystemMetrics();
+    // CPU는 알림 전용 고정 윈도우 값으로 판정 (sys.cpu.usage는 요청 기반이라 윈도우가 짧아 오탐)
+    const cpuUsageForAlert = this.getCpuUsageForAlert();
     const memPercent = (sys.memory.used / sys.memory.total) * 100;
     const containerPercent = sys.memory.container?.available
       ? (sys.memory.container.used / sys.memory.container.limit) * 100
@@ -235,9 +247,9 @@ class MetricsService {
     const checks: Array<{ key: string; triggered: boolean; label: string; value: string }> = [
       {
         key: 'cpu',
-        triggered: sys.cpu.usage >= ALERT_THRESHOLDS.cpuDanger,
+        triggered: cpuUsageForAlert >= ALERT_THRESHOLDS.cpuDanger,
         label: 'CPU 과부하',
-        value: `${sys.cpu.usage.toFixed(1)}% (임계치: ${ALERT_THRESHOLDS.cpuDanger}%)`,
+        value: `${cpuUsageForAlert.toFixed(1)}% (임계치: ${ALERT_THRESHOLDS.cpuDanger}%)`,
       },
       {
         key: 'memory',
@@ -266,7 +278,17 @@ class MetricsService {
     ];
 
     for (const check of checks) {
-      if (!check.triggered) continue;
+      if (!check.triggered) {
+        // 정상 복귀 시 연속 카운트 리셋 (다음 스파이크가 다시 처음부터 세도록)
+        this.consecutiveBreaches.set(check.key, 0);
+        continue;
+      }
+
+      // 연속 초과 횟수 누적 — 단발 스파이크(1회)는 무시, N회 연속(약 2분)일 때만 발송
+      const breaches = (this.consecutiveBreaches.get(check.key) ?? 0) + 1;
+      this.consecutiveBreaches.set(check.key, breaches);
+      if (breaches < this.ALERT_CONSECUTIVE_REQUIRED) continue;
+
       const lastSent = this.lastAlertAt.get(check.key) ?? 0;
       if (Date.now() - lastSent < ALERT_COOLDOWN_MS) continue;
 
@@ -345,30 +367,56 @@ class MetricsService {
   }
 
   /**
-   * CPU 사용률 계산
+   * 현재 CPU 누적 시간 스냅샷 (전 코어 idle/total tick 합)
    */
-  private getCpuUsage(): number {
-    const cpus = os.cpus();
+  private readCpuSnapshot(): { idle: number; total: number } {
     let idle = 0;
     let total = 0;
-
-    cpus.forEach((cpu) => {
+    os.cpus().forEach((cpu) => {
       for (const type in cpu.times) {
         total += (cpu.times as any)[type];
       }
       idle += cpu.times.idle;
     });
+    return { idle, total };
+  }
 
-    if (this.lastCpuInfo) {
-      const idleDiff = idle - this.lastCpuInfo.idle;
-      const totalDiff = total - this.lastCpuInfo.total;
-      const usage = totalDiff > 0 ? ((totalDiff - idleDiff) / totalDiff) * 100 : 0;
-      this.lastCpuInfo = { idle, total };
-      return Math.round(usage * 100) / 100;
-    }
+  /**
+   * 두 스냅샷 사이의 CPU 사용률(%) 계산
+   */
+  private cpuUsageFromDelta(
+    prev: { idle: number; total: number },
+    cur: { idle: number; total: number }
+  ): number {
+    const idleDiff = cur.idle - prev.idle;
+    const totalDiff = cur.total - prev.total;
+    const usage = totalDiff > 0 ? ((totalDiff - idleDiff) / totalDiff) * 100 : 0;
+    return Math.round(usage * 100) / 100;
+  }
 
-    this.lastCpuInfo = { idle, total };
-    return 0;
+  /**
+   * CPU 사용률 계산 (일반 조회용 — 호출 시점 기준 델타)
+   * 주의: lastCpuInfo가 모든 호출자(매 API 요청 포함)에 공유되므로 측정 윈도우가
+   *       호출 간격에 따라 짧아질 수 있다. 과부하 알림 판정에는 반드시
+   *       getCpuUsageForAlert()의 고정 윈도우 값을 사용한다.
+   */
+  private getCpuUsage(): number {
+    const cur = this.readCpuSnapshot();
+    const prev = this.lastCpuInfo;
+    this.lastCpuInfo = cur;
+    return prev ? this.cpuUsageFromDelta(prev, cur) : 0;
+  }
+
+  /**
+   * 과부하 알림 판정 전용 CPU 사용률
+   * 자체 스냅샷(lastCpuInfoForAlert)만 사용해 checkOverload 호출 간격(60초)의
+   * 델타로 측정 → 짧은 윈도우에 봇 사이클 버스트가 겹쳐 생기는 스파이크 오탐 방지
+   */
+  private getCpuUsageForAlert(): number {
+    const cur = this.readCpuSnapshot();
+    const prev = this.lastCpuInfoForAlert;
+    this.lastCpuInfoForAlert = cur;
+    return prev ? this.cpuUsageFromDelta(prev, cur) : 0;
   }
 
   /**
