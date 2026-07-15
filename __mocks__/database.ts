@@ -23,6 +23,8 @@ const prisma = {
     update: jest.fn(),
     updateMany: jest.fn(),
     create: jest.fn(),
+    count: jest.fn(),
+    groupBy: jest.fn(),
   },
   trade: {
     findFirst: jest.fn(),

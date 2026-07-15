@@ -54,6 +54,12 @@ const BALANCE_ERROR_COOLDOWN_MAX_MS  = 60 * 60 * 1000; // 최대 1시간
 const userBalanceErrorCooldownMap = new Map<number, number>(); // userId -> 쿨다운 만료 시각
 const USER_BALANCE_COOLDOWN_MS = 10 * 60 * 1000; // 10분
 
+// dead-zone 자가치유(self-heal) 파라미터
+const healCooldownMap = new Map<number, number>(); // botId -> heal 쿨다운 만료 시각
+const HEAL_COOLDOWN_MS = 5 * 60 * 1000;  // heal 후 5분간 재개입 금지 (과잉거래 방지)
+const HEAL_STALE_MS = 10 * 60 * 1000;    // 10분 이상 안 바뀐 레벨만 대상 (in-flight 반대주문과 충돌 방지)
+const HEAL_CAP = 2;                       // 사이클당 봇별 최대 재활성 개수
+
 // 사용자별 자격증명 캐시 (중앙 집중식 조회용)
 interface UserCredentialCache {
   apiKey: string;
@@ -72,11 +78,18 @@ export class TradingService {
     lastCheckedPriceMap.delete(botId);
     balanceErrorCooldownMap.delete(botId);
     balanceErrorCountMap.delete(botId);
+    healCooldownMap.delete(botId);
   }
 
   // 사용자별 잔고 쿨다운 상태 조회 (외부 노출용)
   static isUserOnBalanceCooldown(userId: number): boolean {
     const expiry = userBalanceErrorCooldownMap.get(userId);
+    return !!expiry && Date.now() < expiry;
+  }
+
+  // 봇별 잔고 부족 쿨다운 상태 조회 (self-heal 게이트용)
+  static isBotOnBalanceCooldown(botId: number): boolean {
+    const expiry = balanceErrorCooldownMap.get(botId);
     return !!expiry && Date.now() < expiry;
   }
 
@@ -534,6 +547,83 @@ export class TradingService {
       }
 
       return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Dead-zone 자가치유(self-heal): 현재가 주변에 살아있는 주문이 없고 레벨이 filled에 갇힌
+   * 봇을 감지해 재고 SOLD 매수 레벨을 available로 재활성. 실제 주문은 다음 executeTrade
+   * 사이클(findExecutableGrids)이 처리하므로 잔고 쿨다운·race guard·Trade 기록을 모두 재사용.
+   * (BotEngine이 60초마다 running 봇에 대해 호출)
+   */
+  static async reconcileBotDeadZone(botId: number): Promise<{ healed: number; skippedReason?: string }> {
+    try {
+      // heal 쿨다운 중이면 스킵 (과잉거래 방지)
+      const healExpiry = healCooldownMap.get(botId);
+      if (healExpiry && Date.now() < healExpiry) {
+        return { healed: 0, skippedReason: 'heal-cooldown' };
+      }
+
+      const bot = await prisma.bot.findUnique({
+        where: { id: botId },
+        select: {
+          id: true, status: true, ticker: true, userId: true, exchange: true,
+          lowerPrice: true, upperPrice: true, priceChangePercent: true,
+        },
+      });
+      if (!bot || bot.status !== 'running') return { healed: 0, skippedReason: 'not-running' };
+
+      // 잔고 쿨다운 게이트: 방금 잔고 부족으로 백오프한 봇/유저를 재무장하면 공유계정 KRW 고갈 증폭
+      if (this.isBotOnBalanceCooldown(botId) || this.isUserOnBalanceCooldown(bot.userId)) {
+        return { healed: 0, skippedReason: 'balance-cooldown' };
+      }
+
+      // 현재가 조회 (executeTrade와 동일 경로)
+      let currentPrice: number;
+      try {
+        currentPrice = bot.exchange === 'bithumb'
+          ? await bithumbPriceManager.getPriceWithFallback(bot.ticker)
+          : await priceManager.getPriceWithFallback(bot.ticker);
+      } catch {
+        return { healed: 0, skippedReason: 'price-fetch-failed' };
+      }
+
+      // dead-zone 판정: 현재가 ±nearBand(그리드 간격 1.5배, 최소 0.3%)에 살아있는 주문 없음
+      const stepRatio = (bot.priceChangePercent ?? 0) / 100;
+      const nearBand = currentPrice * Math.max(stepRatio * 1.5, 0.003);
+      const isDead = await GridService.detectDeadZone(
+        botId, currentPrice, bot.lowerPrice, bot.upperPrice, nearBand
+      );
+      if (!isDead) return { healed: 0 };
+
+      // 재활성 후보 (재고 SOLD 매수 레벨, STALE 10분, cap 2)
+      const { buyHeals } = await GridService.findHealCandidates(botId, currentPrice, {
+        staleMs: HEAL_STALE_MS,
+        cap: HEAL_CAP,
+      });
+      if (buyHeals.length === 0) return { healed: 0, skippedReason: 'no-candidates' };
+
+      // 원자적 재활성 (동시 전이 시 count===0으로 스킵)
+      let healed = 0;
+      for (const c of buyHeals) {
+        const n = await GridService.reactivateLevel(c.id, 'filled');
+        if (n > 0) {
+          healed++;
+          console.log(`[Trading] Bot ${botId}: dead-zone 자가치유 - 매수 ${c.price.toLocaleString()}원 재활성 (현재가 ${currentPrice.toLocaleString()}원)`);
+        }
+      }
+
+      if (healed > 0) {
+        healCooldownMap.set(botId, Date.now() + HEAL_COOLDOWN_MS);
+        socketService.emitError(botId, {
+          type: 'system_error',
+          message: `그리드 자가치유: 현재가 주변 매수 ${healed}개 재활성 (거래 정지 복구)`,
+        });
+      }
+      return { healed };
+    } catch (error: any) {
+      console.error(`[Trading] Bot ${botId}: dead-zone 리컨사일 실패 - ${error.message}`);
+      return { healed: 0, skippedReason: 'error' };
     }
   }
 

@@ -12,9 +12,11 @@ class BotEngine {
   private interval: NodeJS.Timeout | null = null;
   private broadcastInterval: NodeJS.Timeout | null = null;
   private orderCheckInterval: NodeJS.Timeout | null = null;
+  private reconcileInterval: NodeJS.Timeout | null = null;
   private readonly BASE_INTERVAL = 3000; // 기본 체크 주기 3초 (가장 빠른 봇 기준)
   private readonly BROADCAST_INTERVAL = 10000; // 10초마다 봇 데이터 브로드캐스트
   private readonly ORDER_CHECK_INTERVAL = 30000; // 체결 확인 30초 (안전망 역할, 가격 크로스 감지가 주력)
+  private readonly RECONCILE_INTERVAL = 60000; // dead-zone 자가치유 60초
   private readonly BOT_EXECUTION_DELAY = 300; // 배치 간 딜레이 (ms) - 429 에러 방지
   private readonly BOT_BATCH_SIZE = 5; // 동시 실행할 봇 수
 
@@ -25,6 +27,7 @@ class BotEngine {
   private isExecutingBots: boolean = false;
   private isBroadcasting: boolean = false;
   private isCheckingOrders: boolean = false;
+  private isReconciling: boolean = false;
 
   // 가격 크로스 감지용
   private pendingGridCache: Map<string, Array<{ gridId: number; botId: number; type: string; price: number }>> = new Map();
@@ -65,6 +68,11 @@ class BotEngine {
     this.orderCheckInterval = setInterval(async () => {
       await this.checkFilledOrders();
     }, this.ORDER_CHECK_INTERVAL);
+
+    // dead-zone 자가치유 (60초마다 - 현재가 주변에 살아있는 주문이 사라진 봇 복구)
+    this.reconcileInterval = setInterval(async () => {
+      await this.reconcileDeadZones();
+    }, this.RECONCILE_INTERVAL);
 
     // 가격 크로스 감지: 리스너 등록 + 캐시 갱신 타이머
     priceManager.onPrice(this.boundOnPriceUpdate);
@@ -148,6 +156,44 @@ class BotEngine {
     }
   }
 
+  // dead-zone 자가치유: running 봇 순회하며 현재가 주변 주문이 사라진 봇 복구
+  private async reconcileDeadZones() {
+    if (this.isReconciling) return;
+
+    this.isReconciling = true;
+    try {
+      const runningBots = await withRetry(
+        () => prisma.bot.findMany({
+          where: { status: 'running', deletedAt: null },
+          select: { id: true },
+        }),
+        { operationName: 'BotEngine.reconcileDeadZones' }
+      );
+
+      if (runningBots.length === 0) return;
+
+      let totalHealed = 0;
+      for (const bot of runningBots) {
+        try {
+          const { healed } = await TradingService.reconcileBotDeadZone(bot.id);
+          totalHealed += healed;
+        } catch (error: any) {
+          console.error(`[BotEngine] reconcile 실패 (bot ${bot.id}):`, error.message);
+        }
+        // API rate limit 방지: 봇 간 300ms 딜레이
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      if (totalHealed > 0) {
+        console.log(`[BotEngine] dead-zone 자가치유: 총 ${totalHealed}개 레벨 재활성`);
+      }
+    } catch (error: any) {
+      console.error('[BotEngine] reconcileDeadZones 실패:', error.message);
+    } finally {
+      this.isReconciling = false;
+    }
+  }
+
   // 엔진 중지
   stop() {
     if (this.interval) {
@@ -163,6 +209,11 @@ class BotEngine {
     if (this.orderCheckInterval) {
       clearInterval(this.orderCheckInterval);
       this.orderCheckInterval = null;
+    }
+
+    if (this.reconcileInterval) {
+      clearInterval(this.reconcileInterval);
+      this.reconcileInterval = null;
     }
 
     // 가격 크로스 감지: 리스너 해제 + 캐시 갱신 타이머 정리
