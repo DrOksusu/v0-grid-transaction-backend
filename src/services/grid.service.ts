@@ -300,4 +300,99 @@ export class GridService {
 
     return null;
   }
+
+  // ===== Dead-zone 자가치유 (self-heal) =====
+  // 배경: 반대주문 실패로 레벨이 filled/inactive에 갇히면 findExecutableGrids(available만 조회)가
+  //       재주문하지 못해 현재가 주변에 살아있는 주문이 사라짐(dead-zone). 아래 헬퍼들이 이를 감지·복구.
+
+  /**
+   * Dead-zone 감지: 현재가 ±nearBand 범위에 살아있는 pending 주문이 하나도 없으면 true.
+   * currentPrice가 봇의 [lowerPrice, upperPrice] 범위 밖이면 개입하지 않음(false).
+   */
+  static async detectDeadZone(
+    botId: number,
+    currentPrice: number,
+    lowerPrice: number,
+    upperPrice: number,
+    nearBand: number
+  ): Promise<boolean> {
+    if (currentPrice < lowerPrice || currentPrice > upperPrice) return false;
+
+    const nearPending = await prisma.gridLevel.count({
+      where: {
+        botId,
+        status: 'pending',
+        price: { gte: currentPrice - nearBand, lte: currentPrice + nearBand },
+      },
+    });
+    return nearPending === 0;
+  }
+
+  /**
+   * 재활성 후보 선정 (buy-heal 1차): 재고 SOLD로 판정된 filled 매수 레벨을 반환.
+   * 판정: buy가 filled + STALE(updatedAt < now-staleMs) + price <= currentPrice
+   *       + 페어 sell 레벨(=buy.sellPrice 가격)이 filled(라운드트립 완료 = 재고 없음).
+   * 페어 sell이 inactive(재고 HELD)면 재매수 시 이중노출이므로 제외.
+   * @returns 현재가에 가까운 순(가격 내림차순)으로 최대 cap개
+   */
+  static async findHealCandidates(
+    botId: number,
+    currentPrice: number,
+    opts: { staleMs: number; cap?: number }
+  ): Promise<{ buyHeals: Array<{ id: number; price: number; sellPrice: number | null }> }> {
+    const cap = opts.cap ?? 2;
+    const staleBefore = new Date(Date.now() - opts.staleMs);
+
+    // 재고 SOLD 후보: filled 매수, STALE, 현재가 이하
+    const filledBuys = await prisma.gridLevel.findMany({
+      where: {
+        botId,
+        type: 'buy',
+        status: 'filled',
+        price: { lte: currentPrice },
+        updatedAt: { lt: staleBefore },
+        sellPrice: { not: null },
+      },
+      orderBy: { price: 'desc' }, // 현재가에 가까운(높은) 것 우선
+      select: { id: true, price: true, sellPrice: true },
+    });
+    if (filledBuys.length === 0) return { buyHeals: [] };
+
+    // 페어 sell 상태를 한 번에 조회(N+1 회피). createGridLevels가 sell.price === buy.sellPrice로 저장.
+    const sells = await prisma.gridLevel.findMany({
+      where: { botId, type: 'sell' },
+      select: { price: true, status: true },
+    });
+    const pairedSellStatus = (sellPrice: number): string | undefined => {
+      const margin = Math.max(sellPrice * 0.001, 0.000001);
+      const s = sells.find((x) => Math.abs(x.price - sellPrice) <= margin);
+      return s?.status;
+    };
+
+    const buyHeals: Array<{ id: number; price: number; sellPrice: number | null }> = [];
+    for (const b of filledBuys) {
+      if (buyHeals.length >= cap) break;
+      // 페어 sell이 filled여야 라운드트립 완료(재고 SOLD) → 재활성 안전
+      if (b.sellPrice != null && pairedSellStatus(b.sellPrice) === 'filled') {
+        buyHeals.push(b);
+      }
+    }
+    return { buyHeals };
+  }
+
+  /**
+   * 원자적 재활성: 여전히 fromStatus인 경우에만 available로 전환(동시 전이 방지).
+   * 실제 주문은 리컨사일러가 아니라 다음 executeTrade 사이클(findExecutableGrids)이 처리.
+   * @returns 전환된 행 수(0이면 동시 전이로 스킵)
+   */
+  static async reactivateLevel(
+    levelId: number,
+    fromStatus: 'filled' | 'inactive'
+  ): Promise<number> {
+    const r = await prisma.gridLevel.updateMany({
+      where: { id: levelId, status: fromStatus },
+      data: { status: 'available', orderId: null, filledAt: null },
+    });
+    return r.count;
+  }
 }

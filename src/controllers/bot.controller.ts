@@ -344,9 +344,7 @@ export const stopBot = async (
       include: {
         user: {
           include: {
-            credentials: {
-              where: { exchange: 'upbit' },
-            },
+            credentials: true,
           },
         },
         gridLevels: {
@@ -359,20 +357,21 @@ export const stopBot = async (
       return errorResponse(res, 'BOT_NOT_FOUND', '봇을 찾을 수 없습니다', 404);
     }
 
-    // 대기 중인 주문 취소
+    // 대기 중인 주문 취소 (봇의 거래소에 맞는 인증정보/클라이언트 사용)
     let cancelledOrders = 0;
 
-    if (bot.gridLevels.length > 0 && bot.user.credentials[0]) {
-      const credential = bot.user.credentials[0];
-      const apiKey = decrypt(credential.apiKey);
-      const secretKey = decrypt(credential.secretKey);
+    // 빗썸 봇은 빗썸 자격증명으로 취소해야 함 (upbit 고정 시 빗썸 주문이 취소되지 않고 orphan으로 남음)
+    const botCred = bot.user.credentials.find(c => c.exchange === bot.exchange);
 
-      const upbit = new UpbitService({
-        accessKey: apiKey,
-        secretKey: secretKey,
-      });
+    if (bot.gridLevels.length > 0 && botCred) {
+      const apiKey = decrypt(botCred.apiKey);
+      const secretKey = decrypt(botCred.secretKey);
 
-      console.log(`[StopBot] Cancelling ${bot.gridLevels.length} pending orders for bot ${botId}...`);
+      const upbit = bot.exchange === 'bithumb'
+        ? new BithumbClient({ accessKey: apiKey, secretKey })
+        : new UpbitService({ accessKey: apiKey, secretKey });
+
+      console.log(`[StopBot] Cancelling ${bot.gridLevels.length} pending orders for bot ${botId} (${bot.exchange})...`);
 
       for (const grid of bot.gridLevels) {
         if (grid.orderId) {
