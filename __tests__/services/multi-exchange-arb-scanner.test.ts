@@ -16,7 +16,7 @@ jest.mock('../../src/services/multi-arb-wallet-status.service', () => ({
   multiArbWalletStatusService: { getAll: jest.fn() },
 }));
 jest.mock('../../src/services/multi-arb-notifier.service', () => ({
-  multiArbNotifierService: { notify: jest.fn() },
+  multiArbNotifierService: { notify: jest.fn(), recordPriceAnomaly: jest.fn() },
 }));
 
 const mockUniverse = multiArbSymbolUniverseService.getUniverse as jest.Mock;
@@ -24,6 +24,7 @@ const mockPrices = multiArbPriceSource.fetchAllPrices as jest.Mock;
 const mockKrwPerUsdt = multiArbPriceSource.getKrwPerUsdt as jest.Mock;
 const mockWallets = multiArbWalletStatusService.getAll as jest.Mock;
 const mockNotify = multiArbNotifierService.notify as jest.Mock;
+const mockRecordAnomaly = (multiArbNotifierService as any).recordPriceAnomaly as jest.Mock;
 
 function priceMap(entries: Record<string, number>): PriceMap {
   return new Map(Object.entries(entries));
@@ -38,6 +39,7 @@ describe('multiExchangeArbScannerService.scanOnce', () => {
       bithumb: new Map([['WLD', [{ network: 'ETH', depositEnabled: true, withdrawEnabled: true }]]]),
     });
     mockNotify.mockResolvedValue(true);
+    mockRecordAnomaly.mockResolvedValue(undefined);
   });
 
   it('임계값(2%) 초과 후보만 실현가능성 판정 후 알림에 넘긴다 (spec §5 step 4~6)', async () => {
@@ -132,6 +134,11 @@ describe('multiExchangeArbScannerService.scanOnce', () => {
       expect(mockNotify).not.toHaveBeenCalled();
       expect(summary.alerted).toBe(0);
 
+      // I-2: 제외 건은 분석용으로 price_anomaly 기록에 위임 (카톡 발송 없음)
+      expect(mockRecordAnomaly).toHaveBeenCalledTimes(1);
+      expect(mockRecordAnomaly.mock.calls[0][0].symbol).toBe('TROLL');
+      expect(typeof mockRecordAnomaly.mock.calls[0][1]).toBe('string');
+
       const warnCalls = warnSpy.mock.calls.filter(c => String(c[0]).includes('price_sanity'));
       expect(warnCalls).toHaveLength(1);
       expect(String(warnCalls[0][0])).toContain('TROLL');
@@ -192,6 +199,172 @@ describe('multiExchangeArbScannerService.scanOnce', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+// I-1: 알림 폭주 방지 — 발송 게이트(ENABLED) / 사이클당 상한(MAX_ALERTS_PER_CYCLE) / feasible 전용(FEASIBLE_ONLY)
+// 게이트는 "카톡 발송"에만 적용: notify 4번째 인자 {send}로 위임하고 DB 기록·쿨다운·별칭 로그는 종전 유지
+describe('알림 발송 게이트 (I-1)', () => {
+  const GATE_ENVS = [
+    'MULTI_ARB_ALERT_ENABLED',
+    'MULTI_ARB_MAX_ALERTS_PER_CYCLE',
+    'MULTI_ARB_ALERT_FEASIBLE_ONLY',
+  ];
+
+  // feasible 후보 픽스처: WLD +3.33% / SOL +5%
+  function setupTwoFeasible() {
+    mockWallets.mockResolvedValue({
+      upbit: new Map([
+        ['WLD', [{ network: 'ETH', depositEnabled: true, withdrawEnabled: true }]],
+        ['SOL', [{ network: 'SOL', depositEnabled: true, withdrawEnabled: true }]],
+      ]),
+      bithumb: new Map([
+        ['WLD', [{ network: 'ETH', depositEnabled: true, withdrawEnabled: true }]],
+        ['SOL', [{ network: 'SOL', depositEnabled: true, withdrawEnabled: true }]],
+      ]),
+    });
+    mockUniverse.mockResolvedValue({ krw: ['WLD', 'SOL'], usdt: [] });
+    mockPrices.mockResolvedValue({
+      upbit: priceMap({ WLD: 4340, SOL: 210000 }),
+      bithumb: priceMap({ WLD: 4200, SOL: 200000 }),
+    });
+  }
+
+  // network_mismatch 후보 픽스처: LSK +148% (바이낸스 기준가로 sanity 통과)
+  function setupMismatchLsk() {
+    mockWallets.mockResolvedValue({
+      upbit: new Map([['LSK', [{ network: 'LSK', depositEnabled: true, withdrawEnabled: true }]]]),
+      bithumb: new Map([['LSK', [{ network: 'ETH', depositEnabled: true, withdrawEnabled: true }]]]),
+    });
+    mockUniverse.mockResolvedValue({ krw: ['LSK'], usdt: [] });
+    mockPrices.mockResolvedValue({
+      upbit: priceMap({ LSK: 533 }),
+      bithumb: priceMap({ LSK: 1322 }),
+      binance: priceMap({ LSK: 0.5 }),
+    });
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockKrwPerUsdt.mockResolvedValue(1385);
+    // 실제 notifier 계약과 동일: send=false면 발송 없이 false 반환 (DB 기록만)
+    mockNotify.mockImplementation(async (_c, _f, _k, opts) => opts?.send === true);
+    mockRecordAnomaly.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    for (const key of GATE_ENVS) delete process.env[key];
+  });
+
+  it('기본값(MULTI_ARB_ALERT_ENABLED 미설정=false): 스캔·DB 기록은 수행하되 send:false로 위임한다', async () => {
+    setupTwoFeasible();
+    await multiExchangeArbScannerService.scanOnce();
+    expect(mockNotify).toHaveBeenCalledTimes(2); // DB 기록 경로는 유지 (스캔 정지 금지)
+    for (const call of mockNotify.mock.calls) {
+      expect(call[3]).toEqual({ send: false });
+    }
+  });
+
+  it('ENABLED=true + feasible 후보는 send:true로 발송된다', async () => {
+    process.env.MULTI_ARB_ALERT_ENABLED = 'true';
+    setupTwoFeasible();
+    const summary = await multiExchangeArbScannerService.scanOnce();
+    expect(mockNotify).toHaveBeenCalledTimes(2);
+    for (const call of mockNotify.mock.calls) {
+      expect(call[3]).toEqual({ send: true });
+    }
+    expect(summary.alerted).toBe(2);
+  });
+
+  it('FEASIBLE_ONLY 기본(true): 주의 태그(network_mismatch)는 send:false — DB 기록/로그만', async () => {
+    process.env.MULTI_ARB_ALERT_ENABLED = 'true';
+    setupMismatchLsk();
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await multiExchangeArbScannerService.scanOnce();
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+      expect(mockNotify.mock.calls[0][1].feasibility).toBe('network_mismatch');
+      expect(mockNotify.mock.calls[0][3]).toEqual({ send: false });
+      // 별칭 수집 로그는 종전대로 유지
+      const warnCalls = warnSpy.mock.calls.filter(c => String(c[0]).includes('network_mismatch'));
+      expect(warnCalls).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('FEASIBLE_ONLY=false면 주의 태그도 send:true로 발송된다', async () => {
+    process.env.MULTI_ARB_ALERT_ENABLED = 'true';
+    process.env.MULTI_ARB_ALERT_FEASIBLE_ONLY = 'false';
+    setupMismatchLsk();
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await multiExchangeArbScannerService.scanOnce();
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+      expect(mockNotify.mock.calls[0][3]).toEqual({ send: true });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('MAX_ALERTS_PER_CYCLE=1: 스프레드 큰 후보(SOL)만 send:true, 초과분(WLD)은 send:false', async () => {
+    process.env.MULTI_ARB_ALERT_ENABLED = 'true';
+    process.env.MULTI_ARB_MAX_ALERTS_PER_CYCLE = '1';
+    setupTwoFeasible();
+    const summary = await multiExchangeArbScannerService.scanOnce();
+    expect(mockNotify).toHaveBeenCalledTimes(2);
+    // 우선순위 정렬: 스프레드 큰 순 → SOL(+5%) 먼저
+    expect(mockNotify.mock.calls[0][0].symbol).toBe('SOL');
+    expect(mockNotify.mock.calls[0][3]).toEqual({ send: true });
+    expect(mockNotify.mock.calls[1][0].symbol).toBe('WLD');
+    expect(mockNotify.mock.calls[1][3]).toEqual({ send: false });
+    expect(summary.alerted).toBe(1);
+  });
+
+  it('발송 우선순위: FEASIBLE_ONLY=false + MAX=1이면 스프레드 작아도 feasible이 주의 태그보다 먼저', async () => {
+    process.env.MULTI_ARB_ALERT_ENABLED = 'true';
+    process.env.MULTI_ARB_ALERT_FEASIBLE_ONLY = 'false';
+    process.env.MULTI_ARB_MAX_ALERTS_PER_CYCLE = '1';
+    // WLD feasible +3.33% vs LSK mismatch +148%
+    mockWallets.mockResolvedValue({
+      upbit: new Map([
+        ['WLD', [{ network: 'ETH', depositEnabled: true, withdrawEnabled: true }]],
+        ['LSK', [{ network: 'LSK', depositEnabled: true, withdrawEnabled: true }]],
+      ]),
+      bithumb: new Map([
+        ['WLD', [{ network: 'ETH', depositEnabled: true, withdrawEnabled: true }]],
+        ['LSK', [{ network: 'ETH', depositEnabled: true, withdrawEnabled: true }]],
+      ]),
+    });
+    mockUniverse.mockResolvedValue({ krw: ['WLD', 'LSK'], usdt: [] });
+    mockPrices.mockResolvedValue({
+      upbit: priceMap({ WLD: 4340, LSK: 533 }),
+      bithumb: priceMap({ WLD: 4200, LSK: 1322 }),
+      binance: priceMap({ LSK: 0.5 }),
+    });
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await multiExchangeArbScannerService.scanOnce();
+      expect(mockNotify).toHaveBeenCalledTimes(2);
+      expect(mockNotify.mock.calls[0][0].symbol).toBe('WLD'); // feasible 우선
+      expect(mockNotify.mock.calls[0][3]).toEqual({ send: true });
+      expect(mockNotify.mock.calls[1][0].symbol).toBe('LSK');
+      expect(mockNotify.mock.calls[1][3]).toEqual({ send: false });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('상한은 실제 발송 성공 기준: 쿨다운 스킵(false)은 상한을 소모하지 않는다', async () => {
+    process.env.MULTI_ARB_ALERT_ENABLED = 'true';
+    process.env.MULTI_ARB_MAX_ALERTS_PER_CYCLE = '1';
+    setupTwoFeasible();
+    mockNotify.mockResolvedValueOnce(false).mockResolvedValueOnce(true); // 첫 건 쿨다운 스킵
+    const summary = await multiExchangeArbScannerService.scanOnce();
+    expect(mockNotify).toHaveBeenCalledTimes(2);
+    expect(mockNotify.mock.calls[0][3]).toEqual({ send: true });
+    expect(mockNotify.mock.calls[1][3]).toEqual({ send: true }); // 상한 미소모 → 다음 후보 발송 가능
+    expect(summary.alerted).toBe(1);
   });
 });
 

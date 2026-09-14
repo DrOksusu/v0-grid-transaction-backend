@@ -85,6 +85,69 @@ describe('multiArbNotifierService.notify', () => {
     expect(db.multiArbOpportunity.create).toHaveBeenCalled();      // 기회 이력은 남김
     expect(db.multiArbOpportunity.update).not.toHaveBeenCalled();  // notifiedAt은 갱신 안 함
   });
+
+  // I-1: 발송 게이트 — 게이트는 "카톡 발송"에만 적용, DB 기록·쿨다운 로직은 종전 유지
+  it('send=false: 쿨다운 확인 + DB 기록은 수행, 카톡 발송·notifiedAt 갱신은 안 함 (I-1)', async () => {
+    const sent = await multiArbNotifierService.notify(cand, feasible, 0.8, { send: false });
+    expect(sent).toBe(false);
+    expect(db.multiArbOpportunity.findFirst).toHaveBeenCalledTimes(1); // 쿨다운 확인은 종전대로
+    expect(db.multiArbOpportunity.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ symbol: 'WLD', feasibility: 'feasible', notifiedAt: null }),
+    });
+    expect(mockedSend).not.toHaveBeenCalled();                     // 카톡만 스킵
+    expect(db.multiArbOpportunity.update).not.toHaveBeenCalled();  // notifiedAt=null 유지
+  });
+
+  it('send=false여도 쿨다운 이내면 DB 기록도 스킵 (쿨다운 로직 종전 유지)', async () => {
+    db.multiArbOpportunity.findFirst.mockResolvedValue({ id: 99, notifiedAt: new Date() });
+    const sent = await multiArbNotifierService.notify(cand, feasible, null, { send: false });
+    expect(sent).toBe(false);
+    expect(db.multiArbOpportunity.create).not.toHaveBeenCalled();
+  });
+});
+
+// I-2: price sanity 제외 건 DB 기록 (분석/티커충돌 수집용)
+describe('multiArbNotifierService.recordPriceAnomaly', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    db.multiArbOpportunity.findFirst.mockResolvedValue(null);
+    db.multiArbOpportunity.create.mockResolvedValue({ id: 1 });
+    mockedSend.mockResolvedValue(undefined);
+  });
+
+  it('price_anomaly 태그 + notifiedAt=null로 기록하고 카톡은 발송하지 않는다', async () => {
+    await multiArbNotifierService.recordPriceAnomaly(cand, '기준가 대비 이상(buy=mexc 3.48e-8x)');
+    expect(db.multiArbOpportunity.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        symbol: 'WLD',
+        currencyZone: 'KRW',
+        buyExchange: 'bithumb',
+        sellExchange: 'upbit',
+        spreadPct: 3.33,
+        feasibility: 'price_anomaly',
+        networkMatch: null,
+        matchedNetwork: null,
+        note: '기준가 대비 이상(buy=mexc 3.48e-8x)',
+        notifiedAt: null,
+      }),
+    });
+    expect(mockedSend).not.toHaveBeenCalled();
+    expect(db.multiArbOpportunity.update).not.toHaveBeenCalled();
+  });
+
+  it('30분 내 동일 (symbol, zone) price_anomaly 기록이 있으면 중복 기록을 스킵한다', async () => {
+    db.multiArbOpportunity.findFirst.mockResolvedValue({ id: 7 });
+    await multiArbNotifierService.recordPriceAnomaly(cand, '이상치');
+    expect(db.multiArbOpportunity.create).not.toHaveBeenCalled();
+    expect(db.multiArbOpportunity.findFirst).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        symbol: 'WLD',
+        currencyZone: 'KRW',
+        feasibility: 'price_anomaly',
+        detectedAt: { gte: expect.any(Date) },
+      }),
+    });
+  });
 });
 
 describe('buildAlertMessage', () => {

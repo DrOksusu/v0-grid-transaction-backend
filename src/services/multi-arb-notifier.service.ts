@@ -52,12 +52,16 @@ export function buildAlertMessage(
 }
 
 class MultiArbNotifierService {
-  // 반환: 발송 성공 여부 (쿨다운 스킵/발송 실패 = false)
+  // 반환: 발송 성공 여부 (쿨다운 스킵/발송 게이트 off/발송 실패 = false)
+  // options.send=false (I-1 발송 게이트): 쿨다운 확인·DB 기록은 종전대로 수행하고 카톡 발송만 스킵
   async notify(
     candidate: SpreadCandidate,
     feasibility: FeasibilityResult,
     kimchiPct: number | null,
+    options?: { send?: boolean },
   ): Promise<boolean> {
+    const send = options?.send ?? true;
+
     // 쿨다운 확인 (spec §8: (symbol, currencyZone)의 최근 notifiedAt 30분 이내면 스킵)
     const since = new Date(Date.now() - COOLDOWN_MS);
     const recent = await (prisma as any).multiArbOpportunity.findFirst({
@@ -88,6 +92,9 @@ class MultiArbNotifierService {
       },
     });
 
+    // I-1: 발송 게이트/상한/필터에 걸린 후보는 여기서 종료 — notifiedAt=null 유지 (쿨다운 미발동)
+    if (!send) return false;
+
     const message = buildAlertMessage(candidate, feasibility, kimchiPct);
     try {
       await kakaoNotifyService.sendToMe(message);
@@ -102,6 +109,39 @@ class MultiArbNotifierService {
       data: { notifiedAt: new Date() },
     });
     return true;
+  }
+
+  // I-2: price sanity 제외 건 기록 — 분석/티커충돌 수집용 (카톡 발송 없음, notifiedAt=null)
+  // 동일 (symbol, currencyZone) 이상치는 30분 내 중복 기록 스킵 (사이클마다 행이 쌓이는 것 방지)
+  async recordPriceAnomaly(candidate: SpreadCandidate, reason: string): Promise<void> {
+    const since = new Date(Date.now() - COOLDOWN_MS);
+    const recent = await (prisma as any).multiArbOpportunity.findFirst({
+      where: {
+        symbol: candidate.symbol,
+        currencyZone: candidate.currencyZone,
+        feasibility: 'price_anomaly',
+        detectedAt: { gte: since },
+      },
+    });
+    if (recent) return;
+
+    await (prisma as any).multiArbOpportunity.create({
+      data: {
+        symbol: candidate.symbol,
+        currencyZone: candidate.currencyZone,
+        buyExchange: candidate.buyExchange,
+        buyPrice: candidate.buyPrice,
+        sellExchange: candidate.sellExchange,
+        sellPrice: candidate.sellPrice,
+        spreadPct: candidate.spreadPct,
+        feasibility: 'price_anomaly',
+        networkMatch: null,
+        matchedNetwork: null,
+        note: reason,
+        kimchiPct: null,
+        notifiedAt: null,
+      },
+    });
   }
 }
 

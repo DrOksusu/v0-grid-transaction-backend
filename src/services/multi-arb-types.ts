@@ -41,6 +41,7 @@ export interface SpreadCandidate {
 }
 
 // 실현가능성 태그 (spec §6, DB feasibility 컬럼과 동일 문자열)
+// 주의: DB feasibility 컬럼에는 이 외에 기록 전용 태그 'price_anomaly'(price sanity 제외 건, I-2)도 저장된다
 export type FeasibilityTag = 'feasible' | 'network_mismatch' | 'deposit_halt' | 'notice_warning' | 'unverified';
 
 export interface FeasibilityResult {
