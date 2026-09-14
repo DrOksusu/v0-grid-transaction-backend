@@ -1,6 +1,9 @@
 // 쿨다운 + 카카오톡 발송 + MultiArbOpportunity 기록 (spec §4 ArbAlertNotifier, §5 step 6, §7~§9)
 // 쿨다운: (symbol, currencyZone) 최근 notifiedAt 30분 이내면 스킵
 // 발송 실패 시 notifiedAt 미갱신 → 다음 사이클에서 재시도 (spec §9)
+// DB 행 누적 방지: 알림 off라 notifiedAt이 채워지지 않는 기간에도, 동일 (symbol, currencyZone)이
+// detectedAt 기준 30분 내 이미 기록되어 있으면 새 행을 만들지 않고 그 행을 재사용한다.
+// (기록 dedup과 발송 게이팅은 별개 — dedup은 "어느 행에 쓸지"만 정하고, 발송 여부/쿨다운 판단은 그대로)
 import prisma from '../config/database';
 import { kakaoNotifyService } from './kakao-notify.service';
 import { EXCHANGE_LABELS, FeasibilityResult, SpreadCandidate } from './multi-arb-types';
@@ -73,24 +76,40 @@ class MultiArbNotifierService {
     });
     if (recent) return false;
 
-    // 기회 이력 기록 (notifiedAt=null — 발송 성공 시에만 갱신)
-    const row = await (prisma as any).multiArbOpportunity.create({
-      data: {
+    // DB 행 누적 방지: 알림 off(notifiedAt 미갱신) 상태에서도 동일 (symbol, currencyZone)이
+    // 30분 내 이미 기록되어 있으면 새 행을 만들지 않고 기존 행을 재사용한다.
+    // (price_anomaly 기록은 별도 카테고리이므로 재사용 대상에서 제외 — recordPriceAnomaly와 동일 관례)
+    // 위 쿨다운을 통과했다는 것은 이 기존 행의 notifiedAt이 null이라는 뜻이므로 재사용 후
+    // update로 notifiedAt을 채워도 발송 이력을 덮어쓸 위험이 없다.
+    let row = await (prisma as any).multiArbOpportunity.findFirst({
+      where: {
         symbol: candidate.symbol,
         currencyZone: candidate.currencyZone,
-        buyExchange: candidate.buyExchange,
-        buyPrice: candidate.buyPrice,
-        sellExchange: candidate.sellExchange,
-        sellPrice: candidate.sellPrice,
-        spreadPct: candidate.spreadPct,
-        feasibility: feasibility.feasibility,
-        networkMatch: feasibility.networkMatch,
-        matchedNetwork: feasibility.matchedNetwork,
-        note: feasibility.note,
-        kimchiPct,
-        notifiedAt: null,
+        feasibility: { not: 'price_anomaly' },
+        detectedAt: { gte: since },
       },
     });
+
+    if (!row) {
+      // 기회 이력 기록 (notifiedAt=null — 발송 성공 시에만 갱신)
+      row = await (prisma as any).multiArbOpportunity.create({
+        data: {
+          symbol: candidate.symbol,
+          currencyZone: candidate.currencyZone,
+          buyExchange: candidate.buyExchange,
+          buyPrice: candidate.buyPrice,
+          sellExchange: candidate.sellExchange,
+          sellPrice: candidate.sellPrice,
+          spreadPct: candidate.spreadPct,
+          feasibility: feasibility.feasibility,
+          networkMatch: feasibility.networkMatch,
+          matchedNetwork: feasibility.matchedNetwork,
+          note: feasibility.note,
+          kimchiPct,
+          notifiedAt: null,
+        },
+      });
+    }
 
     // I-1: 발송 게이트/상한/필터에 걸린 후보는 여기서 종료 — notifiedAt=null 유지 (쿨다운 미발동)
     if (!send) return false;

@@ -68,14 +68,47 @@ describe('multiArbNotifierService.notify', () => {
     expect(sent).toBe(false);
     expect(db.multiArbOpportunity.create).not.toHaveBeenCalled();
     expect(mockedSend).not.toHaveBeenCalled();
-    // 쿨다운 조회 조건 검증: notifiedAt 30분 윈도우
-    expect(db.multiArbOpportunity.findFirst).toHaveBeenCalledWith({
+    // 쿨다운 조회 조건 검증: notifiedAt 30분 윈도우 (첫 번째 findFirst 호출)
+    expect(db.multiArbOpportunity.findFirst).toHaveBeenNthCalledWith(1, {
       where: {
         symbol: 'WLD',
         currencyZone: 'KRW',
         notifiedAt: { gte: expect.any(Date) },
       },
     });
+  });
+
+  // 기록 dedup: 알림 off라 notifiedAt이 채워지지 않는 기간에도 detectedAt 기준 30분 내 기존 행이 있으면 재사용
+  it('detectedAt 30분 내 기존 행(notifiedAt=null) 있음 → create 없이 재사용, 발송/notifiedAt 갱신은 그 행에 적용', async () => {
+    db.multiArbOpportunity.findFirst
+      .mockResolvedValueOnce(null) // 1) 쿨다운 확인: 없음
+      .mockResolvedValueOnce({ id: 42, notifiedAt: null }); // 2) 기록 dedup: 기존 행 재사용
+    const sent = await multiArbNotifierService.notify(cand, feasible, 0.8);
+    expect(sent).toBe(true);
+    expect(db.multiArbOpportunity.create).not.toHaveBeenCalled();
+    expect(mockedSend).toHaveBeenCalledTimes(1);
+    expect(db.multiArbOpportunity.update).toHaveBeenCalledWith({
+      where: { id: 42 },
+      data: { notifiedAt: expect.any(Date) },
+    });
+    // 기록 dedup 조회 조건: price_anomaly 제외, detectedAt 30분 윈도우
+    expect(db.multiArbOpportunity.findFirst).toHaveBeenNthCalledWith(2, {
+      where: {
+        symbol: 'WLD',
+        currencyZone: 'KRW',
+        feasibility: { not: 'price_anomaly' },
+        detectedAt: { gte: expect.any(Date) },
+      },
+    });
+  });
+
+  it('detectedAt 30분 지난 경우(기존 행 없음) → create 호출', async () => {
+    db.multiArbOpportunity.findFirst
+      .mockResolvedValueOnce(null) // 쿨다운 확인: 없음
+      .mockResolvedValueOnce(null); // 기록 dedup: 없음 → create 필요
+    const sent = await multiArbNotifierService.notify(cand, feasible, 0.8);
+    expect(sent).toBe(true);
+    expect(db.multiArbOpportunity.create).toHaveBeenCalledTimes(1);
   });
 
   it('카톡 발송 실패 → notifiedAt 미갱신 (다음 사이클 재시도, spec §9)', async () => {
@@ -90,7 +123,7 @@ describe('multiArbNotifierService.notify', () => {
   it('send=false: 쿨다운 확인 + DB 기록은 수행, 카톡 발송·notifiedAt 갱신은 안 함 (I-1)', async () => {
     const sent = await multiArbNotifierService.notify(cand, feasible, 0.8, { send: false });
     expect(sent).toBe(false);
-    expect(db.multiArbOpportunity.findFirst).toHaveBeenCalledTimes(1); // 쿨다운 확인은 종전대로
+    expect(db.multiArbOpportunity.findFirst).toHaveBeenCalledTimes(2); // 쿨다운 확인 + 기록 dedup 확인(신규)
     expect(db.multiArbOpportunity.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ symbol: 'WLD', feasibility: 'feasible', notifiedAt: null }),
     });
