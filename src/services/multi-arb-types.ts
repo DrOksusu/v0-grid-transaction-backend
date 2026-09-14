@@ -46,6 +46,6 @@ export type FeasibilityTag = 'feasible' | 'network_mismatch' | 'deposit_halt' | 
 export interface FeasibilityResult {
   feasibility: FeasibilityTag;
   networkMatch: boolean | null;   // 판정 불가(unverified) 시 null
-  matchedNetwork: string | null;  // 입출금까지 정상인 교집합 네트워크 (feasible일 때)
+  matchedNetwork: string | null;  // 입출금까지 정상인 교집합 네트워크 (feasible일 때만; 그 외는 항상 null)
   note: string;                   // 사람이 읽을 요약/경고 (DB note 컬럼 + 카톡 메시지)
 }

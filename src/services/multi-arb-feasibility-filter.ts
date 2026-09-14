@@ -5,6 +5,23 @@
 // 순수함수 — 외부 I/O 없음
 import { FeasibilityResult, MultiArbExchange, NetworkStatus, SpreadCandidate, WalletStatusMap, EXCHANGE_LABELS } from './multi-arb-types';
 
+// 같은 정규화 네트워크명 행이 여러 개면 입출금 플래그를 OR로 병합 (하나라도 가능하면 가능).
+// 삽입 순서를 유지해 라벨 표기 순서를 안정화한다.
+function mergeByNetwork(nets: NetworkStatus[]): Map<string, NetworkStatus> {
+  const merged = new Map<string, NetworkStatus>();
+  for (const n of nets) {
+    const prev = merged.get(n.network);
+    merged.set(n.network, prev
+      ? {
+          network: n.network,
+          depositEnabled: prev.depositEnabled || n.depositEnabled,
+          withdrawEnabled: prev.withdrawEnabled || n.withdrawEnabled,
+        }
+      : n);
+  }
+  return merged;
+}
+
 export function evaluateFeasibility(
   candidate: SpreadCandidate,
   wallets: Partial<Record<MultiArbExchange, WalletStatusMap>>,
@@ -22,13 +39,17 @@ export function evaluateFeasibility(
     };
   }
 
+  // 별칭 통합 후 한 거래소가 같은 정규화명 행을 2개 반환할 수 있으므로,
+  // 동일 네트워크명은 입출금 플래그를 OR로 병합한다 (하나라도 가능하면 가능).
+  const buyByNetwork = mergeByNetwork(buyNets);
+  const sellByNetwork = mergeByNetwork(sellNets);
+
   // 1단: 네트워크 교집합
-  const sellByNetwork = new Map<string, NetworkStatus>(sellNets.map(n => [n.network, n]));
-  const commonNetworks = buyNets.filter(n => sellByNetwork.has(n.network));
+  const commonNetworks = [...buyByNetwork.values()].filter(n => sellByNetwork.has(n.network));
 
   if (commonNetworks.length === 0) {
-    const buyLabel = `${EXCHANGE_LABELS[candidate.buyExchange]} ${buyNets.map(n => n.network).join('/')}망`;
-    const sellLabel = `${EXCHANGE_LABELS[candidate.sellExchange]} ${sellNets.map(n => n.network).join('/')}망`;
+    const buyLabel = `${EXCHANGE_LABELS[candidate.buyExchange]} ${[...buyByNetwork.keys()].join('/')}망`;
+    const sellLabel = `${EXCHANGE_LABELS[candidate.sellExchange]} ${[...sellByNetwork.keys()].join('/')}망`;
     return {
       feasibility: 'network_mismatch',
       networkMatch: false,
@@ -46,7 +67,9 @@ export function evaluateFeasibility(
     return {
       feasibility: 'deposit_halt',
       networkMatch: true,
-      matchedNetwork: commonNetworks[0].network,
+      // matchedNetwork는 "입출금까지 정상인 네트워크(feasible일 때만)" 계약이므로
+      // 전송 불가한 이 경우 null로 둔다 (types.ts FeasibilityResult 주석과 정합).
+      matchedNetwork: null,
       note: `입출금 중단: ${commonNetworks.map(n => n.network).join('/')}망에서 매수측 출금 또는 매도측 입금 불가`,
     };
   }
