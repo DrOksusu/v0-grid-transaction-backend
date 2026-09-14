@@ -2,15 +2,13 @@
 // 업비트 신규 상장 공지 감지 즉시 시장가 매수
 
 import axios from 'axios';
-import crypto from 'crypto';
 import https from 'https';
 import { ListingSource } from '@prisma/client';
 import prisma from '../config/database';
-import { decrypt } from '../utils/encryption';
 import { BithumbClient } from './exchange/bithumb-client';
 import { kakaoNotifyService } from './kakao-notify.service';
-
-const ADMIN_USER_ID = 2; // Binance/Bithumb 인증정보 소유 유저
+import { hmacSign, signedGet, signedPost, mexcPost, gateioRequest, BINANCE, MEXC } from './exchange/exchange-signer';
+import { getAdminCreds } from './admin-credentials';
 
 // source 파라미터 타입 — Prisma generated enum 그대로 사용
 export type ListingSourceType = ListingSource; // 'UPBIT' | 'BITHUMB'
@@ -81,130 +79,6 @@ interface OrderResult {
   amountKrw: number;
   amountUsdt?: number;
   errorMsg?: string;
-}
-
-// ── 공통 HMAC-SHA256 서명 (Binance / MEXC 동일 방식) ────────────────────────
-
-function hmacSign(secretKey: string, params: Record<string, string>): string {
-  return crypto.createHmac('sha256', secretKey).update(new URLSearchParams(params).toString()).digest('hex');
-}
-
-async function signedGet(
-  baseUrl: string,
-  apiKeyHeader: string,
-  apiKey: string,
-  secretKey: string,
-  endpoint: string,
-  params: Record<string, string> = {},
-) {
-  const timestamp = Date.now().toString();
-  const allParams = { ...params, timestamp };
-  const signature = hmacSign(secretKey, allParams);
-  const qs = new URLSearchParams({ ...allParams, signature }).toString();
-  const res = await axios.get(`${baseUrl}${endpoint}?${qs}`, {
-    headers: { [apiKeyHeader]: apiKey },
-    timeout: 10000,
-  });
-  return res.data;
-}
-
-// paramsInBody: Binance = true (body), MEXC = false (querystring)
-async function signedPost(
-  baseUrl: string,
-  apiKeyHeader: string,
-  apiKey: string,
-  secretKey: string,
-  endpoint: string,
-  params: Record<string, string>,
-  paramsInBody = true,
-) {
-  const timestamp = Date.now().toString();
-  const allParams = { ...params, timestamp };
-  const signature = hmacSign(secretKey, allParams);
-  const qs = new URLSearchParams({ ...allParams, signature }).toString();
-
-  if (paramsInBody) {
-    const res = await axios.post(`${baseUrl}${endpoint}`, qs, {
-      headers: { [apiKeyHeader]: apiKey, 'Content-Type': 'application/x-www-form-urlencoded' },
-      timeout: 10000,
-    });
-    return res.data;
-  } else {
-    // MEXC: 파라미터를 querystring으로 전달, body 없음
-    // axios가 body=null이어도 Content-Type을 자동 추가하므로 명시적으로 제거
-    const res = await axios.post(`${baseUrl}${endpoint}?${qs}`, null, {
-      headers: { [apiKeyHeader]: apiKey, 'Content-Type': undefined },
-      timeout: 10000,
-      transformRequest: [(data: any, headers: any) => {
-        delete headers['Content-Type'];
-        delete headers['content-type'];
-        return data;
-      }],
-    });
-    return res.data;
-  }
-}
-
-const BINANCE = { baseUrl: 'https://api.binance.com', apiKeyHeader: 'X-MBX-APIKEY', paramsInBody: true };
-const MEXC = { baseUrl: 'https://api.mexc.com', apiKeyHeader: 'X-MEXC-APIKEY', paramsInBody: false };
-const GATEIO_BASE = 'https://api.gateio.ws';
-
-// Gate.io HMAC-SHA512 서명 (method + path + querystring + body_hash + timestamp)
-async function gateioRequest(apiKey: string, secretKey: string, method: string, path: string, queryString = '', body = ''): Promise<any> {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const bodyHash = crypto.createHash('sha512').update(body).digest('hex');
-  const message = `${method}\n${path}\n${queryString}\n${bodyHash}\n${timestamp}`;
-  const sign = crypto.createHmac('sha512', secretKey).update(message).digest('hex');
-  const url = `${GATEIO_BASE}${path}${queryString ? '?' + queryString : ''}`;
-  const res = await axios({
-    method: method.toLowerCase() as 'get' | 'post',
-    url,
-    data: body || undefined,
-    headers: { 'KEY': apiKey, 'Timestamp': String(timestamp), 'SIGN': sign, 'Content-Type': 'application/json' },
-    timeout: 10000,
-  });
-  return res.data;
-}
-
-// MEXC POST: axios가 Content-Type을 강제 추가하므로 Node.js https 모듈 직접 사용
-function mexcPost(apiKey: string, secretKey: string, endpoint: string, params: Record<string, string>): Promise<any> {
-  const timestamp = Date.now().toString();
-  const allParams = { ...params, timestamp };
-  const signature = hmacSign(secretKey, allParams);
-  const qs = new URLSearchParams({ ...allParams, signature }).toString();
-
-  return new Promise((resolve, reject) => {
-    const req = https.request({
-      hostname: 'api.mexc.com',
-      path: `${endpoint}?${qs}`,
-      method: 'POST',
-      headers: { 'X-MEXC-APIKEY': apiKey },
-      timeout: 10000,
-    }, (res) => {
-      let data = '';
-      res.on('data', (c: string) => data += c);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          // MEXC는 비즈니스 에러(잔고 부족 등)를 HTTP 200으로 반환하면서 body에 code 필드로 구분
-          const isHttpError = res.statusCode && res.statusCode >= 400;
-          const isBodyError = parsed.code && parsed.code !== 200 && !parsed.orderId;
-          if (isHttpError || isBodyError) {
-            const err: any = new Error(parsed.msg ?? `MEXC 오류 code=${parsed.code}`);
-            err.response = { data: parsed };
-            reject(err);
-          } else {
-            resolve(parsed);
-          }
-        } catch {
-          reject(new Error(`MEXC 파싱 실패: ${data}`));
-        }
-      });
-    });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('MEXC timeout')); });
-    req.end();
-  });
 }
 
 // ── 설정 관리 ──────────────────────────────────────────────────────────────────
@@ -743,43 +617,19 @@ class ListingAutoTraderService {
   // ── Private: 헬퍼 ────────────────────────────────────────────────────────
 
   private async getBinanceCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
-    const row = await prisma.credential.findFirst({
-      where: { userId: ADMIN_USER_ID, exchange: 'binance' },
-      select: { apiKey: true, secretKey: true },
-    });
-    if (!row) return null;
-    return { apiKey: decrypt(row.apiKey), secretKey: decrypt(row.secretKey) };
+    return getAdminCreds('binance');
   }
 
   private async getBithumbCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
-    const row = await prisma.credential.findFirst({
-      where: { userId: ADMIN_USER_ID, exchange: 'bithumb' },
-      select: { apiKey: true, secretKey: true },
-    });
-    if (!row) return null;
-    return { apiKey: decrypt(row.apiKey), secretKey: decrypt(row.secretKey) };
+    return getAdminCreds('bithumb');
   }
 
   private async getMexcCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
-    const row = await prisma.credential.findFirst({
-      where: { userId: ADMIN_USER_ID, exchange: 'mexc' as any },
-      select: { apiKey: true, secretKey: true },
-    });
-    if (!row) return null;
-    return { apiKey: decrypt(row.apiKey), secretKey: decrypt(row.secretKey) };
+    return getAdminCreds('mexc');
   }
 
   private async getGateioCreds(): Promise<{ apiKey: string; secretKey: string } | null> {
-    const row = await prisma.credential.findFirst({
-      where: { userId: ADMIN_USER_ID, exchange: 'gateio' as any },
-      select: { apiKey: true, secretKey: true },
-    });
-    if (row) return { apiKey: decrypt(row.apiKey), secretKey: decrypt(row.secretKey) };
-    // DB에 없으면 환경변수 fallback (GATEWAY_API_KEY / GATEWAY_SECRET_KEY)
-    const envKey = process.env.GATEWAY_API_KEY;
-    const envSecret = process.env.GATEWAY_SECRET_KEY;
-    if (envKey && envSecret) return { apiKey: envKey, secretKey: envSecret };
-    return null;
+    return getAdminCreds('gateio');
   }
 
   private async fetchKrwPerUsdt(): Promise<number> {
