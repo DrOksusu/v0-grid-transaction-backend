@@ -812,3 +812,26 @@ model BtcDormantSnapshot {
   @@index([date])
   @@map("btc_dormant_snapshots")
 }
+
+// 멀티 거래소 차익거래 기회 이력 (알림 쿨다운 근거 포함) — spec 2026-09-14 §8
+model MultiArbOpportunity {
+  id           Int      @id @default(autoincrement())
+  symbol       String                    // base 심볼 (예: "BTC")
+  currencyZone String                    // "KRW" | "USDT"
+  buyExchange  String
+  buyPrice     Float
+  sellExchange String
+  sellPrice    Float
+  spreadPct    Float
+  feasibility  String                    // "feasible" | "network_mismatch" | "deposit_halt" | "notice_warning" | "unverified" | "price_anomaly"(sanity 제외 건, 기록 전용)
+  networkMatch Boolean?                  // 네트워크 일치 여부 (판정 가능한 경우)
+  matchedNetwork String?                 // 교집합 네트워크 (예: "ETH")
+  note         String?                   // 사람이 읽을 요약/경고
+  kimchiPct    Float?                    // 참고 김프(%)
+  detectedAt   DateTime @default(now())
+  notifiedAt   DateTime?                 // 카톡 발송 시각 (null이면 미발송)
+
+  @@index([symbol, currencyZone, notifiedAt])   // 쿨다운 조회
+  @@index([detectedAt])
+  @@map("multi_arb_opportunities")
+}

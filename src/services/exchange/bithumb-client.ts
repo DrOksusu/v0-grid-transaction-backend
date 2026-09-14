@@ -26,7 +26,7 @@ export interface BithumbCreds {
  * Bithumb JWT HS256 토큰 생성.
  * query 파라미터가 있을 때는 SHA-512 query_hash 를 payload 에 추가.
  */
-function generateJwt(accessKey: string, secretKey: string, queryString?: string): string {
+export function generateBithumbJwt(accessKey: string, secretKey: string, queryString?: string): string {
   const b64url = (input: string) =>
     Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 
@@ -53,7 +53,7 @@ export class BithumbClient implements ExchangeClient {
   constructor(private creds: BithumbCreds) {}
 
   private authHeader(queryString?: string): string {
-    return `Bearer ${generateJwt(this.creds.accessKey, this.creds.secretKey, queryString)}`;
+    return `Bearer ${generateBithumbJwt(this.creds.accessKey, this.creds.secretKey, queryString)}`;
   }
 
   /**
