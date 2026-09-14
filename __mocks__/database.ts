@@ -62,6 +62,14 @@ const prisma = {
     create: jest.fn(),
     update: jest.fn(),
   },
+
+  // 멀티 거래소 차익 기회 이력 (쿨다운 조회 + 발송 기록)
+  multiArbOpportunity: {
+    findFirst: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+    findMany: jest.fn(),
+  },
 };
 
 // Stablecoin Prisma 클라이언트 Mock
