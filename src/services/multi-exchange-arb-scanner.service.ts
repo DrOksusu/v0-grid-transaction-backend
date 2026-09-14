@@ -4,6 +4,7 @@ import { multiArbSymbolUniverseService } from './multi-arb-symbol-universe.servi
 import { multiArbPriceSource } from './multi-arb-price-source.service';
 import { multiArbWalletStatusService } from './multi-arb-wallet-status.service';
 import { calculateSpreads } from './multi-arb-spread-calculator';
+import { checkPriceSanity } from './multi-arb-price-sanity';
 import { evaluateFeasibility } from './multi-arb-feasibility-filter';
 import { multiArbNotifierService } from './multi-arb-notifier.service';
 import {
@@ -77,10 +78,26 @@ class MultiExchangeArbScannerService {
     // 4. 1차 필터: 임계값 초과만 — spec §5 step 4
     const hot = candidates.filter(c => c.spreadPct >= SPREAD_THRESHOLD_PCT);
 
+    // 4.5 가격 sanity check (Task 12): 티커 충돌/단위 이상치 후보 제외
+    //   기준가 = 바이낸스 USDT (KRW권은 환율 환산). 기준가 없으면 스프레드 상한 폴백.
+    const sane: SpreadCandidate[] = [];
+    const sanityLines: string[] = []; // 사이클당 1회 요약 로깅용
+    for (const candidate of hot) {
+      const sanity = checkPriceSanity(candidate, prices.binance, krwPerUsdt);
+      if (sanity.ok) {
+        sane.push(candidate);
+      } else {
+        sanityLines.push(`${candidate.symbol} zone=${candidate.currencyZone} ${sanity.reason}`);
+      }
+    }
+    if (sanityLines.length > 0) {
+      console.warn(`[multi-arb] price_sanity 제외 ${sanityLines.join(' | ')}`);
+    }
+
     // 5~7. 실현가능성 판정 → 쿨다운/알림 (+김프 첨부) — spec §5 step 5~7
     let alerted = 0;
     const mismatchLines: string[] = []; // 사이클당 1회 요약 로깅용
-    for (const candidate of hot) {
+    for (const candidate of sane) {
       try {
         const feasibility = evaluateFeasibility(candidate, wallets);
         if (feasibility.feasibility === 'network_mismatch') {

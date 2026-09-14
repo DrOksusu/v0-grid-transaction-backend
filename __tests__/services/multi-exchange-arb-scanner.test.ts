@@ -91,9 +91,12 @@ describe('multiExchangeArbScannerService.scanOnce', () => {
       bithumb: new Map([['LSK', [{ network: 'ETH', depositEnabled: true, withdrawEnabled: true }]]]),
     });
     mockUniverse.mockResolvedValue({ krw: ['LSK'], usdt: [] });
+    // 바이낸스 기준가 0.5 USDT × 1385 = 692.5 KRW → 533(0.77x)/1322(1.91x) 모두 sanity 허용 범위
+    // (Task 12 sanity check 도입 후에도 network_mismatch 경고 경로가 검증되도록 기준가를 픽스처에 포함)
     mockPrices.mockResolvedValue({
       upbit: priceMap({ LSK: 533 }),
       bithumb: priceMap({ LSK: 1322 }),
+      binance: priceMap({ LSK: 0.5 }),
     });
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -110,6 +113,66 @@ describe('multiExchangeArbScannerService.scanOnce', () => {
       expect(logged).toContain('LSK zone=KRW');
       expect(logged).toContain('buy=upbit[LSK]');
       expect(logged).toContain('sell=bithumb[ETH]');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('(e) 가격 sanity 미달 후보는 실현가능성/알림 단계에서 제외하고 warn 요약 로깅한다 (Task 12)', async () => {
+    // TROLL류: 바이낸스에 없는 코인 + 스프레드 28억% → 폴백(스프레드 상한)으로 제외
+    mockUniverse.mockResolvedValue({ krw: [], usdt: ['TROLL'] });
+    mockPrices.mockResolvedValue({
+      mexc: priceMap({ TROLL: 1.6e-9 }),
+      gateio: priceMap({ TROLL: 0.046 }),
+    });
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const summary = await multiExchangeArbScannerService.scanOnce();
+
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(summary.alerted).toBe(0);
+
+      const warnCalls = warnSpy.mock.calls.filter(c => String(c[0]).includes('price_sanity'));
+      expect(warnCalls).toHaveLength(1);
+      expect(String(warnCalls[0][0])).toContain('TROLL');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('기준가(바이낸스) 있는 이상치는 배수 포함 warn 로깅 후 제외, 정상 후보는 그대로 알림된다', async () => {
+    // XEM: 바이낸스 0.02 USDT × 1385 = 27.7 KRW 기준인데 업비트 850 KRW (30.7x) → 티커 충돌 의심
+    // WLD: 바이낸스 3.1 USDT × 1385 = 4,293.5 KRW 기준, 국내 4,200/4,340 → 정상 통과
+    mockWallets.mockResolvedValue({
+      upbit: new Map([
+        ['WLD', [{ network: 'ETH', depositEnabled: true, withdrawEnabled: true }]],
+        ['XEM', [{ network: 'XEM', depositEnabled: true, withdrawEnabled: true }]],
+      ]),
+      bithumb: new Map([
+        ['WLD', [{ network: 'ETH', depositEnabled: true, withdrawEnabled: true }]],
+        ['XEM', [{ network: 'XEM', depositEnabled: true, withdrawEnabled: true }]],
+      ]),
+    });
+    mockUniverse.mockResolvedValue({ krw: ['WLD', 'XEM'], usdt: [] });
+    mockPrices.mockResolvedValue({
+      upbit: priceMap({ WLD: 4340, XEM: 850 }),
+      bithumb: priceMap({ WLD: 4200, XEM: 28 }),
+      binance: priceMap({ WLD: 3.1, XEM: 0.02 }),
+    });
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const summary = await multiExchangeArbScannerService.scanOnce();
+
+      // 정상 후보(WLD)만 알림 — 진짜 기회는 보존
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+      expect(mockNotify.mock.calls[0][0].symbol).toBe('WLD');
+      expect(summary.alerted).toBe(1);
+
+      const warnCalls = warnSpy.mock.calls.filter(c => String(c[0]).includes('price_sanity'));
+      expect(warnCalls).toHaveLength(1);
+      const logged = String(warnCalls[0][0]);
+      expect(logged).toContain('XEM');
+      expect(logged).toContain('upbit'); // 어느 쪽 가격이 이상인지
     } finally {
       warnSpy.mockRestore();
     }
