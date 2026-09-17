@@ -26,10 +26,16 @@ export const createBot = async (
       orderAmount,
       stopAtMax = false,
       autoStart = false,
+      profitMode = 'fixed_amount',
     } = req.body;
 
     if (!exchange || !ticker || !lowerPrice || !upperPrice || !priceChangePercent || !orderAmount) {
       return errorResponse(res, 'VALIDATION_ERROR', '필수 필드가 누락되었습니다', 400);
+    }
+
+    // 손익 방식 검증: 코인 쌓임(fixed_amount) | 코인 중립(coin_neutral)
+    if (!['fixed_amount', 'coin_neutral'].includes(profitMode)) {
+      return errorResponse(res, 'VALIDATION_ERROR', 'profitMode는 fixed_amount 또는 coin_neutral만 허용됩니다', 400);
     }
 
     // 빗썸 그리드는 관리자(userId=2)만 사용 가능
@@ -68,6 +74,7 @@ export const createBot = async (
         gridCount,
         orderAmount,
         stopAtMax,
+        profitMode,
         status: autoStart ? 'running' : 'stopped',
         investmentAmount,
       },
@@ -95,6 +102,7 @@ export const createBot = async (
         ticker: bot.ticker,
         gridCount: bot.gridCount,
         investmentAmount: bot.investmentAmount,
+        profitMode: bot.profitMode,
         status: bot.status,
         createdAt: bot.createdAt,
       },
