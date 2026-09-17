@@ -34,6 +34,7 @@ interface CachedBotInfo {
   userId: number;
   ticker: string;
   orderAmount: number;
+  profitMode: string;
   exchange: string;
   expireAt: number;
 }
@@ -143,6 +144,7 @@ export class TradingService {
           userId: true,
           ticker: true,
           orderAmount: true,
+          profitMode: true,
           exchange: true,
           user: {
             include: {
@@ -175,6 +177,7 @@ export class TradingService {
       userId: bot.userId,
       ticker: bot.ticker,
       orderAmount: bot.orderAmount,
+      profitMode: bot.profitMode,
       exchange: bot.exchange as string,
       expireAt: now + BOT_INFO_CACHE_TTL,
     });
@@ -194,7 +197,7 @@ export class TradingService {
     const bot = await withRetry(
       () => prisma.bot.findUnique({
         where: { id: botId },
-        select: { userId: true, ticker: true, orderAmount: true, exchange: true },
+        select: { userId: true, ticker: true, orderAmount: true, profitMode: true, exchange: true },
       }),
       { operationName: `getCachedBotInfo(botId=${botId})` }
     );
@@ -205,11 +208,81 @@ export class TradingService {
       userId: bot.userId,
       ticker: bot.ticker,
       orderAmount: bot.orderAmount,
+      profitMode: bot.profitMode,
       exchange: bot.exchange as string,
       expireAt: now + BOT_INFO_CACHE_TTL,
     };
     botInfoCache.set(botId, botInfo);
     return botInfo;
+  }
+
+  /**
+   * 매도 주문 수량 계산 (profitMode 분기)
+   * - fixed_amount(디폴트, 코인 쌓임): orderAmount / 매도가 — 기존 동작 그대로
+   * - coin_neutral(코인 중립): 대응 매수의 실제 체결 수량으로 매도 → 코인 수량 불변
+   *   1) directFilledQty(방금 체결된 매수 수량)가 있으면 그 값 사용 (즉시 반대주문 경로)
+   *   2) 없으면 대응 매수 GridLevel.filledQty 조회 (주기 매도 경로)
+   *   3) 둘 다 없으면 기존 정액 방식 폴백 + 경고 (매도 자체가 막히면 안 됨 — 설계서 §6)
+   */
+  static async resolveSellVolume(
+    bot: { id: number; orderAmount: number; profitMode?: string | null },
+    sell: { price: number; buyPrice: number | null },
+    directFilledQty?: number | null
+  ): Promise<number> {
+    const fallbackVolume = bot.orderAmount / sell.price;
+
+    if (bot.profitMode !== 'coin_neutral') {
+      return fallbackVolume;
+    }
+
+    // 1) 즉시 반대주문 경로: 방금 체결된 매수 수량
+    if (directFilledQty != null && directFilledQty > 0) {
+      return directFilledQty;
+    }
+
+    // 2) 주기 매도 경로: 대응 매수 GridLevel의 filledQty 조회
+    //    (가격 범위 검색은 executeOppositeOrder의 기존 priceMargin 패턴과 동일)
+    //    촘촘한 그리드(예: 빗썸 스테이블코인 1원 간격 ≈1450원, 간격 0.069% < margin 0.1%)에서는
+    //    인접 매수 레벨이 margin 범위에 함께 걸릴 수 있으므로, 후보를 모두 가져온 뒤
+    //    매도가에 대응하는 매수가(sell.buyPrice)와 가장 가까운 레벨을 선택한다 (동점이면 filledAt 최신).
+    if (sell.buyPrice != null) {
+      const priceMargin = Math.max(sell.buyPrice * 0.001, 0.000001);
+      const buyGrids = await prisma.gridLevel.findMany({
+        where: {
+          botId: bot.id,
+          type: 'buy',
+          price: { gte: sell.buyPrice - priceMargin, lte: sell.buyPrice + priceMargin },
+          filledQty: { not: null },
+        },
+        select: { price: true, filledQty: true, filledAt: true },
+      });
+
+      // 대응 매수가와 가장 가까운 레벨 선택 (거리 최소, 동점 시 filledAt 최신)
+      let best: { price: number; filledQty: number | null; filledAt: Date | null } | null = null;
+      for (const g of buyGrids) {
+        if (g.filledQty == null || g.filledQty <= 0) continue;
+        if (best === null) { best = g; continue; }
+        const dCur = Math.abs(g.price - sell.buyPrice);
+        const dBest = Math.abs(best.price - sell.buyPrice);
+        if (dCur < dBest) {
+          best = g;
+        } else if (dCur === dBest) {
+          const tCur = g.filledAt?.getTime() ?? 0;
+          const tBest = best.filledAt?.getTime() ?? 0;
+          if (tCur > tBest) best = g;
+        }
+      }
+
+      if (best?.filledQty != null && best.filledQty > 0) {
+        return best.filledQty;
+      }
+    }
+
+    // 3) 폴백: filledQty 미존재 (구 데이터/리컨사일 경로) — 코인 중립은 일시적으로 안 지켜지지만 매도는 정상 수행
+    console.warn(
+      `[Trading] Bot ${bot.id}: coin_neutral 매도인데 filledQty 없음 → 정액 방식 폴백 (매도가 ${sell.price}, 매수가 ${sell.buyPrice ?? '-'})`
+    );
+    return fallbackVolume;
   }
 
   // 특정 봇에 대한 거래 실행
@@ -219,7 +292,7 @@ export class TradingService {
       const bot = await withRetry(
         () => prisma.bot.findUnique({
           where: { id: botId },
-          select: { id: true, status: true, ticker: true, orderAmount: true, errorMessage: true, userId: true },
+          select: { id: true, status: true, ticker: true, orderAmount: true, profitMode: true, errorMessage: true, userId: true },
         }),
         { operationName: `executeTrade.findBot(botId=${botId})` }
       );
@@ -438,8 +511,16 @@ export class TradingService {
           if (updateResult.count === 0) {
             console.log(`[Trading] Bot ${botId}: 매도 그리드가 이미 처리 중입니다 (${executableGrids.sell.price}원)`);
           } else {
-            // 주문 수량 계산
-            const volume = bot.orderAmount / executableGrids.sell.price;
+            // 주문 수량 계산: coin_neutral이면 대응 매수의 실제 체결 수량, 아니면 정액(기존)
+            const volume = await this.resolveSellVolume(
+              { id: botId, orderAmount: bot.orderAmount, profitMode: bot.profitMode },
+              { price: executableGrids.sell.price, buyPrice: executableGrids.sell.buyPrice ?? null }
+            );
+
+            // 매도 금액: coin_neutral은 실제 매도 수량 기준, fixed_amount는 정액(기존)
+            const sellTotal = bot.profitMode === 'coin_neutral'
+              ? volume * executableGrids.sell.price
+              : bot.orderAmount;
 
             // 매도 주문
             const order = await upbit.sellLimit(
@@ -462,7 +543,7 @@ export class TradingService {
                 type: 'sell',
                 price: executableGrids.sell.price,
                 amount: volume,
-                total: bot.orderAmount,
+                total: sellTotal,
                 orderId: order.uuid,
               },
             });
@@ -473,7 +554,7 @@ export class TradingService {
               type: 'sell',
               price: executableGrids.sell.price,
               amount: volume,
-              total: bot.orderAmount,
+              total: sellTotal,
               orderId: order.uuid,
               status: 'pending',
               createdAt: newTrade.createdAt,
@@ -1000,6 +1081,14 @@ export class TradingService {
       : parseFloat(order.executed_volume ?? '0');
     const filledTotal = filledPrice * filledVolume;
 
+    // coin_neutral 매도 수량 산정용: 매수 실제 체결 수량을 GridLevel에 기록 (설계서 §4(b))
+    if (grid.type === 'buy' && filledVolume > 0) {
+      await prisma.gridLevel.update({
+        where: { id: grid.id },
+        data: { filledQty: filledVolume },
+      });
+    }
+
     // 거래 기록 업데이트 (Trade.profit을 먼저 기록해야 일별수익과 MonthlyProfit이 일치)
     const trade = await prisma.trade.findFirst({
       where: { orderId: grid.orderId! },
@@ -1124,7 +1213,8 @@ export class TradingService {
             id: botId,
             ticker: botInfo.ticker,
             orderAmount: botInfo.orderAmount,
-          }, grid, 0, exchange);
+            profitMode: botInfo.profitMode,
+          }, grid, 0, exchange, grid.type === 'buy' ? filledVolume : undefined);
         } else {
           console.log(`[Trading] Bot ${botId}: botInfo를 찾을 수 없어 반대 주문 실행 불가`);
         }
@@ -1233,6 +1323,14 @@ export class TradingService {
           const filledVolume = parseFloat(order.executed_volume);
           const filledTotal = filledPrice * filledVolume;
 
+          // coin_neutral 매도 수량 산정용: 매수 실제 체결 수량을 GridLevel에 기록
+          if (grid.type === 'buy' && filledVolume > 0) {
+            await prisma.gridLevel.update({
+              where: { id: grid.id },
+              data: { filledQty: filledVolume },
+            });
+          }
+
           // 거래 기록에 실제 체결가로 업데이트 (Trade.profit 먼저 기록 → MonthlyProfit과 정합성 보장)
           const trade = await prisma.trade.findFirst({
             where: { orderId: grid.orderId! },
@@ -1290,7 +1388,8 @@ export class TradingService {
                   id: botId,
                   ticker: botInfo.ticker,
                   orderAmount: botInfo.orderAmount,
-                }, grid, 0, botExchange);
+                  profitMode: botInfo.profitMode,
+                }, grid, 0, botExchange, grid.type === 'buy' ? filledVolume : undefined);
               }
             }
           }
@@ -1410,10 +1509,11 @@ export class TradingService {
   // 체결 후 즉시 반대 주문 실행
   private static async executeOppositeOrder(
     upbit: GridTradeClient,
-    bot: { id: number; ticker: string; orderAmount: number },
+    bot: { id: number; ticker: string; orderAmount: number; profitMode?: string },
     filledGrid: { id: number; type: string; price: number; sellPrice: number | null; buyPrice: number | null; botId: number; _processStartTime?: number; _actualFilledAt?: Date },
     retryCount: number = 0,
-    exchange: string = 'upbit'
+    exchange: string = 'upbit',
+    buyFilledQty?: number // 방금 체결된 매수 수량 (coin_neutral 매도 수량 소스, 설계서 §4(c))
   ): Promise<void> {
     const MAX_RETRIES = 3;
     const oppositeOrderStartTime = Date.now();
@@ -1439,7 +1539,15 @@ export class TradingService {
           return;
         }
 
-        const volume = bot.orderAmount / sellPrice;
+        // 매도 수량: coin_neutral이면 방금 체결된 매수 수량(buyFilledQty), 아니면 정액(기존)
+        const volume = await this.resolveSellVolume(
+          { id: bot.id, orderAmount: bot.orderAmount, profitMode: bot.profitMode },
+          { price: sellPrice, buyPrice: filledGrid.price },
+          buyFilledQty
+        );
+
+        // 매도 금액: coin_neutral은 실제 매도 수량 기준, fixed_amount는 정액(기존)
+        const sellTotal = bot.profitMode === 'coin_neutral' ? volume * sellPrice : bot.orderAmount;
 
         console.log(`[Trading] Bot ${bot.id}: 매수 체결 후 즉시 매도 주문 - ${sellPrice.toLocaleString()}원`);
 
@@ -1506,7 +1614,7 @@ export class TradingService {
             type: 'sell',
             price: sellPrice,
             amount: volume,
-            total: bot.orderAmount,
+            total: sellTotal,
             orderId: order.uuid,
           },
         });
@@ -1517,7 +1625,7 @@ export class TradingService {
           type: 'sell',
           price: sellPrice,
           amount: volume,
-          total: bot.orderAmount,
+          total: sellTotal,
           orderId: order.uuid,
           status: 'pending',
           createdAt: newTrade.createdAt,
@@ -1685,7 +1793,7 @@ export class TradingService {
         console.log(`[Trading] Bot ${bot.id}: ${delay/1000}초 후 반대 주문 재시도 (${retryCount + 1}/${MAX_RETRIES})...`);
 
         await new Promise(resolve => setTimeout(resolve, delay));
-        return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1, exchange);
+        return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1, exchange, buyFilledQty);
       }
 
       // 잔고 부족 에러: 원거리 매수 주문 정리 후 재시도
@@ -1704,7 +1812,7 @@ export class TradingService {
         if (result.cancelled > 0 && retryCount === 0) {
           console.log(`[Trading] Bot ${bot.id}: 주문 정리 완료, 매수 주문 재시도`);
           await new Promise(resolve => setTimeout(resolve, 2000)); // 2초 대기
-          return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1, exchange);
+          return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1, exchange, buyFilledQty);
         }
 
         // 정리해도 실패하면 에러 저장
