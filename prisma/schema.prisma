@@ -58,6 +58,7 @@ model Bot {
   gridCount          Int
   orderAmount        Float
   stopAtMax          Boolean     @default(false)
+  profitMode         String      @default("fixed_amount")
   status             BotStatus   @default(stopped)
   investmentAmount   Float       @default(0)
   currentProfit      Float       @default(0)
@@ -90,6 +91,7 @@ model GridLevel {
   updatedAt DateTime        @updatedAt
   buyPrice  Float?
   sellPrice Float?
+  filledQty Float?
   bot       Bot             @relation(fields: [botId], references: [id], onDelete: Cascade)
   trades    Trade[]
 
