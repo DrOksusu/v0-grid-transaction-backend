@@ -34,6 +34,7 @@ interface CachedBotInfo {
   userId: number;
   ticker: string;
   orderAmount: number;
+  profitMode: string;
   exchange: string;
   expireAt: number;
 }
@@ -143,6 +144,7 @@ export class TradingService {
           userId: true,
           ticker: true,
           orderAmount: true,
+          profitMode: true,
           exchange: true,
           user: {
             include: {
@@ -175,6 +177,7 @@ export class TradingService {
       userId: bot.userId,
       ticker: bot.ticker,
       orderAmount: bot.orderAmount,
+      profitMode: bot.profitMode,
       exchange: bot.exchange as string,
       expireAt: now + BOT_INFO_CACHE_TTL,
     });
@@ -194,7 +197,7 @@ export class TradingService {
     const bot = await withRetry(
       () => prisma.bot.findUnique({
         where: { id: botId },
-        select: { userId: true, ticker: true, orderAmount: true, exchange: true },
+        select: { userId: true, ticker: true, orderAmount: true, profitMode: true, exchange: true },
       }),
       { operationName: `getCachedBotInfo(botId=${botId})` }
     );
@@ -205,6 +208,7 @@ export class TradingService {
       userId: bot.userId,
       ticker: bot.ticker,
       orderAmount: bot.orderAmount,
+      profitMode: bot.profitMode,
       exchange: bot.exchange as string,
       expireAt: now + BOT_INFO_CACHE_TTL,
     };
@@ -269,7 +273,7 @@ export class TradingService {
       const bot = await withRetry(
         () => prisma.bot.findUnique({
           where: { id: botId },
-          select: { id: true, status: true, ticker: true, orderAmount: true, errorMessage: true, userId: true },
+          select: { id: true, status: true, ticker: true, orderAmount: true, profitMode: true, errorMessage: true, userId: true },
         }),
         { operationName: `executeTrade.findBot(botId=${botId})` }
       );
@@ -488,8 +492,16 @@ export class TradingService {
           if (updateResult.count === 0) {
             console.log(`[Trading] Bot ${botId}: 매도 그리드가 이미 처리 중입니다 (${executableGrids.sell.price}원)`);
           } else {
-            // 주문 수량 계산
-            const volume = bot.orderAmount / executableGrids.sell.price;
+            // 주문 수량 계산: coin_neutral이면 대응 매수의 실제 체결 수량, 아니면 정액(기존)
+            const volume = await this.resolveSellVolume(
+              { id: botId, orderAmount: bot.orderAmount, profitMode: bot.profitMode },
+              { price: executableGrids.sell.price, buyPrice: executableGrids.sell.buyPrice ?? null }
+            );
+
+            // 매도 금액: coin_neutral은 실제 매도 수량 기준, fixed_amount는 정액(기존)
+            const sellTotal = bot.profitMode === 'coin_neutral'
+              ? volume * executableGrids.sell.price
+              : bot.orderAmount;
 
             // 매도 주문
             const order = await upbit.sellLimit(
@@ -512,7 +524,7 @@ export class TradingService {
                 type: 'sell',
                 price: executableGrids.sell.price,
                 amount: volume,
-                total: bot.orderAmount,
+                total: sellTotal,
                 orderId: order.uuid,
               },
             });
@@ -523,7 +535,7 @@ export class TradingService {
               type: 'sell',
               price: executableGrids.sell.price,
               amount: volume,
-              total: bot.orderAmount,
+              total: sellTotal,
               orderId: order.uuid,
               status: 'pending',
               createdAt: newTrade.createdAt,
@@ -1182,7 +1194,8 @@ export class TradingService {
             id: botId,
             ticker: botInfo.ticker,
             orderAmount: botInfo.orderAmount,
-          }, grid, 0, exchange);
+            profitMode: botInfo.profitMode,
+          }, grid, 0, exchange, grid.type === 'buy' ? filledVolume : undefined);
         } else {
           console.log(`[Trading] Bot ${botId}: botInfo를 찾을 수 없어 반대 주문 실행 불가`);
         }
@@ -1356,7 +1369,8 @@ export class TradingService {
                   id: botId,
                   ticker: botInfo.ticker,
                   orderAmount: botInfo.orderAmount,
-                }, grid, 0, botExchange);
+                  profitMode: botInfo.profitMode,
+                }, grid, 0, botExchange, grid.type === 'buy' ? filledVolume : undefined);
               }
             }
           }
@@ -1476,10 +1490,11 @@ export class TradingService {
   // 체결 후 즉시 반대 주문 실행
   private static async executeOppositeOrder(
     upbit: GridTradeClient,
-    bot: { id: number; ticker: string; orderAmount: number },
+    bot: { id: number; ticker: string; orderAmount: number; profitMode?: string },
     filledGrid: { id: number; type: string; price: number; sellPrice: number | null; buyPrice: number | null; botId: number; _processStartTime?: number; _actualFilledAt?: Date },
     retryCount: number = 0,
-    exchange: string = 'upbit'
+    exchange: string = 'upbit',
+    buyFilledQty?: number // 방금 체결된 매수 수량 (coin_neutral 매도 수량 소스, 설계서 §4(c))
   ): Promise<void> {
     const MAX_RETRIES = 3;
     const oppositeOrderStartTime = Date.now();
@@ -1505,7 +1520,15 @@ export class TradingService {
           return;
         }
 
-        const volume = bot.orderAmount / sellPrice;
+        // 매도 수량: coin_neutral이면 방금 체결된 매수 수량(buyFilledQty), 아니면 정액(기존)
+        const volume = await this.resolveSellVolume(
+          { id: bot.id, orderAmount: bot.orderAmount, profitMode: bot.profitMode },
+          { price: sellPrice, buyPrice: filledGrid.price },
+          buyFilledQty
+        );
+
+        // 매도 금액: coin_neutral은 실제 매도 수량 기준, fixed_amount는 정액(기존)
+        const sellTotal = bot.profitMode === 'coin_neutral' ? volume * sellPrice : bot.orderAmount;
 
         console.log(`[Trading] Bot ${bot.id}: 매수 체결 후 즉시 매도 주문 - ${sellPrice.toLocaleString()}원`);
 
@@ -1572,7 +1595,7 @@ export class TradingService {
             type: 'sell',
             price: sellPrice,
             amount: volume,
-            total: bot.orderAmount,
+            total: sellTotal,
             orderId: order.uuid,
           },
         });
@@ -1583,7 +1606,7 @@ export class TradingService {
           type: 'sell',
           price: sellPrice,
           amount: volume,
-          total: bot.orderAmount,
+          total: sellTotal,
           orderId: order.uuid,
           status: 'pending',
           createdAt: newTrade.createdAt,
@@ -1751,7 +1774,7 @@ export class TradingService {
         console.log(`[Trading] Bot ${bot.id}: ${delay/1000}초 후 반대 주문 재시도 (${retryCount + 1}/${MAX_RETRIES})...`);
 
         await new Promise(resolve => setTimeout(resolve, delay));
-        return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1, exchange);
+        return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1, exchange, buyFilledQty);
       }
 
       // 잔고 부족 에러: 원거리 매수 주문 정리 후 재시도
@@ -1770,7 +1793,7 @@ export class TradingService {
         if (result.cancelled > 0 && retryCount === 0) {
           console.log(`[Trading] Bot ${bot.id}: 주문 정리 완료, 매수 주문 재시도`);
           await new Promise(resolve => setTimeout(resolve, 2000)); // 2초 대기
-          return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1, exchange);
+          return this.executeOppositeOrder(upbit, bot, filledGrid, retryCount + 1, exchange, buyFilledQty);
         }
 
         // 정리해도 실패하면 에러 저장

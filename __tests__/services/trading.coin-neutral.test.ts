@@ -186,3 +186,61 @@ describe('processFilledOrder — 매수 체결 시 filledQty 저장', () => {
     expect(filledQtyCalls).toHaveLength(0);
   });
 });
+
+describe('executeOppositeOrder — 매수 체결 직후 매도 수량', () => {
+  function setupOppositeMocks() {
+    // 매도 그리드 검색 → 발견
+    prisma.gridLevel.findFirst.mockResolvedValue({ id: 20, price: 1008, status: 'inactive' });
+    prisma.gridLevel.updateMany.mockResolvedValue({ count: 1 }); // inactive→pending 전이 성공
+    prisma.gridLevel.update.mockResolvedValue({});
+    prisma.trade.create.mockResolvedValue({ id: 1, createdAt: new Date() });
+    return { sellLimit: jest.fn().mockResolvedValue({ uuid: 'sell-1' }) };
+  }
+
+  const filledBuyGrid = {
+    id: 10, type: 'buy', price: 1000, sellPrice: 1008, buyPrice: null, botId: 1,
+  };
+
+  it('coin_neutral: 매도 수량 = 전달된 매수 체결 수량', async () => {
+    await loadTradingService();
+    const upbit = setupOppositeMocks();
+
+    await (TradingService as any).executeOppositeOrder(
+      upbit,
+      { id: 1, ticker: 'KRW-USDT', orderAmount: 10000, profitMode: 'coin_neutral' },
+      filledBuyGrid,
+      0,
+      'upbit',
+      9.995 // buyFilledQty: 방금 체결된 매수 수량
+    );
+
+    expect(upbit.sellLimit).toHaveBeenCalledWith('KRW-USDT', 1008, 9.995);
+    // coin_neutral Trade 기록: amount/total이 실제 매도 수량 기준
+    expect(prisma.trade.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ type: 'sell', amount: 9.995, total: 9.995 * 1008 }),
+      })
+    );
+  });
+
+  it('fixed_amount 회귀: 매도 수량 = orderAmount / sellPrice, total = orderAmount', async () => {
+    await loadTradingService();
+    const upbit = setupOppositeMocks();
+
+    await (TradingService as any).executeOppositeOrder(
+      upbit,
+      { id: 1, ticker: 'KRW-USDT', orderAmount: 10000, profitMode: 'fixed_amount' },
+      filledBuyGrid,
+      0,
+      'upbit',
+      9.995 // coin_neutral이 아니므로 무시되어야 함
+    );
+
+    expect(upbit.sellLimit).toHaveBeenCalledWith('KRW-USDT', 1008, 10000 / 1008);
+    expect(prisma.trade.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ type: 'sell', total: 10000 }),
+      })
+    );
+  });
+});
