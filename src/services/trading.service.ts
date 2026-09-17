@@ -212,6 +212,56 @@ export class TradingService {
     return botInfo;
   }
 
+  /**
+   * 매도 주문 수량 계산 (profitMode 분기)
+   * - fixed_amount(디폴트, 코인 쌓임): orderAmount / 매도가 — 기존 동작 그대로
+   * - coin_neutral(코인 중립): 대응 매수의 실제 체결 수량으로 매도 → 코인 수량 불변
+   *   1) directFilledQty(방금 체결된 매수 수량)가 있으면 그 값 사용 (즉시 반대주문 경로)
+   *   2) 없으면 대응 매수 GridLevel.filledQty 조회 (주기 매도 경로)
+   *   3) 둘 다 없으면 기존 정액 방식 폴백 + 경고 (매도 자체가 막히면 안 됨 — 설계서 §6)
+   */
+  static async resolveSellVolume(
+    bot: { id: number; orderAmount: number; profitMode?: string | null },
+    sell: { price: number; buyPrice: number | null },
+    directFilledQty?: number | null
+  ): Promise<number> {
+    const fallbackVolume = bot.orderAmount / sell.price;
+
+    if (bot.profitMode !== 'coin_neutral') {
+      return fallbackVolume;
+    }
+
+    // 1) 즉시 반대주문 경로: 방금 체결된 매수 수량
+    if (directFilledQty != null && directFilledQty > 0) {
+      return directFilledQty;
+    }
+
+    // 2) 주기 매도 경로: 대응 매수 GridLevel의 filledQty 조회
+    //    (가격 범위 검색은 executeOppositeOrder의 기존 priceMargin 패턴과 동일)
+    if (sell.buyPrice != null) {
+      const priceMargin = Math.max(sell.buyPrice * 0.001, 0.000001);
+      const buyGrid = await prisma.gridLevel.findFirst({
+        where: {
+          botId: bot.id,
+          type: 'buy',
+          price: { gte: sell.buyPrice - priceMargin, lte: sell.buyPrice + priceMargin },
+          filledQty: { not: null },
+        },
+        orderBy: { filledAt: 'desc' },
+        select: { filledQty: true },
+      });
+      if (buyGrid?.filledQty != null && buyGrid.filledQty > 0) {
+        return buyGrid.filledQty;
+      }
+    }
+
+    // 3) 폴백: filledQty 미존재 (구 데이터/리컨사일 경로) — 코인 중립은 일시적으로 안 지켜지지만 매도는 정상 수행
+    console.warn(
+      `[Trading] Bot ${bot.id}: coin_neutral 매도인데 filledQty 없음 → 정액 방식 폴백 (매도가 ${sell.price}, 매수가 ${sell.buyPrice ?? '-'})`
+    );
+    return fallbackVolume;
+  }
+
   // 특정 봇에 대한 거래 실행
   static async executeTrade(botId: number) {
     try {
