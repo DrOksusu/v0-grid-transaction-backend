@@ -137,3 +137,52 @@ describe('resolveSellVolume — 매도 수량 계산 분기', () => {
     warnSpy.mockRestore();
   });
 });
+
+describe('processFilledOrder — 매수 체결 시 filledQty 저장', () => {
+  function setupFilledOrderMocks() {
+    prisma.gridLevel.updateMany.mockResolvedValue({ count: 1 }); // pending→filled 원자 전이 성공
+    prisma.gridLevel.update.mockResolvedValue({});
+    prisma.bot.update.mockResolvedValue({});
+    prisma.trade.findFirst.mockResolvedValue({ id: 77 });
+    prisma.trade.update.mockResolvedValue({});
+    prisma.bot.findUnique.mockResolvedValue(null); // updatedBot null → 반대주문 스킵 (테스트 격리)
+  }
+
+  it('buy 체결이면 GridLevel.filledQty에 실제 체결 수량 저장', async () => {
+    await loadTradingService();
+    setupFilledOrderMocks();
+
+    const grid = {
+      id: 10, botId: 1, type: 'buy', price: 1000,
+      orderId: 'uuid-1', buyPrice: null, sellPrice: 1008,
+    };
+    const order = { state: 'done', avg_price: '999.5', executed_volume: '10.005', trades: [] };
+
+    await (TradingService as any).processFilledOrder(grid, order, {}, 5, 'upbit');
+
+    expect(prisma.gridLevel.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 10 },
+        data: { filledQty: 10.005 },
+      })
+    );
+  });
+
+  it('sell 체결이면 filledQty를 저장하지 않음', async () => {
+    await loadTradingService();
+    setupFilledOrderMocks();
+
+    const grid = {
+      id: 11, botId: 1, type: 'sell', price: 1008,
+      orderId: 'uuid-2', buyPrice: 1000, sellPrice: null,
+    };
+    const order = { state: 'done', avg_price: '1008', executed_volume: '10.005', trades: [] };
+
+    await (TradingService as any).processFilledOrder(grid, order, {}, 5, 'upbit');
+
+    const filledQtyCalls = prisma.gridLevel.update.mock.calls.filter(
+      ([arg]: any[]) => arg?.data && 'filledQty' in arg.data
+    );
+    expect(filledQtyCalls).toHaveLength(0);
+  });
+});

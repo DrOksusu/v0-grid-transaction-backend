@@ -1050,6 +1050,14 @@ export class TradingService {
       : parseFloat(order.executed_volume ?? '0');
     const filledTotal = filledPrice * filledVolume;
 
+    // coin_neutral 매도 수량 산정용: 매수 실제 체결 수량을 GridLevel에 기록 (설계서 §4(b))
+    if (grid.type === 'buy' && filledVolume > 0) {
+      await prisma.gridLevel.update({
+        where: { id: grid.id },
+        data: { filledQty: filledVolume },
+      });
+    }
+
     // 거래 기록 업데이트 (Trade.profit을 먼저 기록해야 일별수익과 MonthlyProfit이 일치)
     const trade = await prisma.trade.findFirst({
       where: { orderId: grid.orderId! },
@@ -1282,6 +1290,14 @@ export class TradingService {
           const filledPrice = order.avg_price ? parseFloat(order.avg_price) : parseFloat(order.price);
           const filledVolume = parseFloat(order.executed_volume);
           const filledTotal = filledPrice * filledVolume;
+
+          // coin_neutral 매도 수량 산정용: 매수 실제 체결 수량을 GridLevel에 기록
+          if (grid.type === 'buy' && filledVolume > 0) {
+            await prisma.gridLevel.update({
+              where: { id: grid.id },
+              data: { filledQty: filledVolume },
+            });
+          }
 
           // 거래 기록에 실제 체결가로 업데이트 (Trade.profit 먼저 기록 → MonthlyProfit과 정합성 보장)
           const trade = await prisma.trade.findFirst({
