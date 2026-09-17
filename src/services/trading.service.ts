@@ -242,20 +242,39 @@ export class TradingService {
 
     // 2) 주기 매도 경로: 대응 매수 GridLevel의 filledQty 조회
     //    (가격 범위 검색은 executeOppositeOrder의 기존 priceMargin 패턴과 동일)
+    //    촘촘한 그리드(예: 빗썸 스테이블코인 1원 간격 ≈1450원, 간격 0.069% < margin 0.1%)에서는
+    //    인접 매수 레벨이 margin 범위에 함께 걸릴 수 있으므로, 후보를 모두 가져온 뒤
+    //    매도가에 대응하는 매수가(sell.buyPrice)와 가장 가까운 레벨을 선택한다 (동점이면 filledAt 최신).
     if (sell.buyPrice != null) {
       const priceMargin = Math.max(sell.buyPrice * 0.001, 0.000001);
-      const buyGrid = await prisma.gridLevel.findFirst({
+      const buyGrids = await prisma.gridLevel.findMany({
         where: {
           botId: bot.id,
           type: 'buy',
           price: { gte: sell.buyPrice - priceMargin, lte: sell.buyPrice + priceMargin },
           filledQty: { not: null },
         },
-        orderBy: { filledAt: 'desc' },
-        select: { filledQty: true },
+        select: { price: true, filledQty: true, filledAt: true },
       });
-      if (buyGrid?.filledQty != null && buyGrid.filledQty > 0) {
-        return buyGrid.filledQty;
+
+      // 대응 매수가와 가장 가까운 레벨 선택 (거리 최소, 동점 시 filledAt 최신)
+      let best: { price: number; filledQty: number | null; filledAt: Date | null } | null = null;
+      for (const g of buyGrids) {
+        if (g.filledQty == null || g.filledQty <= 0) continue;
+        if (best === null) { best = g; continue; }
+        const dCur = Math.abs(g.price - sell.buyPrice);
+        const dBest = Math.abs(best.price - sell.buyPrice);
+        if (dCur < dBest) {
+          best = g;
+        } else if (dCur === dBest) {
+          const tCur = g.filledAt?.getTime() ?? 0;
+          const tBest = best.filledAt?.getTime() ?? 0;
+          if (tCur > tBest) best = g;
+        }
+      }
+
+      if (best?.filledQty != null && best.filledQty > 0) {
+        return best.filledQty;
       }
     }
 

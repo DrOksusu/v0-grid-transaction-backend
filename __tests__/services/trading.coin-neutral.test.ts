@@ -55,7 +55,7 @@ describe('resolveSellVolume — 매도 수량 계산 분기', () => {
       { price: 1008, buyPrice: 1000 }
     );
     expect(volume).toBeCloseTo(10000 / 1008, 10);
-    expect(prisma.gridLevel.findFirst).not.toHaveBeenCalled();
+    expect(prisma.gridLevel.findMany).not.toHaveBeenCalled();
   });
 
   it('profitMode 미지정(undefined)이어도 기존 동작 유지', async () => {
@@ -65,7 +65,7 @@ describe('resolveSellVolume — 매도 수량 계산 분기', () => {
       { price: 1008, buyPrice: 1000 }
     );
     expect(volume).toBeCloseTo(10000 / 1008, 10);
-    expect(prisma.gridLevel.findFirst).not.toHaveBeenCalled();
+    expect(prisma.gridLevel.findMany).not.toHaveBeenCalled();
   });
 
   it('coin_neutral + directFilledQty: 전달된 체결 수량 사용 (DB 조회 없음)', async () => {
@@ -76,18 +76,18 @@ describe('resolveSellVolume — 매도 수량 계산 분기', () => {
       9.995
     );
     expect(volume).toBe(9.995);
-    expect(prisma.gridLevel.findFirst).not.toHaveBeenCalled();
+    expect(prisma.gridLevel.findMany).not.toHaveBeenCalled();
   });
 
   it('coin_neutral: 대응 매수 GridLevel.filledQty 사용 (주기 매도 경로)', async () => {
     await loadTradingService();
-    prisma.gridLevel.findFirst.mockResolvedValue({ filledQty: 10.005 });
+    prisma.gridLevel.findMany.mockResolvedValue([{ price: 1000, filledQty: 10.005, filledAt: new Date() }]);
     const volume = await TradingService.resolveSellVolume(
       { id: 1, orderAmount: 10000, profitMode: 'coin_neutral' },
       { price: 1008, buyPrice: 1000 }
     );
     expect(volume).toBe(10.005);
-    expect(prisma.gridLevel.findFirst).toHaveBeenCalledWith(
+    expect(prisma.gridLevel.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           botId: 1,
@@ -98,9 +98,39 @@ describe('resolveSellVolume — 매도 수량 계산 분기', () => {
     );
   });
 
+  it('coin_neutral: 촘촘한 그리드 — 매도가에 가장 가까운 대응 매수 레벨 선택', async () => {
+    await loadTradingService();
+    // 빗썸 스테이블코인 1원 간격(≈1450원): margin 0.1% 범위에 인접 매수 2개가 함께 잡힘.
+    // buyPrice=1450에 대응하는 것은 1450 레벨(filledQty=6.897)이어야 하며,
+    // filledAt이 더 최신인 이웃 1451 레벨(filledQty=6.892)이 선택되면 안 됨.
+    prisma.gridLevel.findMany.mockResolvedValue([
+      { price: 1451, filledQty: 6.892, filledAt: new Date('2026-09-18T02:00:00Z') }, // 더 최신이지만 더 멂
+      { price: 1450, filledQty: 6.897, filledAt: new Date('2026-09-18T01:00:00Z') }, // 가장 가까움
+    ]);
+    const volume = await TradingService.resolveSellVolume(
+      { id: 1, orderAmount: 10000, profitMode: 'coin_neutral' },
+      { price: 1451, buyPrice: 1450 }
+    );
+    expect(volume).toBe(6.897);
+  });
+
+  it('coin_neutral: 최근접 동점이면 filledAt 최신 선택', async () => {
+    await loadTradingService();
+    // 두 후보가 buyPrice로부터 동일 거리(±0.5). filledAt 최신인 것을 선택.
+    prisma.gridLevel.findMany.mockResolvedValue([
+      { price: 1449.5, filledQty: 6.900, filledAt: new Date('2026-09-18T01:00:00Z') },
+      { price: 1450.5, filledQty: 6.895, filledAt: new Date('2026-09-18T02:00:00Z') }, // 최신
+    ]);
+    const volume = await TradingService.resolveSellVolume(
+      { id: 1, orderAmount: 10000, profitMode: 'coin_neutral' },
+      { price: 1460, buyPrice: 1450 }
+    );
+    expect(volume).toBe(6.895);
+  });
+
   it('coin_neutral + filledQty 미존재: 정액 방식 폴백 + console.warn', async () => {
     await loadTradingService();
-    prisma.gridLevel.findFirst.mockResolvedValue(null);
+    prisma.gridLevel.findMany.mockResolvedValue([]);
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
     const volume = await TradingService.resolveSellVolume(
       { id: 1, orderAmount: 10000, profitMode: 'coin_neutral' },
@@ -113,7 +143,7 @@ describe('resolveSellVolume — 매도 수량 계산 분기', () => {
 
   it('coin_neutral + filledQty=0: 0 수량 매도 방지 → 폴백 + 경고', async () => {
     await loadTradingService();
-    prisma.gridLevel.findFirst.mockResolvedValue({ filledQty: 0 });
+    prisma.gridLevel.findMany.mockResolvedValue([{ price: 1000, filledQty: 0, filledAt: new Date() }]);
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
     const volume = await TradingService.resolveSellVolume(
       { id: 1, orderAmount: 10000, profitMode: 'coin_neutral' },
@@ -132,7 +162,7 @@ describe('resolveSellVolume — 매도 수량 계산 분기', () => {
       { price: 1008, buyPrice: null }
     );
     expect(volume).toBeCloseTo(10000 / 1008, 10);
-    expect(prisma.gridLevel.findFirst).not.toHaveBeenCalled();
+    expect(prisma.gridLevel.findMany).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
   });
