@@ -443,7 +443,7 @@ git commit -m "feat: 재고형 아비 FeasibilityGate 순수 함수"
 - Create: `src/services/inventory-arb/executor.ts`
 - Test: `__tests__/services/inventory-arb-executor.test.ts`
 
-- [ ] **Step 1: 실패 테스트 작성 (flatten 4개 케이스 + 정상/미체결)**
+- [ ] **Step 1: 실패 테스트 작성 (11개 케이스 — flatten/터미널/dust/hold/leg예외)**
 
 ```typescript
 import { executeArb } from '../../src/services/inventory-arb/executor';
@@ -451,7 +451,9 @@ import type { ExchangeLeg } from '../../src/services/exchange-leg';
 
 // 체결 결과를 시나리오로 주입하는 mock ExchangeLeg
 function mockLeg(overrides: Partial<Record<keyof ExchangeLeg, any>>): ExchangeLeg {
-  const notImpl = () => { throw new Error('not implemented in test'); };
+  const notImpl = () => {
+    throw new Error('not implemented in test');
+  };
   return {
     sellIoc: overrides.sellIoc ?? (async () => null),
     buyIoc: overrides.buyIoc ?? (async () => null),
@@ -468,110 +470,130 @@ const QTY = 10;
 
 describe('executeArb', () => {
   it('양쪽 완전 체결 → filled, netKrw = sell - buy - fee', async () => {
-    const sellLeg = mockLeg({
-      sellIoc: async () => ({ filledQty: 10, grossKrw: 10100, feeKrw: 4 }), // @1010
-    });
-    const buyLeg = mockLeg({
-      buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }), // @1000
-    });
-    const r = await executeArb({
-      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
-      fallbackMode: 'market_flatten', buyExchangeCoinBalance: 0, sellExchangeKrwBalance: 0,
-    });
+    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 10, grossKrw: 10100, feeKrw: 4 }) });
+    const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }) });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
     expect(r.kind).toBe('filled');
-    if (r.kind === 'filled') {
-      expect(r.netKrw).toBeCloseTo(10100 - 10000 - 9, 6);
-    }
+    if (r.kind === 'filled') expect(r.netKrw).toBeCloseTo(10100 - 10000 - 9, 6);
   });
 
-  it('fee-in-coin으로 buyQty 9.98 (밴드 1% 내) → filled (부분체결 오판 금지)', async () => {
+  it('fee-in-coin으로 buyQty 9.98 (dust 범위) → filled (부분체결 오판 금지)', async () => {
     const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 10, grossKrw: 10100, feeKrw: 4 }) });
     const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 9.98, grossKrw: 10000, feeKrw: 0 }) });
-    const r = await executeArb({
-      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
-      fallbackMode: 'market_flatten', buyExchangeCoinBalance: 0, sellExchangeKrwBalance: 0,
-    });
+    // imbalance 0.02 × 1010 = 20.2 KRW < 5000 → dust 수용
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
     expect(r.kind).toBe('filled');
   });
 
-  it('net long (buy 10, sell 6) → 초과 4를 buyExchange에서 시장가 매도로 flatten', async () => {
+  // flatten/hold 경로: imbalance × price ≥ 5000 KRW 여야 dust 단락을 피함 (imbalance 6 × 1000 = 6000)
+  it('net long (buy 10, sell 4) → 초과 6을 buyExchange에서 시장가 매도로 flatten', async () => {
     const sellCalls: any[] = [];
-    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 6, grossKrw: 6060, feeKrw: 2 }) });
+    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 4, grossKrw: 4040, feeKrw: 2 }) });
     const buyLeg = mockLeg({
       buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }),
-      // buyLeg에서 flatten 매도 발생 — 4개 매도
-      sellIoc: async (sym: string, q: number) => { sellCalls.push({ sym, q }); return { filledQty: 4, grossKrw: 4000, feeKrw: 2 }; },
+      // buyLeg에서 flatten 매도 발생 — 6개 매도
+      sellIoc: async (sym: string, q: number) => {
+        sellCalls.push({ sym, q });
+        return { filledQty: 6, grossKrw: 6000, feeKrw: 2 };
+      },
     });
-    const r = await executeArb({
-      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
-      fallbackMode: 'market_flatten', buyExchangeCoinBalance: 100, sellExchangeKrwBalance: 0,
-    });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
     expect(r.kind).toBe('partial_flattened');
     if (r.kind === 'partial_flattened') {
       expect(r.flattenSide).toBe('sell');
-      expect(r.flattenQty).toBeCloseTo(4, 6);
+      expect(r.flattenQty).toBeCloseTo(6, 6);
     }
-    expect(sellCalls[0].q).toBeCloseTo(4, 6);
+    expect(sellCalls[0].q).toBeCloseTo(6, 6);
   });
 
-  it('net short (buy 6, sell 10) → 부족 4를 sellExchange에서 시장가 매수로 flatten', async () => {
+  it('net short (buy 4, sell 10) → 부족 6을 sellExchange에서 시장가 매수로 flatten', async () => {
     const buyCalls: any[] = [];
     const sellLeg = mockLeg({
       sellIoc: async () => ({ filledQty: 10, grossKrw: 10100, feeKrw: 4 }),
       // sellLeg(=sellExchange)에서 flatten 매수 발생
-      buyIoc: async (sym: string, q: number) => { buyCalls.push({ sym, q }); return { filledQty: 4, grossKrw: 4040, feeKrw: 2 }; },
+      buyIoc: async (sym: string, q: number) => {
+        buyCalls.push({ sym, q });
+        return { filledQty: 6, grossKrw: 6060, feeKrw: 2 };
+      },
     });
-    const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 6, grossKrw: 6000, feeKrw: 3 }) });
-    const r = await executeArb({
-      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
-      fallbackMode: 'market_flatten', buyExchangeCoinBalance: 0, sellExchangeKrwBalance: 100000,
-    });
+    const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 4, grossKrw: 4000, feeKrw: 3 }) });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
     expect(r.kind).toBe('partial_flattened');
     if (r.kind === 'partial_flattened') expect(r.flattenSide).toBe('buy');
-    expect(buyCalls[0].q).toBeCloseTo(4, 6);
+    expect(buyCalls[0].q).toBeCloseTo(6, 6);
   });
 
   it('flatten 주문이 실패(null)하면 → flatten_failed (터미널)', async () => {
-    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 6, grossKrw: 6060, feeKrw: 2 }) });
+    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 4, grossKrw: 4040, feeKrw: 2 }) });
     const buyLeg = mockLeg({
       buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }),
       sellIoc: async () => null, // flatten 실패
     });
-    const r = await executeArb({
-      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
-      fallbackMode: 'market_flatten', buyExchangeCoinBalance: 100, sellExchangeKrwBalance: 0,
-    });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
     expect(r.kind).toBe('flatten_failed');
-    if (r.kind === 'flatten_failed') expect(r.imbalanceQty).toBeCloseTo(4, 6);
+    if (r.kind === 'flatten_failed') expect(r.imbalanceQty).toBeCloseTo(6, 6);
+  });
+
+  it('flatten이 목표 미달 체결(6 중 3)하면 → flatten_failed (터미널)', async () => {
+    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 4, grossKrw: 4040, feeKrw: 2 }) });
+    const buyLeg = mockLeg({
+      buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }),
+      sellIoc: async () => ({ filledQty: 3, grossKrw: 3000, feeKrw: 1 }), // 6 중 3만 체결 (< 99%)
+    });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
+    expect(r.kind).toBe('flatten_failed');
+  });
+
+  it('flatten이 손실을 실현해도 partial_flattened로 정확히 기록 (netKrw 음수)', async () => {
+    // buy 10@1000(gross 10000), sell 4@1010(gross 4040), flatten sell 6을 990/개(gross 5940)에 매도
+    // netKrw = 4040 + 5940 - 10000 - fees(9) = -29
+    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 4, grossKrw: 4040, feeKrw: 2 }) });
+    const buyLeg = mockLeg({
+      buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }),
+      sellIoc: async () => ({ filledQty: 6, grossKrw: 5940, feeKrw: 2 }),
+    });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
+    expect(r.kind).toBe('partial_flattened');
+    if (r.kind === 'partial_flattened') expect(r.netKrw).toBeCloseTo(4040 + 5940 - 10000 - 9, 6);
+  });
+
+  it('한쪽 leg가 throw인데 반대편이 체결되면 → flatten_failed (체결상태 불명, 터미널)', async () => {
+    const sellLeg = mockLeg({
+      sellIoc: async () => {
+        throw new Error('network');
+      },
+    });
+    const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }) });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
+    expect(r.kind).toBe('flatten_failed');
   });
 
   it('imbalance가 dust(< 5000 KRW)면 flatten 없이 filled + dust 로그', async () => {
     const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 9, grossKrw: 9090, feeKrw: 4 }) });
     const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }) });
-    // imbalance 1 * 1000 = 1000 KRW < 5000 → dust
-    const r = await executeArb({
-      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
-      fallbackMode: 'market_flatten', buyExchangeCoinBalance: 100, sellExchangeKrwBalance: 0,
-    });
+    // imbalance 1 × 1000 = 1000 KRW < 5000 → dust
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
     expect(r.kind).toBe('filled');
     if (r.kind === 'filled') expect(r.note).toContain('dust');
   });
 
   it('fallback=hold + imbalance면 partial_hold', async () => {
-    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 6, grossKrw: 6060, feeKrw: 2 }) });
+    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 4, grossKrw: 4040, feeKrw: 2 }) });
     const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }) });
-    const r = await executeArb({
-      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
-      fallbackMode: 'hold', buyExchangeCoinBalance: 100, sellExchangeKrwBalance: 0,
-    });
+    // imbalance 6 × 1000 = 6000 > 5000 (dust 아님) → hold 모드에서 partial_hold
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'hold' });
     expect(r.kind).toBe('partial_hold');
   });
 
   it('양쪽 모두 미체결(null) → failed', async () => {
     const r = await executeArb({
-      buyLeg: mockLeg({}), sellLeg: mockLeg({}), symbol: 'XRP', qty: QTY,
-      buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten',
-      buyExchangeCoinBalance: 0, sellExchangeKrwBalance: 0,
+      buyLeg: mockLeg({}),
+      sellLeg: mockLeg({}),
+      symbol: 'XRP',
+      qty: QTY,
+      buyPrice: PRICE,
+      sellPrice: 1010,
+      fallbackMode: 'market_flatten',
     });
     expect(r.kind).toBe('failed');
   });
@@ -592,9 +614,8 @@ Expected: FAIL — 모듈 없음
 import type { ExchangeLeg } from '../exchange-leg';
 import type { ExecutorResult } from './types';
 
-const MIN_ORDER_KRW = 5000;
-/** 완전체결 판정 tolerance band (fee-in-coin 흡수). buyQty/sellQty 차이가 이 비율 이내면 매칭 간주 */
-const IMBALANCE_BAND = 0.01; // 1%
+const MIN_ORDER_KRW = 5000; // 업비트·빗썸 공통 최소 주문금액. 이 미만 imbalance는 상쇄(flatten) 불가 → dust 수용
+const FLATTEN_UNDERFILL_TOL = 0.01; // flatten 주문이 목표의 99% 이상 체결되면 성공 간주
 
 export interface ExecuteArbInput {
   buyLeg: ExchangeLeg; // 매수 거래소
@@ -604,8 +625,6 @@ export interface ExecuteArbInput {
   buyPrice: number; // 매수 거래소 ask (priceHint)
   sellPrice: number; // 매도 거래소 bid (priceHint)
   fallbackMode: 'market_flatten' | 'hold';
-  buyExchangeCoinBalance: number; // flatten 매도 가능 여부 확인용 (매수 거래소 코인 잔고, 방금 매수분 포함 안 될 수 있음 → 캐시값)
-  sellExchangeKrwBalance: number; // flatten 매수 가능 여부 확인용 (매도 거래소 KRW)
 }
 
 function fillQty(r: { filledQty: number } | null): number {
@@ -621,47 +640,50 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
     buyLeg.buyIoc(symbol, qty, buyPrice, undefined),
   ]);
 
+  const sellRejected = sellSettled.status === 'rejected';
+  const buyRejected = buySettled.status === 'rejected';
   const sellRes = sellSettled.status === 'fulfilled' ? sellSettled.value : null;
   const buyRes = buySettled.status === 'fulfilled' ? buySettled.value : null;
 
   const sellQty = fillQty(sellRes);
   const buyQty = fillQty(buyRes);
 
-  // 2. 양쪽 미체결
+  // 2. 한쪽 leg가 throw(rejected)인데 반대편이 체결됨 = 체결 상태 불명 + 방향노출 가능성.
+  //    rejected를 0으로 가정하고 flatten하면 이미 체결됐을 수 있어 이중 노출 위험 → 터미널 승격(사람 확인).
+  //    (REST staleness 잔여 리스크 — 사후 리컨실은 오케스트레이터/후속 과제)
+  if ((sellRejected && buyQty > 0) || (buyRejected && sellQty > 0)) {
+    return {
+      kind: 'flatten_failed',
+      imbalanceQty: buyQty - sellQty,
+      note: `leg 예외(sellRejected=${sellRejected} buyRejected=${buyRejected}) + 반대편 체결 — 체결상태 불명, 수동 확인 필요`,
+    };
+  }
+
+  // 3. 양쪽 미체결
   if (sellQty === 0 && buyQty === 0) {
-    return { kind: 'failed', reason: 'both legs unfilled' };
+    return { kind: 'failed', reason: `both legs unfilled (sellRejected=${sellRejected} buyRejected=${buyRejected})` };
   }
 
   const buyGrossKrw = buyRes?.grossKrw ?? 0;
   const sellGrossKrw = sellRes?.grossKrw ?? 0;
   const legFeeKrw = (buyRes?.feeKrw ?? 0) + (sellRes?.feeKrw ?? 0);
 
-  // 3. 개수 불균형 (netImbalance > 0 = 매수과다 net long, < 0 = 매도과다 net short)
+  // 4. 개수 불균형 (netImbalance > 0 = 매수과다 net long, < 0 = 매도과다 net short)
   const netImbalance = buyQty - sellQty;
   const absImbalance = Math.abs(netImbalance);
-  const matchedQty = Math.min(buyQty, sellQty);
-
-  // 4. tolerance band 내 → 완전 체결로 간주
-  const withinBand = matchedQty > 0 && absImbalance <= qty * IMBALANCE_BAND;
-  if (withinBand) {
-    const netKrw = sellGrossKrw - buyGrossKrw - legFeeKrw;
-    return {
-      kind: 'filled',
-      buyQty, sellQty, buyGrossKrw, sellGrossKrw, feeKrw: legFeeKrw,
-      netKrw: +netKrw.toFixed(6),
-      note: absImbalance > 0 ? `matched within band (imbalance=${absImbalance})` : 'exact match',
-    };
-  }
-
-  // 5. dust 판정: 상쇄분이 최소주문 미만이면 flatten 불가 → 수용 + 로그
   const referencePrice = netImbalance > 0 ? buyPrice : sellPrice;
-  if (absImbalance * referencePrice < MIN_ORDER_KRW) {
+
+  // 5. 완전 일치 또는 상쇄 불가한 소액(dust: 최소주문 미만) → filled 수용.
+  //    fee-in-coin으로 인한 미세 불일치도 여기서 흡수한다(절대 KRW 기준 — 비율 밴드는 대형 주문에서 과다 흡수 위험이라 미사용).
+  if (absImbalance === 0 || absImbalance * referencePrice < MIN_ORDER_KRW) {
     const netKrw = sellGrossKrw - buyGrossKrw - legFeeKrw;
     return {
       kind: 'filled',
       buyQty, sellQty, buyGrossKrw, sellGrossKrw, feeKrw: legFeeKrw,
       netKrw: +netKrw.toFixed(6),
-      note: `dust imbalance ${absImbalance} accepted (< ${MIN_ORDER_KRW} KRW)`,
+      note: absImbalance === 0
+        ? 'exact match'
+        : `dust imbalance ${absImbalance} accepted (< ${MIN_ORDER_KRW} KRW)`,
     };
   }
 
@@ -670,15 +692,13 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
     return { kind: 'partial_hold', imbalanceQty: netImbalance, note: `hold imbalance=${netImbalance}` };
   }
 
-  // 7. market_flatten
+  // 7. market_flatten — 상쇄 대상 물량/현금은 방금 체결로 확보됨(사전 잔고 가드 불필요; imbalance ≤ 방금 체결량).
+  //    flatten 가능 여부는 실제 주문 결과(null/미달)로만 판정한다.
   const roundedImbalance = Math.floor(absImbalance * 1e8) / 1e8;
   if (netImbalance > 0) {
-    // net long: 매수 거래소에 초과 코인 → 매수 거래소에서 시장가 매도
-    if (input.buyExchangeCoinBalance < roundedImbalance) {
-      return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `net long but buyExchange coin balance ${input.buyExchangeCoinBalance} < ${roundedImbalance}` };
-    }
+    // net long: 매수 거래소에 초과 코인 → 매수 거래소에서 시장가 매도로 상쇄
     const flat = await buyLeg.sellIoc(symbol, roundedImbalance, buyPrice);
-    if (!flat || flat.filledQty < roundedImbalance * (1 - IMBALANCE_BAND)) {
+    if (!flat || flat.filledQty < roundedImbalance * (1 - FLATTEN_UNDERFILL_TOL)) {
       return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten sell failed (filled=${flat?.filledQty ?? 0}/${roundedImbalance})` };
     }
     const feeKrw = legFeeKrw + (flat.feeKrw ?? 0);
@@ -691,12 +711,8 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
     };
   } else {
     // net short: 매도 거래소에서 과다 매도 → 매도 거래소에서 시장가 매수로 복원
-    const requiredKrw = roundedImbalance * sellPrice;
-    if (input.sellExchangeKrwBalance < requiredKrw) {
-      return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `net short but sellExchange KRW ${input.sellExchangeKrwBalance} < ${requiredKrw}` };
-    }
     const flat = await sellLeg.buyIoc(symbol, roundedImbalance, sellPrice, undefined);
-    if (!flat || flat.filledQty < roundedImbalance * (1 - IMBALANCE_BAND)) {
+    if (!flat || flat.filledQty < roundedImbalance * (1 - FLATTEN_UNDERFILL_TOL)) {
       return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten buy failed (filled=${flat?.filledQty ?? 0}/${roundedImbalance})` };
     }
     const feeKrw = legFeeKrw + (flat.feeKrw ?? 0);
@@ -915,8 +931,8 @@ class InventoryArbService {
     const opp = detectOpportunity(upbitBook, bithumbBook);
     if (!opp) return;
 
-    // 3. 잔고 조회 (매도측 코인, 매수측 KRW)
-    const { sellCoinBalance, buyKrwBalance, buyCoinBalance, sellKrwBalance } =
+    // 3. 잔고 조회 (게이트 사이징용 — 매도측 코인, 매수측 KRW)
+    const { sellCoinBalance, buyKrwBalance } =
       await this.fetchBalances(bot, opp, upbitClient, bithumbClient);
 
     // 4. 오늘 집행량
@@ -954,11 +970,10 @@ class InventoryArbService {
     // 8. ExchangeLeg 매핑
     const { buyLeg, sellLeg } = this.buildLegs(opp, upbitClient, bithumbClient);
 
-    // 9. 실행
+    // 9. 실행 (flatten 가능 여부는 executor가 실제 주문 결과로 판정 — 사전 잔고 전달 불필요)
     const result = await executeArb({
       buyLeg, sellLeg, symbol: bot.symbol, qty: feas.qty,
       buyPrice: opp.buyPrice, sellPrice: opp.sellPrice, fallbackMode: bot.fallbackMode,
-      buyExchangeCoinBalance: buyCoinBalance, sellExchangeKrwBalance: sellKrwBalance,
     });
 
     // 10. 결과 기록 + 후처리
@@ -1016,7 +1031,8 @@ class InventoryArbService {
   }
 
   private async fetchBalances(bot: any, opp: SpreadOpportunity, upbit: UpbitService, bithumb: BithumbClient):
-    Promise<{ sellCoinBalance: number; buyKrwBalance: number; buyCoinBalance: number; sellKrwBalance: number }> {
+    Promise<{ sellCoinBalance: number; buyKrwBalance: number }> {
+    // 게이트 사이징용 잔고만 조회. flatten 잔고는 executor가 실제 주문 결과로 판정하므로 불필요.
     // 업비트: getAccounts() → {currency, balance}; 빗썸: getBalances() → {available}
     const upbitAccounts = await upbit.getAccounts(); // any[]
     const upbitBal = (cur: string) => Number(upbitAccounts.find((a: any) => a.currency === cur)?.balance ?? 0);
@@ -1029,10 +1045,8 @@ class InventoryArbService {
         : (type === 'coin' ? bithumbBal(bot.symbol) : bithumbBal('KRW'));
 
     return {
-      sellCoinBalance: coinOf(opp.sellExchange, 'coin'),
-      buyKrwBalance: coinOf(opp.buyExchange, 'krw'),
-      buyCoinBalance: coinOf(opp.buyExchange, 'coin'),
-      sellKrwBalance: coinOf(opp.sellExchange, 'krw'),
+      sellCoinBalance: coinOf(opp.sellExchange, 'coin'), // 매도측 코인 재고 (매도 사이징)
+      buyKrwBalance: coinOf(opp.buyExchange, 'krw'), // 매수측 KRW (매수 사이징)
     };
   }
 
