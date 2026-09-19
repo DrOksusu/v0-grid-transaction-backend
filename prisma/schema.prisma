@@ -837,3 +837,50 @@ model MultiArbOpportunity {
   @@index([detectedAt])
   @@map("multi_arb_opportunities")
 }
+
+// 재고형(inventory) 아비트리지 봇 (업비트↔빗썸 크로스 스프레드) — spec/plan 2026-09-19
+model InventoryArbBot {
+  id            Int      @id @default(autoincrement())
+  userId        Int
+  symbol        String                              // base 심볼 (예: "XRP")
+  minSpreadBps  Int      @default(30)               // 진입 임계 (0.30%)
+  anomalyMaxBps Int      @default(2000)             // 가격 이상 상한 (20%) — 초과 시 skip
+  maxOrderKrw   Float                               // 1회 최대 주문 규모(notional)
+  dailyMaxKrw   Float?                              // 일일 notional 한도
+  dailyMaxCount Int?                                // 일일 건수 한도
+  fallbackMode  String   @default("market_flatten") // "market_flatten" | "hold"
+  autoExecute   Boolean  @default(false)            // false=반자동(알림만), true=완전자동(즉시 실행)
+  enabled       Boolean  @default(false)            // canary OFF 기본
+  killSwitch    Boolean  @default(false)
+  buyFeeBps     Int      @default(5)                // 매수 수수료(bp) — 예산 계산용
+  lastResumeAt  DateTime?                           // enabled false→true 전환 시각 (canary 관찰 기준)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId, enabled])
+  @@map("inventory_arb_bots")
+}
+
+model InventoryArbTrade {
+  id            Int      @id @default(autoincrement())
+  botId         Int
+  symbol        String
+  direction     String   // "buy_upbit_sell_bithumb" | "buy_bithumb_sell_upbit"
+  qty           Float
+  buyExchange   String
+  buyPrice      Float
+  sellExchange  String
+  sellPrice     Float
+  notionalKrw   Float    @default(0) // qty * buyPrice — 일일 한도 집계 기준
+  grossKrw      Float    @default(0) // 매도gross - 매수gross (수수료 전)
+  feeKrw        Float    @default(0)
+  netKrw        Float    @default(0)
+  status        String   // "detected" | "filled" | "partial_flattened" | "partial_hold" | "flatten_failed" | "failed"
+  note          String?  @db.Text
+  detectedAt    DateTime @default(now())
+  executedAt    DateTime?
+
+  @@index([botId, executedAt])
+  @@index([botId, status])
+  @@map("inventory_arb_trades")
+}
