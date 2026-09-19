@@ -332,9 +332,9 @@ describe('evaluateFeasibility', () => {
   });
 
   it('매수 거래소 KRW 예산이 부족하면 그만큼만 (수수료 포함)', () => {
-    // KRW 5025 / (1000 * 1.0005) ≈ 5.02 → floor 5
+    // KRW 5025 / (1000 * 1.0005) = 5.02248875... → 소수점 8자리 floor (암호화폐 수량은 소수 허용)
     const r = evaluateFeasibility({ ...base, buyKrwBalance: 5025 });
-    expect(r.qty).toBe(5);
+    expect(r.qty).toBeCloseTo(5.02248875, 8);
   });
 
   it('최종 주문액이 최소주문(5000) 미만이면 거부', () => {
