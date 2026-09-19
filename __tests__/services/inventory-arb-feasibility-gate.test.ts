@@ -38,6 +38,12 @@ describe('evaluateFeasibility', () => {
     expect(r.reason).toContain('anomaly');
   });
 
+  it('buyPrice가 0 이하이면 거부 (독립 호출 방어)', () => {
+    const r = evaluateFeasibility({ ...base, opp: { ...opp, buyPrice: 0 } });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain('buyPrice');
+  });
+
   it('정상: qty = min(depth, maxOrderKrw/price, 재고, KRW예산)', () => {
     const r = evaluateFeasibility(base);
     // maxOrderKrw 20000 / 1000 = 20; depth 50; 재고 1000; KRW예산 충분 → 20

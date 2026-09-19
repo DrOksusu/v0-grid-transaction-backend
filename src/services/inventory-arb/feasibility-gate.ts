@@ -11,6 +11,9 @@ export function evaluateFeasibility(input: FeasibilityInput): FeasibilityResult 
 
   const fail = (reason: string): FeasibilityResult => ({ ok: false, qty: 0, notionalKrw: 0, reason });
 
+  // 0. 가격 유효성 (독립 호출 방어 — detector가 보장하나 게이트 자체 불변식 강제)
+  if (opp.buyPrice <= 0) return fail(`invalid buyPrice ${opp.buyPrice}`);
+
   // 1. 스프레드 게이트
   if (opp.spreadBps < minSpreadBps) {
     return fail(`spread ${opp.spreadBps}bp < min ${minSpreadBps}bp`);
@@ -28,7 +31,7 @@ export function evaluateFeasibility(input: FeasibilityInput): FeasibilityResult 
   let krwBudget = maxOrderKrw;
   if (dailyMaxKrw != null) {
     const remaining = dailyMaxKrw - todayNotionalKrw;
-    if (remaining <= 0) return fail(`daily notional limit reached`);
+    if (remaining <= 0) return fail(`daily notional limit reached (used ${todayNotionalKrw}/${dailyMaxKrw})`);
     krwBudget = Math.min(krwBudget, remaining);
   }
 
