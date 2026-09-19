@@ -754,9 +754,12 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
   } else {
     // net short: 매도 거래소에서 과다 매도 → 매도 거래소에서 시장가 매수로 복원
     // net long과 동일하게 throw도 터미널로 매핑
+    // 시장가 매수는 ask를 무는데 priceHint(예산 기준)가 bid(sellPrice)면 예산 부족으로 미달→오탐 flatten_failed.
+    // 5% 헤드룸을 실어 스프레드 5% 이내면 전량 매수 가능(net long 매도엔 불필요 — 수량 직접 지정).
+    const flattenBuyPriceHint = sellPrice * 1.05;
     let flat: { filledQty: number; grossKrw: number; feeKrw: number } | null;
     try {
-      flat = await sellLeg.buyIoc(symbol, roundedImbalance, sellPrice, undefined);
+      flat = await sellLeg.buyIoc(symbol, roundedImbalance, flattenBuyPriceHint, undefined);
     } catch (err: any) {
       return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten buy threw: ${err?.message ?? err}` };
     }
@@ -1032,7 +1035,8 @@ class InventoryArbService {
     const now = new Date();
     const base = { status: result.kind, executedAt: now };
     if (result.kind === 'filled' || result.kind === 'partial_flattened') {
-      const gross = result.sellGrossKrw - result.buyGrossKrw;
+      // grossKrw는 flatten leg까지 반영해 net과 일관되게(gross - fee = net) 기록
+      const gross = result.netKrw + result.feeKrw;
       await mainPrisma.inventoryArbTrade.update({
         where: { id: tradeId },
         data: { ...base, grossKrw: +gross.toFixed(4), feeKrw: +result.feeKrw.toFixed(4), netKrw: +result.netKrw.toFixed(4), note: result.note },
@@ -1040,9 +1044,23 @@ class InventoryArbService {
       await this.notifyResult(bot, opp, result);
     } else if (result.kind === 'flatten_failed') {
       // 터미널: killSwitch ON + 봇 정지 + 긴급 카톡. 재시도 금지.
-      await mainPrisma.inventoryArbBot.update({ where: { id: bot.id }, data: { killSwitch: true, enabled: false } });
-      await mainPrisma.inventoryArbTrade.update({ where: { id: tradeId }, data: { ...base, note: result.note } });
-      try { await kakaoNotifyService.sendToMe(buildEmergencyMessage(bot.symbol, result.imbalanceQty, result.note)); } catch {}
+      // 각 부수효과를 독립 try/catch로 실행 — DB 오류가 정지/알림을 서로 삼키지 않도록(안전망 보장).
+      // 순서: 정지(killSwitch) → 알림(카톡) → 기록(trade).
+      try {
+        await mainPrisma.inventoryArbBot.update({ where: { id: bot.id }, data: { killSwitch: true, enabled: false } });
+      } catch (e: any) {
+        console.error(`[InventoryArb] bot ${bot.id} killSwitch 설정 실패:`, e.message);
+      }
+      try {
+        await kakaoNotifyService.sendToMe(buildEmergencyMessage(bot.symbol, result.imbalanceQty, result.note));
+      } catch (e: any) {
+        console.error(`[InventoryArb] bot ${bot.id} 긴급 카톡 발송 실패:`, e.message);
+      }
+      try {
+        await mainPrisma.inventoryArbTrade.update({ where: { id: tradeId }, data: { ...base, note: result.note } });
+      } catch (e: any) {
+        console.error(`[InventoryArb] bot ${bot.id} trade#${tradeId} 기록 실패:`, e.message);
+      }
     } else {
       // partial_hold | failed
       await mainPrisma.inventoryArbTrade.update({ where: { id: tradeId }, data: { ...base, note: result.kind === 'partial_hold' ? result.note : result.reason } });
@@ -1099,7 +1117,11 @@ class InventoryArbService {
   }
 
   private async fetchTodayUsage(botId: number): Promise<{ todayNotionalKrw: number; todayCount: number }> {
-    const start = new Date(); start.setHours(0, 0, 0, 0); // 서버 로컬 자정 (KST 서버 가정, 배포시 확인)
+    // 일일 한도 창은 KST 자정 기준으로 명시 계산 — 컨테이너 TZ가 UTC여도 안전(서버시계 의존 금지).
+    const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+    const kstNow = new Date(Date.now() + KST_OFFSET_MS);
+    kstNow.setUTCHours(0, 0, 0, 0);
+    const start = new Date(kstNow.getTime() - KST_OFFSET_MS);
     const rows = await mainPrisma.inventoryArbTrade.findMany({
       where: { botId, executedAt: { gte: start }, status: { in: ['filled', 'partial_flattened'] } },
       select: { notionalKrw: true },

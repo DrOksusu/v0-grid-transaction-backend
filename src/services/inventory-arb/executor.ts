@@ -121,9 +121,12 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
   } else {
     // net short: 매도 거래소에서 과다 매도 → 매도 거래소에서 시장가 매수로 복원
     // net long과 동일하게 throw도 터미널로 매핑
+    // 시장가 매수는 ask를 무는데 priceHint(예산 기준)가 bid(sellPrice)면 예산 부족으로 미달→오탐 flatten_failed.
+    // 5% 헤드룸을 실어 스프레드가 5% 이내면 roundedImbalance 전량 매수 가능하게 한다(net long 매도엔 불필요 — 수량 직접 지정).
+    const flattenBuyPriceHint = sellPrice * 1.05;
     let flat: { filledQty: number; grossKrw: number; feeKrw: number } | null;
     try {
-      flat = await sellLeg.buyIoc(symbol, roundedImbalance, sellPrice, undefined);
+      flat = await sellLeg.buyIoc(symbol, roundedImbalance, flattenBuyPriceHint, undefined);
     } catch (err: any) {
       return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten buy threw: ${err?.message ?? err}` };
     }
