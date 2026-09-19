@@ -14,3 +14,4 @@ export { BtcRsiAgent } from './btc-rsi-agent';
 export { RebalancerAgent } from './rebalancer-agent';
 export { VolatilityBreakoutAgent } from './volatility-breakout-agent';
 export { MultiExchangeArbAgent, multiExchangeArbAgent } from './multi-exchange-arb-agent';
+export { InventoryArbAgent, inventoryArbAgent } from './inventory-arb-agent';
