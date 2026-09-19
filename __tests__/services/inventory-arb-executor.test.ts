@@ -86,6 +86,41 @@ describe('executeArb', () => {
     if (r.kind === 'flatten_failed') expect(r.imbalanceQty).toBeCloseTo(6, 6);
   });
 
+  it('net short flatten 매수가 실패(null)하면 → flatten_failed (터미널)', async () => {
+    const sellLeg = mockLeg({
+      sellIoc: async () => ({ filledQty: 10, grossKrw: 10100, feeKrw: 4 }),
+      buyIoc: async () => null, // flatten 매수 실패
+    });
+    const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 4, grossKrw: 4000, feeKrw: 3 }) });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
+    expect(r.kind).toBe('flatten_failed');
+    if (r.kind === 'flatten_failed') expect(r.imbalanceQty).toBeCloseTo(-6, 6);
+  });
+
+  it('net long flatten 매도가 throw하면 → flatten_failed (터미널, 예외도 안전 매핑)', async () => {
+    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 4, grossKrw: 4040, feeKrw: 2 }) });
+    const buyLeg = mockLeg({
+      buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }),
+      sellIoc: async () => {
+        throw new Error('exchange 5xx');
+      },
+    });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
+    expect(r.kind).toBe('flatten_failed');
+  });
+
+  it('net short flatten 매수가 throw하면 → flatten_failed (터미널, 예외도 안전 매핑)', async () => {
+    const sellLeg = mockLeg({
+      sellIoc: async () => ({ filledQty: 10, grossKrw: 10100, feeKrw: 4 }),
+      buyIoc: async () => {
+        throw new Error('network');
+      },
+    });
+    const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 4, grossKrw: 4000, feeKrw: 3 }) });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
+    expect(r.kind).toBe('flatten_failed');
+  });
+
   it('flatten이 목표 미달 체결(6 중 3)하면 → flatten_failed (터미널)', async () => {
     const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 4, grossKrw: 4040, feeKrw: 2 }) });
     const buyLeg = mockLeg({

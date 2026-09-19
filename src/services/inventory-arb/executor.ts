@@ -93,7 +93,14 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
   const roundedImbalance = Math.floor(absImbalance * 1e8) / 1e8;
   if (netImbalance > 0) {
     // net long: 매수 거래소에 초과 코인 → 매수 거래소에서 시장가 매도로 상쇄
-    const flat = await buyLeg.sellIoc(symbol, roundedImbalance, buyPrice);
+    // flatten 주문은 bare await 금지 — throw(네트워크/거래소 오류) 시에도 터미널로 매핑해야 함
+    // (IOC 메서드는 pollOrder와 달리 예외를 삼키지 않고 던진다)
+    let flat: { filledQty: number; grossKrw: number; feeKrw: number } | null;
+    try {
+      flat = await buyLeg.sellIoc(symbol, roundedImbalance, buyPrice);
+    } catch (err: any) {
+      return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten sell threw: ${err?.message ?? err}` };
+    }
     if (!flat || flat.filledQty < roundedImbalance * (1 - FLATTEN_UNDERFILL_TOL)) {
       return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten sell failed (filled=${flat?.filledQty ?? 0}/${roundedImbalance})` };
     }
@@ -113,7 +120,13 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
     };
   } else {
     // net short: 매도 거래소에서 과다 매도 → 매도 거래소에서 시장가 매수로 복원
-    const flat = await sellLeg.buyIoc(symbol, roundedImbalance, sellPrice, undefined);
+    // net long과 동일하게 throw도 터미널로 매핑
+    let flat: { filledQty: number; grossKrw: number; feeKrw: number } | null;
+    try {
+      flat = await sellLeg.buyIoc(symbol, roundedImbalance, sellPrice, undefined);
+    } catch (err: any) {
+      return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten buy threw: ${err?.message ?? err}` };
+    }
     if (!flat || flat.filledQty < roundedImbalance * (1 - FLATTEN_UNDERFILL_TOL)) {
       return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten buy failed (filled=${flat?.filledQty ?? 0}/${roundedImbalance})` };
     }

@@ -443,7 +443,7 @@ git commit -m "feat: 재고형 아비 FeasibilityGate 순수 함수"
 - Create: `src/services/inventory-arb/executor.ts`
 - Test: `__tests__/services/inventory-arb-executor.test.ts`
 
-- [ ] **Step 1: 실패 테스트 작성 (11개 케이스 — flatten/터미널/dust/hold/leg예외)**
+- [ ] **Step 1: 실패 테스트 작성 (14개 케이스 — flatten/터미널/dust/hold/leg예외/flatten예외)**
 
 ```typescript
 import { executeArb } from '../../src/services/inventory-arb/executor';
@@ -532,6 +532,41 @@ describe('executeArb', () => {
     const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
     expect(r.kind).toBe('flatten_failed');
     if (r.kind === 'flatten_failed') expect(r.imbalanceQty).toBeCloseTo(6, 6);
+  });
+
+  it('net short flatten 매수가 실패(null)하면 → flatten_failed (터미널)', async () => {
+    const sellLeg = mockLeg({
+      sellIoc: async () => ({ filledQty: 10, grossKrw: 10100, feeKrw: 4 }),
+      buyIoc: async () => null, // flatten 매수 실패
+    });
+    const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 4, grossKrw: 4000, feeKrw: 3 }) });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
+    expect(r.kind).toBe('flatten_failed');
+    if (r.kind === 'flatten_failed') expect(r.imbalanceQty).toBeCloseTo(-6, 6);
+  });
+
+  it('net long flatten 매도가 throw하면 → flatten_failed (터미널, 예외도 안전 매핑)', async () => {
+    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 4, grossKrw: 4040, feeKrw: 2 }) });
+    const buyLeg = mockLeg({
+      buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }),
+      sellIoc: async () => {
+        throw new Error('exchange 5xx');
+      },
+    });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
+    expect(r.kind).toBe('flatten_failed');
+  });
+
+  it('net short flatten 매수가 throw하면 → flatten_failed (터미널, 예외도 안전 매핑)', async () => {
+    const sellLeg = mockLeg({
+      sellIoc: async () => ({ filledQty: 10, grossKrw: 10100, feeKrw: 4 }),
+      buyIoc: async () => {
+        throw new Error('network');
+      },
+    });
+    const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 4, grossKrw: 4000, feeKrw: 3 }) });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
+    expect(r.kind).toBe('flatten_failed');
   });
 
   it('flatten이 목표 미달 체결(6 중 3)하면 → flatten_failed (터미널)', async () => {
@@ -697,7 +732,14 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
   const roundedImbalance = Math.floor(absImbalance * 1e8) / 1e8;
   if (netImbalance > 0) {
     // net long: 매수 거래소에 초과 코인 → 매수 거래소에서 시장가 매도로 상쇄
-    const flat = await buyLeg.sellIoc(symbol, roundedImbalance, buyPrice);
+    // flatten 주문은 bare await 금지 — throw(네트워크/거래소 오류) 시에도 터미널로 매핑
+    // (IOC 메서드는 pollOrder와 달리 예외를 삼키지 않고 던진다)
+    let flat: { filledQty: number; grossKrw: number; feeKrw: number } | null;
+    try {
+      flat = await buyLeg.sellIoc(symbol, roundedImbalance, buyPrice);
+    } catch (err: any) {
+      return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten sell threw: ${err?.message ?? err}` };
+    }
     if (!flat || flat.filledQty < roundedImbalance * (1 - FLATTEN_UNDERFILL_TOL)) {
       return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten sell failed (filled=${flat?.filledQty ?? 0}/${roundedImbalance})` };
     }
@@ -711,7 +753,13 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
     };
   } else {
     // net short: 매도 거래소에서 과다 매도 → 매도 거래소에서 시장가 매수로 복원
-    const flat = await sellLeg.buyIoc(symbol, roundedImbalance, sellPrice, undefined);
+    // net long과 동일하게 throw도 터미널로 매핑
+    let flat: { filledQty: number; grossKrw: number; feeKrw: number } | null;
+    try {
+      flat = await sellLeg.buyIoc(symbol, roundedImbalance, sellPrice, undefined);
+    } catch (err: any) {
+      return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten buy threw: ${err?.message ?? err}` };
+    }
     if (!flat || flat.filledQty < roundedImbalance * (1 - FLATTEN_UNDERFILL_TOL)) {
       return { kind: 'flatten_failed', imbalanceQty: netImbalance, note: `flatten buy failed (filled=${flat?.filledQty ?? 0}/${roundedImbalance})` };
     }
@@ -1375,6 +1423,8 @@ git commit -m "test: 재고형 아비 전체 테스트 통과 확인" --allow-em
 - **full-depth REST 사이징** (설계확정 §7): canary 상한 확대 전 선행. 현재 top-level만.
 - **반자동 승인 UI/엔드포인트**: 사용자 결정으로 완전자동 중심 → 승인 라운드트립 후속.
 - **크래시 복구(고아 포지션 재조정)**: record-before-fire로 추적은 가능하나 자동 복구는 canary(사람 감시)에서 후속.
+- **사후 리컨실(reconciler)** (리뷰 I1/잔여): 양쪽 leg가 모두 throw(rejected)했는데 실제로는 한쪽이 체결됐을 수 있는 경우(`failed`로 보고되나 노출 잔존 가능) — 사이클 후 잔고 대조로 감지. **executor의 `failed`에는 자동 재시도 금지**(이중 실행 위험). canary 확대 전 선행 권장.
+- **dust 누적 running-total 알림** (리뷰 Minor): 개별 dust(<5000 KRW)는 수용하지만 다건 누적 시 방향 재고가 쌓임 → 누적 임계 초과 시 알림/수동 리밸런싱 유도.
 - **프론트엔드 감시목록/설정 UI**: 별도 프론트 계획(터미널 2).
 
 ## ⚠️ 배포·운영 주의 (구현 완료 후)
