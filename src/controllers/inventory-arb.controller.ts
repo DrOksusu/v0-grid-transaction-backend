@@ -2,7 +2,7 @@ import { Response, NextFunction } from 'express';
 import mainPrisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
-import { inventoryArbService } from '../services/inventory-arb.service';
+import { inventoryArbService, MANUAL_BOT_SYMBOL } from '../services/inventory-arb.service';
 
 /** 온디맨드 후보 스캔 (내 잔고 + 공통상장 + 라이브 스프레드) */
 export async function getCandidates(req: AuthRequest, res: Response, next: NextFunction) {
@@ -14,6 +14,24 @@ export async function getCandidates(req: AuthRequest, res: Response, next: NextF
       Number.isFinite(minSpreadBps) && minSpreadBps >= 0 ? minSpreadBps : 30,
     );
     return successResponse(res, candidates);
+  } catch (e) { next(e); }
+}
+
+/** 수동 1회 실거래 실행 (후보 화면 "즉시 실행"). 클릭 시점 재검증 후 executeArb 1회. */
+export async function postExecute(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const userId = req.userId!;
+    const { symbol, maxKrw, minSpreadBps } = req.body;
+    if (!symbol || typeof maxKrw !== 'number' || maxKrw <= 0) {
+      return errorResponse(res, 'VALIDATION_ERROR', 'symbol, maxKrw(양수) 필수', 400);
+    }
+    const result = await inventoryArbService.executeManual(
+      userId,
+      String(symbol).toUpperCase(),
+      maxKrw,
+      typeof minSpreadBps === 'number' && minSpreadBps >= 0 ? minSpreadBps : 30,
+    );
+    return successResponse(res, result);
   } catch (e) { next(e); }
 }
 
@@ -41,7 +59,7 @@ export async function createBot(req: AuthRequest, res: Response, next: NextFunct
 export async function getBots(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const userId = req.userId!;
-    const bots = await mainPrisma.inventoryArbBot.findMany({ where: { userId }, orderBy: { id: 'desc' } });
+    const bots = await mainPrisma.inventoryArbBot.findMany({ where: { userId, symbol: { not: MANUAL_BOT_SYMBOL } }, orderBy: { id: 'desc' } });
     return successResponse(res, bots);
   } catch (e) { next(e); }
 }
