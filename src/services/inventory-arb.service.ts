@@ -197,7 +197,9 @@ class InventoryArbService {
         buyPrice: opp.buyPrice, sellPrice: opp.sellPrice, fallbackMode: 'market_flatten',
         flattenBuyRefPrice: sellExchangeBestAsk,
       });
-      await this.persistResult(manualBot, trade.id, opp, feas, result);
+      // persistResult에 실제 코인 심볼을 덮어쓴 봇 객체 전달 — flatten_failed 긴급 카톡/알림이
+      // sentinel('__MANUAL__') 대신 실제 코인을 명시하도록. bot.id는 그대로라 FK/업데이트는 sentinel에 귀속.
+      await this.persistResult({ ...manualBot, symbol }, trade.id, opp, feas, result);
 
       const netKrw = result.kind === 'filled' || result.kind === 'partial_flattened' ? result.netKrw : undefined;
       const note = 'note' in result ? result.note : 'reason' in result ? result.reason : undefined;
