@@ -29,6 +29,27 @@ export function buildEmergencyMessage(symbol: string, imbalanceQty: number, note
 
 // ── 동시성 락: 같은 봇 중복 실행 방지 ────────────────────────────────────
 const inFlightBots = new Set<number>();
+// 수동 실행 동시성 락 (userId:symbol 단위)
+const manualInFlight = new Set<string>();
+// 수동 1회 실행 하드 캡 (fat-finger 방지)
+const MANUAL_MAX_KRW = 1_000_000;
+const MANUAL_MIN_ORDER_KRW = 5000;
+// 수동 실행 기록용 sentinel 봇 심볼 (봇 목록에서 숨김)
+export const MANUAL_BOT_SYMBOL = '__MANUAL__';
+
+/** 수동 1회 실행 결과 */
+export interface ManualExecuteResult {
+  executed: boolean;
+  reason?: string; // executed=false 사유
+  kind?: string; // executeArb 결과 종류
+  symbol?: string;
+  direction?: string;
+  qty?: number;
+  notionalKrw?: number;
+  spreadBps?: number;
+  netKrw?: number;
+  note?: string;
+}
 
 /**
  * userId별 업비트 클라이언트 묶음.
@@ -120,6 +141,85 @@ class InventoryArbService {
       if (c) candidates.push(c);
     }
     return rankCandidates(candidates);
+  }
+
+  /**
+   * 수동 1회 실거래 실행 (후보 화면 "즉시 실행" 버튼).
+   * 클릭 시점 실시간 호가+잔고로 재검증 → 여전히 임계 이상일 때만 executeArb 1회.
+   * @param maxKrw 이번 주문 상한 (서버 하드캡 MANUAL_MAX_KRW로 재차 제한)
+   */
+  async executeManual(userId: number, symbol: string, maxKrw: number, minSpreadBps: number = 30): Promise<ManualExecuteResult> {
+    const key = `${userId}:${symbol}`;
+    if (manualInFlight.has(key)) return { executed: false, reason: '이미 실행 중입니다' };
+    manualInFlight.add(key);
+    try {
+      const cappedMaxKrw = Math.min(Number(maxKrw) || 0, MANUAL_MAX_KRW);
+      if (cappedMaxKrw < MANUAL_MIN_ORDER_KRW) {
+        return { executed: false, reason: `주문 규모가 최소주문(${MANUAL_MIN_ORDER_KRW}원) 미만` };
+      }
+
+      const upbit = await this.getUpbit(userId);
+      const bithumbClient = await this.getBithumb(userId);
+      // 재검증: 클릭 시점 실시간 호가 (스캔 스냅샷 아님)
+      const [upbitBook, bithumbBook] = await Promise.all([
+        fetchOrderbookDepth('upbit', symbol),
+        fetchOrderbookDepth('bithumb', symbol),
+      ]);
+      if (!upbitBook || !bithumbBook) return { executed: false, reason: '호가 조회 실패' };
+
+      const opp = detectOpportunity(upbitBook, bithumbBook, minSpreadBps);
+      if (!opp || opp.spreadBps < minSpreadBps) {
+        return { executed: false, reason: `현재 스프레드가 임계(${minSpreadBps}bp) 미만 — 기회 사라짐` };
+      }
+
+      const { sellCoinBalance, buyKrwBalance } = await this.fetchBalances({ symbol }, opp, upbit.service, bithumbClient);
+      const feas = evaluateFeasibility({
+        opp, minSpreadBps, anomalyMaxBps: 2000, maxOrderKrw: cappedMaxKrw,
+        dailyMaxKrw: null, dailyMaxCount: null, todayNotionalKrw: 0, todayCount: 0,
+        sellCoinBalance, buyKrwBalance, buyFeeBps: 5,
+      });
+      if (!feas.ok) return { executed: false, reason: feas.reason };
+
+      // record-before-fire (수동 sentinel 봇에 기록)
+      const manualBot = await this.getOrCreateManualBot(userId);
+      const trade = await mainPrisma.inventoryArbTrade.create({
+        data: {
+          botId: manualBot.id, symbol, direction: opp.direction, qty: feas.qty,
+          buyExchange: opp.buyExchange, buyPrice: opp.buyPrice, sellExchange: opp.sellExchange, sellPrice: opp.sellPrice,
+          notionalKrw: feas.notionalKrw, status: 'detected', note: `수동실행 pre-fire spread=${opp.spreadBps}bp`,
+        },
+      });
+
+      const { buyLeg, sellLeg } = this.buildLegs(opp, upbit.service, bithumbClient);
+      const sellExchangeBestAsk = opp.sellExchange === 'upbit' ? upbitBook.ask : bithumbBook.ask;
+      const result = await executeArb({
+        buyLeg, sellLeg, symbol, qty: feas.qty,
+        buyPrice: opp.buyPrice, sellPrice: opp.sellPrice, fallbackMode: 'market_flatten',
+        flattenBuyRefPrice: sellExchangeBestAsk,
+      });
+      await this.persistResult(manualBot, trade.id, opp, feas, result);
+
+      const netKrw = result.kind === 'filled' || result.kind === 'partial_flattened' ? result.netKrw : undefined;
+      const note = 'note' in result ? result.note : 'reason' in result ? result.reason : undefined;
+      return {
+        executed: true, kind: result.kind, symbol, direction: opp.direction,
+        qty: feas.qty, notionalKrw: feas.notionalKrw, spreadBps: opp.spreadBps, netKrw, note,
+      };
+    } catch (err: any) {
+      console.error(`[InventoryArb] 수동실행 ${symbol} 실패:`, err.message);
+      return { executed: false, reason: err.message ?? '실행 오류' };
+    } finally {
+      manualInFlight.delete(key);
+    }
+  }
+
+  /** 수동 실행 기록용 sentinel 봇 (userId당 1개, enabled=false, 봇 목록에서 숨김) */
+  private async getOrCreateManualBot(userId: number): Promise<{ id: number }> {
+    const existing = await mainPrisma.inventoryArbBot.findFirst({ where: { userId, symbol: MANUAL_BOT_SYMBOL } });
+    if (existing) return existing;
+    return mainPrisma.inventoryArbBot.create({
+      data: { userId, symbol: MANUAL_BOT_SYMBOL, maxOrderKrw: MANUAL_MAX_KRW, enabled: false, autoExecute: false },
+    });
   }
 
   private async processBot(bot: any): Promise<void> {
