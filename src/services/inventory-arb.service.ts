@@ -143,17 +143,46 @@ class InventoryArbService {
       if (c) candidates.push(c);
     }
 
-    // 입출금 상태 첨부 (전송 제한 여부·출금 수수료 — 큰 스프레드 원인 + 리밸런싱 판단). 실패해도 후보는 반환.
+    const ranked = rankCandidates(candidates);
+
+    // 입출금 상태 첨부 + 상위 후보 리밸런싱 출금비용(누적 거래소 출금수수료). 실패해도 후보는 반환.
     try {
       const wallets = await multiArbWalletStatusService.getAll();
-      for (const c of candidates) {
+      for (const c of ranked) {
         c.buyWallet = summarizeCoinWallet(wallets[c.buyExchange]?.get(c.symbol));
         c.sellWallet = summarizeCoinWallet(wallets[c.sellExchange]?.get(c.symbol));
       }
+
+      // 리밸런싱 = 코인이 누적되는 매수(buy) 거래소에서 출금 → 소진되는 매도 거래소로 전송.
+      // 그 거래소의 출금수수료를 조회(authed·코인별). 상위 N개만(호출 제한). graceful.
+      const TOP = 12;
+      await Promise.allSettled(
+        ranked.slice(0, TOP).map(async (c) => {
+          const netType =
+            wallets[c.buyExchange]?.get(c.symbol)?.find((n) => n.withdrawEnabled)?.network ?? c.symbol;
+          let feeCoin: number | null = null;
+          try {
+            if (c.buyExchange === 'bithumb') {
+              feeCoin = await bithumbClient.getWithdrawFee(c.symbol, netType);
+            } else if (c.buyExchange === 'upbit') {
+              const d: any = await upbit.service.getWithdrawChance(c.symbol, netType);
+              const f = parseFloat(d?.currency?.withdraw_fee ?? '');
+              feeCoin = Number.isFinite(f) ? f : null;
+            }
+          } catch {
+            feeCoin = null; // 권한 없음(업비트 401 등)·미지원 — 미제공 처리
+          }
+          if (feeCoin != null && feeCoin >= 0) {
+            c.rebalanceWithdrawFeeCoin = feeCoin;
+            c.rebalanceCostKrw = Math.round(feeCoin * c.buyPrice);
+            c.sustainableNetKrw = Math.round(c.estimatedNetKrw - feeCoin * c.buyPrice);
+          }
+        }),
+      );
     } catch (err: any) {
-      console.error('[InventoryArb] 후보 지갑상태 조회 실패:', err.message);
+      console.error('[InventoryArb] 후보 지갑상태/출금수수료 조회 실패:', err.message);
     }
-    return rankCandidates(candidates);
+    return ranked;
   }
 
   /**
