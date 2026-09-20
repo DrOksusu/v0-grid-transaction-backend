@@ -2,6 +2,20 @@ import { Response, NextFunction } from 'express';
 import mainPrisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
+import { inventoryArbService } from '../services/inventory-arb.service';
+
+/** 온디맨드 후보 스캔 (내 잔고 + 공통상장 + 라이브 스프레드) */
+export async function getCandidates(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const userId = req.userId!;
+    const minSpreadBps = req.query.minSpreadBps != null ? Number(req.query.minSpreadBps) : 30;
+    const candidates = await inventoryArbService.scanCandidates(
+      userId,
+      Number.isFinite(minSpreadBps) && minSpreadBps >= 0 ? minSpreadBps : 30,
+    );
+    return successResponse(res, candidates);
+  } catch (e) { next(e); }
+}
 
 export async function createBot(req: AuthRequest, res: Response, next: NextFunction) {
   try {

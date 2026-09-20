@@ -37,6 +37,22 @@ export interface SpreadOpportunity {
   maxQtyByDepth: number; // depth-aware: 마진 스프레드 ≥ minSpreadBps 인 레벨까지 누적 수량 (레벨 없으면 최우선 1단계 min)
 }
 
+/** 후보 스캐너 결과 — 지금 실행 가능한 재고형 아비 후보 1건 */
+export interface InventoryArbCandidate {
+  symbol: string;
+  direction: ArbDirection;
+  buyExchange: ExchangeName;
+  sellExchange: ExchangeName;
+  spreadBps: number;
+  buyPrice: number;
+  sellPrice: number;
+  executableQty: number; // min(depth, 매도측 코인, 매수측 KRW/가격)
+  executableKrw: number; // executableQty * buyPrice
+  type: 'bidirectional' | 'one_way_drain'; // 양방향(양쪽 코인 보유) / 단방향 드레인(EGLD형)
+  sellCoinBalance: number; // 매도 거래소 코인 보유
+  buyKrwBalance: number; // 매수 거래소 KRW 보유
+}
+
 /** FeasibilityGate 입력 */
 export interface FeasibilityInput {
   opp: SpreadOpportunity;
