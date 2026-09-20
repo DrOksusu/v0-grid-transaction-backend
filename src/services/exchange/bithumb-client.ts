@@ -170,6 +170,23 @@ export class BithumbClient implements ExchangeClient {
   }
 
   /**
+   * 출금 수수료 조회 (코인 단위). GET /v1/withdraws/chance → currency.withdraw_fee
+   * 실패/미제공 시 null.
+   */
+  async getWithdrawFee(symbol: string, netType: string): Promise<number | null> {
+    try {
+      const d = await this.apiGet<any>('/v1/withdraws/chance', {
+        currency: symbol.toUpperCase(),
+        net_type: netType.toUpperCase(),
+      });
+      const fee = parseFloat(d?.currency?.withdraw_fee ?? '');
+      return Number.isFinite(fee) ? fee : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * 시장가 매수/매도 주문.
    * POST /v1/orders
    * - 매도(ask): ord_type=market, volume=coin_qty
