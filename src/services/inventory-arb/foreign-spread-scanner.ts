@@ -1,6 +1,8 @@
 // 해외 거래소(바이낸스↔MEXC) 재고-무관 스프레드 스캐너.
 // 공개 bookTicker(인증 불필요) 배치 조회 → USDT 페어 교집합 크로스 스프레드 계산.
 // 정보 표시 전용(실행/잔고 무관). 관리자가 minSpreadBps로 필터·정렬.
+import { summarizeCoinWallet, type WalletInfo } from './wallet-info';
+import { multiArbWalletStatusService } from '../multi-arb-wallet-status.service';
 
 /** 거래소 최우선 호가 (USDT 페어) */
 export interface ForeignTop {
@@ -19,6 +21,8 @@ export interface ForeignSpread {
   spreadBps: number;
   binancePrice: number; // 참고: 바이낸스 mid(=(bid+ask)/2)
   mexcPrice: number; // 참고: MEXC mid
+  buyWallet?: WalletInfo; // 매수 거래소 입출금 상태
+  sellWallet?: WalletInfo; // 매도 거래소 입출금 상태
 }
 
 // 티커 충돌/이상치 컷 — 한쪽이 다른쪽의 5배 초과면 다른 자산 오매칭으로 간주(TROLL 27억% 류 차단)
@@ -106,5 +110,17 @@ export async function scanForeignSpreads(minSpreadBps: number, limit = 150): Pro
     if (sp && sp.spreadBps >= minSpreadBps) out.push(sp);
   }
   out.sort((a, b) => b.spreadBps - a.spreadBps);
-  return out.slice(0, limit);
+  const top = out.slice(0, limit);
+
+  // 상위 후보에 입출금 상태 첨부 (큰 스프레드가 입출금 제한발인지 + 출금 수수료). 실패해도 스프레드는 반환.
+  try {
+    const wallets = await multiArbWalletStatusService.getAll();
+    for (const s of top) {
+      s.buyWallet = summarizeCoinWallet(wallets[s.buyExchange]?.get(s.symbol));
+      s.sellWallet = summarizeCoinWallet(wallets[s.sellExchange]?.get(s.symbol));
+    }
+  } catch {
+    // 무시 — 스프레드 데이터만 반환
+  }
+  return top;
 }

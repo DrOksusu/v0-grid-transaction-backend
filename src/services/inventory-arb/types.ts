@@ -1,4 +1,6 @@
 // 재고형 아비트리지 봇 공통 타입
+import type { WalletInfo } from './wallet-info';
+export type { WalletInfo };
 
 /** 호가 한 단계 */
 export interface BookLevel {
@@ -51,6 +53,8 @@ export interface InventoryArbCandidate {
   type: 'bidirectional' | 'one_way_drain'; // 양방향(양쪽 코인 보유) / 단방향 드레인(EGLD형)
   sellCoinBalance: number; // 매도 거래소 코인 보유
   buyKrwBalance: number; // 매수 거래소 KRW 보유
+  buyWallet?: WalletInfo; // 매수 거래소 입출금 상태
+  sellWallet?: WalletInfo; // 매도 거래소 입출금 상태
 }
 
 /** FeasibilityGate 입력 */

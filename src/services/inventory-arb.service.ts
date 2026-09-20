@@ -13,6 +13,8 @@ import { fetchOrderbookDepth, fetchUpbitDepthBatch } from './inventory-arb/order
 import { evaluateFeasibility } from './inventory-arb/feasibility-gate';
 import { executeArb } from './inventory-arb/executor';
 import { buildCandidate, rankCandidates, fetchCommonListings, EXCLUDED_STABLES } from './inventory-arb/candidate-scanner';
+import { summarizeCoinWallet } from './inventory-arb/wallet-info';
+import { multiArbWalletStatusService } from './multi-arb-wallet-status.service';
 import type { BookTop, ExchangeName, ExecutorResult, SpreadOpportunity, InventoryArbCandidate } from './inventory-arb/types';
 import { kakaoNotifyService } from './kakao-notify.service';
 
@@ -139,6 +141,17 @@ class InventoryArbService {
         bithumbKrw: bithumbBal['KRW'] ?? 0,
       }, minSpreadBps);
       if (c) candidates.push(c);
+    }
+
+    // 입출금 상태 첨부 (전송 제한 여부·출금 수수료 — 큰 스프레드 원인 + 리밸런싱 판단). 실패해도 후보는 반환.
+    try {
+      const wallets = await multiArbWalletStatusService.getAll();
+      for (const c of candidates) {
+        c.buyWallet = summarizeCoinWallet(wallets[c.buyExchange]?.get(c.symbol));
+        c.sellWallet = summarizeCoinWallet(wallets[c.sellExchange]?.get(c.symbol));
+      }
+    } catch (err: any) {
+      console.error('[InventoryArb] 후보 지갑상태 조회 실패:', err.message);
     }
     return rankCandidates(candidates);
   }
