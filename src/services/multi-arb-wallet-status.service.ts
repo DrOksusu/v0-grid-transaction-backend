@@ -36,6 +36,7 @@ export function parseBinanceWalletConfig(rows: any[]): WalletStatusMap {
       network: normalizeNetwork(n.network),
       depositEnabled: !!n.depositEnable,
       withdrawEnabled: !!n.withdrawEnable,
+      withdrawFee: n.withdrawFee != null && Number.isFinite(Number(n.withdrawFee)) ? Number(n.withdrawFee) : undefined,
     })));
   }
   return map;
@@ -51,6 +52,7 @@ export function parseMexcWalletConfig(rows: any[]): WalletStatusMap {
       network: normalizeNetwork(n.network ?? n.netWork),
       depositEnabled: !!n.depositEnable,
       withdrawEnabled: !!n.withdrawEnable,
+      withdrawFee: n.withdrawFee != null && Number.isFinite(Number(n.withdrawFee)) ? Number(n.withdrawFee) : undefined,
     })));
   }
   return map;

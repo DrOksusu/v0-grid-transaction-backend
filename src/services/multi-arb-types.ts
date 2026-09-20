@@ -21,6 +21,7 @@ export interface NetworkStatus {
   network: string;          // 정규화된 네트워크명 (예: "ETH", "LSK", "TRX")
   depositEnabled: boolean;
   withdrawEnabled: boolean;
+  withdrawFee?: number;     // 코인 단위 출금 수수료 (바이낸스/MEXC 제공, KRW 거래소는 미제공)
 }
 
 // 거래소 1곳의 "코인 심볼 → 지원 네트워크 목록" 맵
