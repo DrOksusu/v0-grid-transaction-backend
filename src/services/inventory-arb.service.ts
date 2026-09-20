@@ -115,9 +115,12 @@ class InventoryArbService {
     const { buyLeg, sellLeg } = this.buildLegs(opp, upbit.service, bithumbClient);
 
     // 9. 실행 (flatten 가능 여부는 executor가 실제 주문 결과로 판정 — 사전 잔고 전달 불필요)
+    //    flattenBuyRefPrice = 매도 거래소 최우선 ask (net-short flatten 되사기 예산 기준, depth 무관하게 안정)
+    const sellExchangeBestAsk = opp.sellExchange === 'upbit' ? upbitBook.ask : bithumbBook.ask;
     const result = await executeArb({
       buyLeg, sellLeg, symbol: bot.symbol, qty: feas.qty,
       buyPrice: opp.buyPrice, sellPrice: opp.sellPrice, fallbackMode: bot.fallbackMode,
+      flattenBuyRefPrice: sellExchangeBestAsk,
     });
 
     // 10. 결과 기록 + 후처리

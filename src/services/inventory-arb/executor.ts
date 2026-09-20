@@ -17,6 +17,9 @@ export interface ExecuteArbInput {
   buyPrice: number; // 매수 거래소 ask (priceHint)
   sellPrice: number; // 매도 거래소 bid (priceHint)
   fallbackMode: 'market_flatten' | 'hold';
+  // net-short flatten(매도 거래소에서 되사기) 예산 기준가 = 매도 거래소 최우선 ask.
+  // 미지정 시 sellPrice 폴백. depth 소비로 sellPrice가 최악 bid로 낮아져도 flatten 예산이 줄지 않도록 top-of-book 사용.
+  flattenBuyRefPrice?: number;
 }
 
 function fillQty(r: { filledQty: number } | null): number {
@@ -121,9 +124,9 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
   } else {
     // net short: 매도 거래소에서 과다 매도 → 매도 거래소에서 시장가 매수로 복원
     // net long과 동일하게 throw도 터미널로 매핑
-    // 시장가 매수는 ask를 무는데 priceHint(예산 기준)가 bid(sellPrice)면 예산 부족으로 미달→오탐 flatten_failed.
-    // 5% 헤드룸을 실어 스프레드가 5% 이내면 roundedImbalance 전량 매수 가능하게 한다(net long 매도엔 불필요 — 수량 직접 지정).
-    const flattenBuyPriceHint = sellPrice * 1.05;
+    // 시장가 매수는 ask를 무는데 priceHint(예산 기준)가 낮으면 예산 부족으로 미달→오탐 flatten_failed.
+    // 매도 거래소 최우선 ask(top-of-book) 기준 + 5% 헤드룸 → depth 소비로 sellPrice가 낮아져도 예산 충분.
+    const flattenBuyPriceHint = (input.flattenBuyRefPrice ?? sellPrice) * 1.05;
     let flat: { filledQty: number; grossKrw: number; feeKrw: number } | null;
     try {
       flat = await sellLeg.buyIoc(symbol, roundedImbalance, flattenBuyPriceHint, undefined);

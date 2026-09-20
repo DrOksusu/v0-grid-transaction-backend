@@ -67,4 +67,14 @@ describe('detectOpportunity', () => {
     expect(opp!.buyPrice).toBe(1002);
     expect(opp!.sellPrice).toBe(1010);
   });
+
+  it('다단계 depth: 양쪽 잔량이 동시에 소진되는 경로(포인터 이중 전진)', () => {
+    // 매도측 bid 5+5, 매수측 ask 5+5 — 각 lot이 양쪽을 정확히 소진
+    const upbit = depthBook([[995, 100]], [[1000, 5], [1003, 5]]);
+    const bithumb = depthBook([[1010, 5], [1005, 5]], [[1015, 100]]);
+    const opp = detectOpportunity(upbit, bithumb, 0);
+    expect(opp!.maxQtyByDepth).toBeCloseTo(10, 6);
+    expect(opp!.buyPrice).toBe(1003); // 최고 소비 ask
+    expect(opp!.sellPrice).toBe(1005); // 최저 소비 bid
+  });
 });
