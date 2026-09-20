@@ -55,6 +55,11 @@ export interface InventoryArbCandidate {
   buyKrwBalance: number; // 매수 거래소 KRW 보유
   buyWallet?: WalletInfo; // 매수 거래소 입출금 상태
   sellWallet?: WalletInfo; // 매도 거래소 입출금 상태
+  estimatedGrossKrw: number; // 규모 × (매도가 − 매수가), 수수료 전
+  estimatedFeeKrw: number; // 양쪽 거래 수수료 추정
+  estimatedNetKrw: number; // gross − fee (추정 순이익)
+  netProfitable: boolean; // 추정 순이익 > 0
+  realizable: boolean; // 지금 재고로 실제 실행 가능한가 (KRW 후보는 재고 보유 시 true)
 }
 
 /** FeasibilityGate 입력 */

@@ -21,9 +21,15 @@ export interface ForeignSpread {
   spreadBps: number;
   binancePrice: number; // 참고: 바이낸스 mid(=(bid+ask)/2)
   mexcPrice: number; // 참고: MEXC mid
+  netSpreadBps: number; // spreadBps − 왕복 수수료 추정(20bps)
+  realizable: boolean; // 이 시스템에서 실제 실행 가능한가 (해외는 항상 false = 관찰 전용)
+  realizabilityReason: string; // 관찰 전용 사유 (입출금 동결 등)
   buyWallet?: WalletInfo; // 매수 거래소 입출금 상태
   sellWallet?: WalletInfo; // 매도 거래소 입출금 상태
 }
+
+// 바이낸스+MEXC 왕복 taker 수수료 추정 (10+10 bps)
+const FOREIGN_ROUNDTRIP_FEE_BPS = 20;
 
 // 티커 충돌/이상치 컷 — 한쪽이 다른쪽의 5배 초과면 다른 자산 오매칭으로 간주(TROLL 27억% 류 차단)
 const SANITY_RATIO = 5;
@@ -54,9 +60,13 @@ export function computeForeignSpread(symbol: string, binance: ForeignTop, mexc: 
   }
   if (spread <= 0) return null;
 
+  const spreadBps = Math.floor(spread * 10000);
   return {
     symbol, buyExchange, sellExchange, buyPrice, sellPrice,
-    spreadBps: Math.floor(spread * 10000),
+    spreadBps,
+    netSpreadBps: spreadBps - FOREIGN_ROUNDTRIP_FEE_BPS,
+    realizable: false, // 해외는 이 시스템에서 실행 미지원 — 관찰 전용
+    realizabilityReason: '관찰 전용 (해외 거래소 실행·재고 미지원)',
     binancePrice: bMid, mexcPrice: mMid,
   };
 }
@@ -118,6 +128,11 @@ export async function scanForeignSpreads(minSpreadBps: number, limit = 150): Pro
     for (const s of top) {
       s.buyWallet = summarizeCoinWallet(wallets[s.buyExchange]?.get(s.symbol));
       s.sellWallet = summarizeCoinWallet(wallets[s.sellExchange]?.get(s.symbol));
+      // 전송 차익(싼 곳 매수→출금→비싼 곳 입금→매도)에 필요: 매수측 출금 + 매도측 입금.
+      // 하나라도 막혔으면 갭이 지속되는 원인 + 실현 불가.
+      if (s.buyWallet.known && s.sellWallet.known && (!s.buyWallet.withdraw || !s.sellWallet.deposit)) {
+        s.realizabilityReason = '입출금 동결 — 전송 차익 불가 (갭 지속 원인)';
+      }
     }
   } catch {
     // 무시 — 스프레드 데이터만 반환
