@@ -20,7 +20,7 @@
 4. **수량 매칭은 등식이 아니라 tolerance band.** 빗썸 매수 수수료가 코인 차감이면 full-fill에도 `buyQty < 주문량`. `buyQty === sellQty` 비교는 모든 빗썸 매수를 부분체결로 오판한다. 밴드(기본 1%) 안이면 체결로 간주. 첫 canary 거래로 실제 코인차감 여부 측정.
 5. **dust < 최소주문(5000 KRW).** 상쇄분이 5000 KRW 미만이면 flatten 주문이 안 나간다(exchange-leg.ts 5000 하한). dust 잔여는 수용 + 로그 + 알림으로 처리(터미널 아님).
 6. **record-before-fire.** leg 발주 **전에** pending 행을 만들고 이후 갱신. 크래시로 발주 후 기록 전 죽어도 추적 가능.
-7. **호가는 top-level(getOrderbookTop)만 사용 — spec §6(상위 2~3호가 depth) 대비 축소.** canary 소액에서는 안전하나, **canary 상한 확대 전 full-depth REST 사이징이 선행조건**임을 명시(조용히 떨어뜨리지 말 것).
+7. ~~호가는 top-level만 사용~~ → **2026-09-20 다단계 depth 구현 완료.** `orderbook-depth.ts`가 공개 REST로 다단계 호가 조회, detector가 마진 스프레드 ≥ minSpreadBps 구간까지 수량 누적(`maxQtyByDepth`), priceHint는 소비한 최악 레벨가(예산 안전). 레벨 없으면 top-level 폴백.
 8. **가격 이상(anomaly) 가드.** 스프레드가 비현실적으로 크면(`spreadBps > anomalyMaxBps`, 기본 2000=20%) 티커/호가 오류 의심 → skip.
 
 ---
@@ -1442,7 +1442,7 @@ git commit -m "test: 재고형 아비 전체 테스트 통과 확인" --allow-em
 
 ## 범위 밖 (이번 계획 제외 — 구현 후 follow-up)
 - **입출금 중단(wallet_state) 감지 자동 정지** (spec §8): 재고 소진 리스크 경고용. `multi-arb-wallet-status.service` 재사용해 후속 추가.
-- **full-depth REST 사이징** (설계확정 §7): canary 상한 확대 전 선행. 현재 top-level만.
+- ~~full-depth REST 사이징~~ → **2026-09-20 구현 완료** (`orderbook-depth.ts` + detector depth walk).
 - **반자동 승인 UI/엔드포인트**: 사용자 결정으로 완전자동 중심 → 승인 라운드트립 후속.
 - **크래시 복구(고아 포지션 재조정)**: record-before-fire로 추적은 가능하나 자동 복구는 canary(사람 감시)에서 후속.
 - **사후 리컨실(reconciler)** (리뷰 I1/잔여): 양쪽 leg가 모두 throw(rejected)했는데 실제로는 한쪽이 체결됐을 수 있는 경우(`failed`로 보고되나 노출 잔존 가능) — 사이클 후 잔고 대조로 감지. **executor의 `failed`에는 자동 재시도 금지**(이중 실행 위험). canary 확대 전 선행 권장.

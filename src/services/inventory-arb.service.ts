@@ -9,6 +9,7 @@ import { UpbitClient } from './exchange/upbit-client';
 import { BithumbClient } from './exchange/bithumb-client';
 import { UpbitLeg, BithumbLeg, type ExchangeLeg } from './exchange-leg';
 import { detectOpportunity } from './inventory-arb/spread-detector';
+import { fetchOrderbookDepth } from './inventory-arb/orderbook-depth';
 import { evaluateFeasibility } from './inventory-arb/feasibility-gate';
 import { executeArb } from './inventory-arb/executor';
 import type { BookTop, ExchangeName, ExecutorResult, SpreadOpportunity } from './inventory-arb/types';
@@ -61,20 +62,17 @@ class InventoryArbService {
   }
 
   private async processBot(bot: any): Promise<void> {
-    // 1. 양쪽 호가 (top-level REST) — spec §6 대비 축소(선행조건: canary 확대 전 full-depth)
+    // 1. 인증 클라이언트(주문·잔고용) 확보 + 다단계 호가(공개 REST, depth-aware 사이징용) 조회
     const upbit = await this.getUpbit(bot.userId);
     const bithumbClient = await this.getBithumb(bot.userId);
-    const [upbitTop, bithumbTop] = await Promise.all([
-      upbit.client.getOrderbookTop(bot.symbol),
-      bithumbClient.getOrderbookTop(bot.symbol),
+    const [upbitBook, bithumbBook] = await Promise.all([
+      fetchOrderbookDepth('upbit', bot.symbol),
+      fetchOrderbookDepth('bithumb', bot.symbol),
     ]);
-    if (!upbitTop || !bithumbTop) return;
+    if (!upbitBook || !bithumbBook) return;
 
-    const upbitBook: BookTop = { bid: upbitTop.bid, ask: upbitTop.ask, bidQty: upbitTop.bidQty, askQty: upbitTop.askQty };
-    const bithumbBook: BookTop = { bid: bithumbTop.bid, ask: bithumbTop.ask, bidQty: bithumbTop.bidQty, askQty: bithumbTop.askQty };
-
-    // 2. 감지
-    const opp = detectOpportunity(upbitBook, bithumbBook);
+    // 2. 감지 (minSpreadBps로 depth 누적 한계 설정 — spec §6 다단계 호가 사이징)
+    const opp = detectOpportunity(upbitBook, bithumbBook, bot.minSpreadBps);
     if (!opp) return;
 
     // 3. 잔고 조회 (게이트 사이징용 — 매도측 코인, 매수측 KRW)
