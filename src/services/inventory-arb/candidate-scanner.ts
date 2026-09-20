@@ -5,6 +5,10 @@ import { detectOpportunity } from './spread-detector';
 
 const MIN_ORDER_KRW = 5000;
 
+// 거래 수수료 추정(bps, taker). 실체결 net은 executor가 실수수료로 계산 — 이건 후보 화면용 추정치.
+// ⚠️ 빗썸 실수수료는 계정 등급에 따라 다름(확인 필요). 조정 지점.
+export const EXCHANGE_FEE_BPS: Record<string, number> = { upbit: 5, bithumb: 5, binance: 10, mexc: 10 };
+
 /** 재고형 봇에서 제외할 스테이블/페그 코인 (기존 maker-taker 스테이블 봇과 중복) */
 export const EXCLUDED_STABLES = new Set<string>([
   'USDT', 'USDC', 'USDS', 'USD1', 'USDE', 'DAI', 'TUSD', 'BUSD', 'USDP', 'GUSD', 'FDUSD', 'PYUSD', 'RLUSD', 'EURC', 'USDG',
@@ -46,6 +50,14 @@ export function buildCandidate(
   const type: InventoryArbCandidate['type'] =
     sellCoinBalance > 0 && buyCoinBalance > 0 ? 'bidirectional' : 'one_way_drain';
 
+  // 순이익 추정 = 규모 × 스프레드 − 양쪽 거래 수수료
+  const qty = Math.floor(executableQty * 1e8) / 1e8;
+  const gross = qty * (opp.sellPrice - opp.buyPrice);
+  const buyFeeBps = EXCHANGE_FEE_BPS[opp.buyExchange] ?? 5;
+  const sellFeeBps = EXCHANGE_FEE_BPS[opp.sellExchange] ?? 5;
+  const fee = (qty * opp.buyPrice * buyFeeBps) / 10000 + (qty * opp.sellPrice * sellFeeBps) / 10000;
+  const net = gross - fee;
+
   return {
     symbol,
     direction: opp.direction,
@@ -54,17 +66,22 @@ export function buildCandidate(
     spreadBps: opp.spreadBps,
     buyPrice: opp.buyPrice,
     sellPrice: opp.sellPrice,
-    executableQty: Math.floor(executableQty * 1e8) / 1e8,
+    executableQty: qty,
     executableKrw: Math.round(executableKrw),
     type,
     sellCoinBalance,
     buyKrwBalance: Math.round(buyKrwBalance),
+    estimatedGrossKrw: Math.round(gross),
+    estimatedFeeKrw: Math.round(fee),
+    estimatedNetKrw: Math.round(net),
+    netProfitable: net > 0,
+    realizable: true, // KRW 후보는 재고 보유 시 즉시 실행 가능 (buildCandidate가 executableKrw≥최소주문 보장)
   };
 }
 
-/** 스프레드 큰 순 정렬 */
+/** 추정 순이익 큰 순 정렬 (실제 남는 것 우선) */
 export function rankCandidates(candidates: InventoryArbCandidate[]): InventoryArbCandidate[] {
-  return [...candidates].sort((a, b) => b.spreadBps - a.spreadBps);
+  return [...candidates].sort((a, b) => b.estimatedNetKrw - a.estimatedNetKrw);
 }
 
 /** 업비트 KRW ∩ 빗썸 KRW 공통 상장 심볼 (공개 REST). 실패 시 빈 배열 */
