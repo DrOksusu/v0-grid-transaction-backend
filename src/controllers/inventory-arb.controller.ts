@@ -3,6 +3,17 @@ import mainPrisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { inventoryArbService, MANUAL_BOT_SYMBOL } from '../services/inventory-arb.service';
+import { scanForeignSpreads } from '../services/inventory-arb/foreign-spread-scanner';
+
+/** 해외 거래소(바이낸스↔MEXC) 재고-무관 스프레드 스캔 (정보용, 관리자 minSpreadBps 지정) */
+export async function getForeignSpreads(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const raw = req.query.minSpreadBps != null ? Number(req.query.minSpreadBps) : 30;
+    const minSpreadBps = Number.isFinite(raw) && raw >= 0 ? raw : 30;
+    const spreads = await scanForeignSpreads(minSpreadBps);
+    return successResponse(res, spreads);
+  } catch (e) { next(e); }
+}
 
 /** 온디맨드 후보 스캔 (내 잔고 + 공통상장 + 라이브 스프레드) */
 export async function getCandidates(req: AuthRequest, res: Response, next: NextFunction) {
