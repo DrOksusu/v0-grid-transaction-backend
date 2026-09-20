@@ -9,10 +9,11 @@ import { UpbitClient } from './exchange/upbit-client';
 import { BithumbClient } from './exchange/bithumb-client';
 import { UpbitLeg, BithumbLeg, type ExchangeLeg } from './exchange-leg';
 import { detectOpportunity } from './inventory-arb/spread-detector';
-import { fetchOrderbookDepth } from './inventory-arb/orderbook-depth';
+import { fetchOrderbookDepth, fetchUpbitDepthBatch } from './inventory-arb/orderbook-depth';
 import { evaluateFeasibility } from './inventory-arb/feasibility-gate';
 import { executeArb } from './inventory-arb/executor';
-import type { BookTop, ExchangeName, ExecutorResult, SpreadOpportunity } from './inventory-arb/types';
+import { buildCandidate, rankCandidates, fetchCommonListings, EXCLUDED_STABLES } from './inventory-arb/candidate-scanner';
+import type { BookTop, ExchangeName, ExecutorResult, SpreadOpportunity, InventoryArbCandidate } from './inventory-arb/types';
 import { kakaoNotifyService } from './kakao-notify.service';
 
 // ── 순수 결정 헬퍼 (테스트 대상) ──────────────────────────────────────────
@@ -59,6 +60,66 @@ class InventoryArbService {
         inFlightBots.delete(bot.id);
       }
     }
+  }
+
+  /**
+   * 온디맨드 후보 스캔: 공통 상장 ∩ 내가 보유한 코인(스테이블 제외)마다 라이브 호가+내 잔고로
+   * "지금 실행 가능한" 재고형 아비 후보를 판정해 스프레드 큰 순으로 반환. (주문 없음, 읽기 전용)
+   * @param minSpreadBps 표시 임계 (기본 30)
+   */
+  async scanCandidates(userId: number, minSpreadBps: number = 30): Promise<InventoryArbCandidate[]> {
+    const upbit = await this.getUpbit(userId);
+    const bithumbClient = await this.getBithumb(userId);
+
+    // 1. 잔고 맵 + 공통 상장
+    const [upbitAccounts, bithumbBalances, common] = await Promise.all([
+      upbit.service.getAccounts(),
+      bithumbClient.getBalances(),
+      fetchCommonListings(),
+    ]);
+    const upbitBal: Record<string, number> = {};
+    for (const a of upbitAccounts as any[]) upbitBal[a.currency] = Number(a.balance ?? 0);
+    const bithumbBal: Record<string, number> = {};
+    for (const [k, v] of Object.entries(bithumbBalances)) bithumbBal[k] = (v as any).available ?? 0;
+
+    const commonSet = new Set(common);
+
+    // 2. 스캔 대상 = 어느 쪽이든 보유한 코인 ∩ 공통상장 − 스테이블 − KRW
+    const held = new Set<string>();
+    for (const [cur, amt] of Object.entries(upbitBal)) if (amt > 0) held.add(cur);
+    for (const [cur, amt] of Object.entries(bithumbBal)) if (amt > 0) held.add(cur);
+    const targets = [...held].filter(
+      (c) => c !== 'KRW' && commonSet.has(c) && !EXCLUDED_STABLES.has(c),
+    );
+    if (targets.length === 0) return [];
+
+    // 3. 호가 조회 — 업비트 배치 1회 + 빗썸 코인별(동시성 제한)
+    const upbitBooks = await fetchUpbitDepthBatch(targets);
+    const bithumbBooks = new Map<string, BookTop>();
+    const CHUNK = 8;
+    for (let i = 0; i < targets.length; i += CHUNK) {
+      const chunk = targets.slice(i, i + CHUNK);
+      const results = await Promise.all(chunk.map((s) => fetchOrderbookDepth('bithumb', s)));
+      chunk.forEach((s, idx) => {
+        if (results[idx]) bithumbBooks.set(s, results[idx]!);
+      });
+    }
+
+    // 4. 판정 + 랭킹
+    const candidates: InventoryArbCandidate[] = [];
+    for (const sym of targets) {
+      const ub = upbitBooks.get(sym);
+      const bb = bithumbBooks.get(sym);
+      if (!ub || !bb) continue;
+      const c = buildCandidate(sym, ub, bb, {
+        upbitCoin: upbitBal[sym] ?? 0,
+        upbitKrw: upbitBal['KRW'] ?? 0,
+        bithumbCoin: bithumbBal[sym] ?? 0,
+        bithumbKrw: bithumbBal['KRW'] ?? 0,
+      }, minSpreadBps);
+      if (c) candidates.push(c);
+    }
+    return rankCandidates(candidates);
   }
 
   private async processBot(bot: any): Promise<void> {

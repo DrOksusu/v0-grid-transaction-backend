@@ -31,6 +31,29 @@ function buildBook(bids: BookLevel[], asks: BookLevel[]): BookTop | null {
 }
 
 /**
+ * 업비트 다중 마켓 호가를 한 번의 REST 호출로 조회 (후보 스캔 효율).
+ * @returns symbol → BookTop 맵 (조회 실패/누락 심볼은 맵에 없음)
+ */
+export async function fetchUpbitDepthBatch(symbols: string[]): Promise<Map<string, BookTop>> {
+  const out = new Map<string, BookTop>();
+  if (symbols.length === 0) return out;
+  const markets = symbols.map((s) => `KRW-${s}`).join(',');
+  const j = await fetchJson(`${UPBIT_ORDERBOOK}?markets=${markets}`);
+  if (!Array.isArray(j)) return out;
+  for (const entry of j) {
+    const market: string = entry?.market ?? '';
+    const sym = market.startsWith('KRW-') ? market.slice(4) : '';
+    const units = entry?.orderbook_units;
+    if (!sym || !Array.isArray(units) || units.length === 0) continue;
+    const bids: BookLevel[] = units.map((u: any) => ({ price: Number(u.bid_price), qty: Number(u.bid_size) }));
+    const asks: BookLevel[] = units.map((u: any) => ({ price: Number(u.ask_price), qty: Number(u.ask_size) }));
+    const book = buildBook(bids, asks);
+    if (book) out.set(sym, book);
+  }
+  return out;
+}
+
+/**
  * 거래소별 다단계 호가 조회.
  * @param symbol base 심볼 (예: "XRP")
  */
