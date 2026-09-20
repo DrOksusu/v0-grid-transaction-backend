@@ -9,6 +9,7 @@ import { UpbitClient } from './exchange/upbit-client';
 import { BithumbClient } from './exchange/bithumb-client';
 import { UpbitLeg, BithumbLeg, type ExchangeLeg } from './exchange-leg';
 import { detectOpportunity } from './inventory-arb/spread-detector';
+import { fetchOrderbookDepth } from './inventory-arb/orderbook-depth';
 import { evaluateFeasibility } from './inventory-arb/feasibility-gate';
 import { executeArb } from './inventory-arb/executor';
 import type { BookTop, ExchangeName, ExecutorResult, SpreadOpportunity } from './inventory-arb/types';
@@ -61,20 +62,17 @@ class InventoryArbService {
   }
 
   private async processBot(bot: any): Promise<void> {
-    // 1. 양쪽 호가 (top-level REST) — spec §6 대비 축소(선행조건: canary 확대 전 full-depth)
+    // 1. 인증 클라이언트(주문·잔고용) 확보 + 다단계 호가(공개 REST, depth-aware 사이징용) 조회
     const upbit = await this.getUpbit(bot.userId);
     const bithumbClient = await this.getBithumb(bot.userId);
-    const [upbitTop, bithumbTop] = await Promise.all([
-      upbit.client.getOrderbookTop(bot.symbol),
-      bithumbClient.getOrderbookTop(bot.symbol),
+    const [upbitBook, bithumbBook] = await Promise.all([
+      fetchOrderbookDepth('upbit', bot.symbol),
+      fetchOrderbookDepth('bithumb', bot.symbol),
     ]);
-    if (!upbitTop || !bithumbTop) return;
+    if (!upbitBook || !bithumbBook) return;
 
-    const upbitBook: BookTop = { bid: upbitTop.bid, ask: upbitTop.ask, bidQty: upbitTop.bidQty, askQty: upbitTop.askQty };
-    const bithumbBook: BookTop = { bid: bithumbTop.bid, ask: bithumbTop.ask, bidQty: bithumbTop.bidQty, askQty: bithumbTop.askQty };
-
-    // 2. 감지
-    const opp = detectOpportunity(upbitBook, bithumbBook);
+    // 2. 감지 (minSpreadBps로 depth 누적 한계 설정 — spec §6 다단계 호가 사이징)
+    const opp = detectOpportunity(upbitBook, bithumbBook, bot.minSpreadBps);
     if (!opp) return;
 
     // 3. 잔고 조회 (게이트 사이징용 — 매도측 코인, 매수측 KRW)
@@ -117,9 +115,12 @@ class InventoryArbService {
     const { buyLeg, sellLeg } = this.buildLegs(opp, upbit.service, bithumbClient);
 
     // 9. 실행 (flatten 가능 여부는 executor가 실제 주문 결과로 판정 — 사전 잔고 전달 불필요)
+    //    flattenBuyRefPrice = 매도 거래소 최우선 ask (net-short flatten 되사기 예산 기준, depth 무관하게 안정)
+    const sellExchangeBestAsk = opp.sellExchange === 'upbit' ? upbitBook.ask : bithumbBook.ask;
     const result = await executeArb({
       buyLeg, sellLeg, symbol: bot.symbol, qty: feas.qty,
       buyPrice: opp.buyPrice, sellPrice: opp.sellPrice, fallbackMode: bot.fallbackMode,
+      flattenBuyRefPrice: sellExchangeBestAsk,
     });
 
     // 10. 결과 기록 + 후처리
