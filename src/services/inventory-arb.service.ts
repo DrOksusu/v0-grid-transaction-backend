@@ -160,22 +160,38 @@ class InventoryArbService {
         ranked.slice(0, TOP).map(async (c) => {
           const netType =
             wallets[c.buyExchange]?.get(c.symbol)?.find((n) => n.withdrawEnabled)?.network ?? c.symbol;
+          // 고정형(코인 정액) 또는 정률형(출금액의 %) 중 하나. 실패 시 둘 다 null.
           let feeCoin: number | null = null;
+          let rate: number | null = null;
           try {
             if (c.buyExchange === 'bithumb') {
-              feeCoin = await bithumbClient.getWithdrawFee(c.symbol, netType);
+              const info = await bithumbClient.getWithdrawFeeInfo(c.symbol, netType);
+              feeCoin = info?.feeCoin ?? null;
+              rate = info?.rate ?? null;
             } else if (c.buyExchange === 'upbit') {
+              // 업비트는 고정형(withdraw_fee)만 존재. 관리자 키 권한 없으면 401 → 미제공.
               const d: any = await upbit.service.getWithdrawChance(c.symbol, netType);
               const f = parseFloat(d?.currency?.withdraw_fee ?? '');
               feeCoin = Number.isFinite(f) ? f : null;
             }
           } catch {
             feeCoin = null; // 권한 없음(업비트 401 등)·미지원 — 미제공 처리
+            rate = null;
           }
+          // 리밸런싱 비용 = 누적 코인을 매수 거래소에서 출금할 때의 수수료.
+          //  - 고정형: feeCoin × buyPrice (수량 무관)
+          //  - 정률형: rate × 출금액 = rate × executableKrw (수량 비례 → notional 규모만큼 커짐)
+          let rebalanceCostKrw: number | null = null;
           if (feeCoin != null && feeCoin >= 0) {
             c.rebalanceWithdrawFeeCoin = feeCoin;
-            c.rebalanceCostKrw = Math.round(feeCoin * c.buyPrice);
-            c.sustainableNetKrw = Math.round(c.estimatedNetKrw - feeCoin * c.buyPrice);
+            rebalanceCostKrw = feeCoin * c.buyPrice;
+          } else if (rate != null && rate > 0) {
+            c.rebalanceWithdrawRate = rate;
+            rebalanceCostKrw = rate * c.executableKrw;
+          }
+          if (rebalanceCostKrw != null) {
+            c.rebalanceCostKrw = Math.round(rebalanceCostKrw);
+            c.sustainableNetKrw = Math.round(c.estimatedNetKrw - rebalanceCostKrw);
           }
         }),
       );

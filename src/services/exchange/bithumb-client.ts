@@ -170,17 +170,27 @@ export class BithumbClient implements ExchangeClient {
   }
 
   /**
-   * 출금 수수료 조회 (코인 단위). GET /v1/withdraws/chance → currency.withdraw_fee
-   * 실패/미제공 시 null.
+   * 출금 수수료 조회. GET /v1/withdraws/chance → currency.{withdraw_fee|withdraw_rate}
+   * 빗썸은 두 가지 수수료 모델이 공존한다(2025-05-04 정책 변경):
+   *  - 고정형: withdraw_fee = "0.4" (코인 단위 정액), withdraw_rate = null
+   *  - 정률형: withdraw_fee = null, withdraw_rate = "0.01" (출금액의 1% 등, 저거래량 코인 대상)
+   * 두 값을 모두 반환하고 호출측이 모델을 판단한다. 실패/미제공 시 null.
    */
-  async getWithdrawFee(symbol: string, netType: string): Promise<number | null> {
+  async getWithdrawFeeInfo(
+    symbol: string,
+    netType: string,
+  ): Promise<{ feeCoin: number | null; rate: number | null } | null> {
     try {
       const d = await this.apiGet<any>('/v1/withdraws/chance', {
         currency: symbol.toUpperCase(),
         net_type: netType.toUpperCase(),
       });
       const fee = parseFloat(d?.currency?.withdraw_fee ?? '');
-      return Number.isFinite(fee) ? fee : null;
+      const rate = parseFloat(d?.currency?.withdraw_rate ?? '');
+      return {
+        feeCoin: Number.isFinite(fee) ? fee : null,
+        rate: Number.isFinite(rate) ? rate : null,
+      };
     } catch {
       return null;
     }

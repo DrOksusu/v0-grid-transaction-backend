@@ -61,8 +61,10 @@ export interface InventoryArbCandidate {
   netProfitable: boolean; // 추정 순이익 > 0
   realizable: boolean; // 지금 재고로 실제 실행 가능한가 (KRW 후보는 재고 보유 시 true)
   // 리밸런싱(누적 거래소→소진 거래소 전송) 출금비용. 매 거래 비용이 아니라 주기적 비용.
-  rebalanceWithdrawFeeCoin?: number; // 누적(매수) 거래소 출금 수수료(코인 단위)
-  rebalanceCostKrw?: number; // 위 수수료의 KRW 환산 (feeCoin × buyPrice)
+  // 빗썸은 고정형(코인 정액) / 정률형(출금액의 %) 두 모델이 공존 → 둘 중 하나만 채워진다.
+  rebalanceWithdrawFeeCoin?: number; // 고정형: 누적(매수) 거래소 출금 수수료(코인 단위)
+  rebalanceWithdrawRate?: number; // 정률형: 출금액 대비 비율 (0.01 = 1%)
+  rebalanceCostKrw?: number; // 위 수수료의 KRW 환산 (고정형=feeCoin×buyPrice, 정률형=rate×executableKrw)
   sustainableNetKrw?: number; // estimatedNetKrw − rebalanceCostKrw (매 거래마다 리밸런싱하는 최악 가정 = 하한)
 }
 
