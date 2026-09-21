@@ -5,13 +5,17 @@ import { parseUpbitWalletStatus, parseBithumbWalletStatus } from '../../src/serv
 import { MultiArbExchange, SpreadCandidate, WalletStatusMap } from '../../src/services/multi-arb-types';
 
 function candidate(partial: Partial<SpreadCandidate> = {}): SpreadCandidate {
+  const buyPrice = partial.buyPrice ?? 533;
+  const sellPrice = partial.sellPrice ?? 1322;
   return {
     symbol: 'LSK',
     currencyZone: 'KRW',
     buyExchange: 'upbit',
-    buyPrice: 533,
+    buyPrice,
+    askPrice: buyPrice,
     sellExchange: 'bithumb',
-    sellPrice: 1322,
+    sellPrice,
+    bidPrice: sellPrice,
     spreadPct: 148.03,
     ...partial,
   };

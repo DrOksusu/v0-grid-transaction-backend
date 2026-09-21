@@ -30,15 +30,51 @@ export type WalletStatusMap = Map<string, NetworkStatus[]>;
 // 거래소 1곳의 "코인 심볼 → 현재가" 맵 (통화권 단위: KRW 또는 USDT)
 export type PriceMap = Map<string, number>;
 
+// 호가 한 단계 (가격 + 수량)
+export interface BookLevel {
+  price: number;
+  qty: number;
+}
+
+// 거래소 1곳 코인 1개의 호가 (최우선 + 선택적 depth levels)
+export interface BookTop {
+  ask: number;              // 최저 매도호가 (여기에 매수 = 내가 지불)
+  bid: number;               // 최고 매수호가 (여기에 매도 = 내가 수취)
+  askLevels?: BookLevel[];  // 오름차순(낮은 ask 먼저). 배치로 얻은 경우만(KRW권)
+  bidLevels?: BookLevel[];  // 내림차순(높은 bid 먼저)
+}
+
+// 거래소 1곳의 "코인 심볼 → 호가" 맵
+export type BookMap = Map<string, BookTop>;
+
+// 최소주문 규모(순차익 계산용). KRW권=원, USDT권=USDT.
+export const MIN_NOTIONAL_BY_ZONE: Record<CurrencyZone, number> = { KRW: 100000, USDT: 100 };
+
 // 스프레드 후보 (SpreadCalculator 출력)
+// buyPrice=매수측 최저 매도호가(ask, 내가 지불) · sellPrice=매도측 최고 매수호가(bid, 내가 수취)
 export interface SpreadCandidate {
   symbol: string;
   currencyZone: CurrencyZone;
   buyExchange: MultiArbExchange;
-  buyPrice: number;
+  buyPrice: number;         // = askPrice (매수측 ask)
+  askPrice: number;         // 매수측 최저 매도호가
   sellExchange: MultiArbExchange;
-  sellPrice: number;
-  spreadPct: number;        // (sell - buy) / buy * 100, 항상 > 0
+  sellPrice: number;        // = bidPrice (매도측 bid)
+  bidPrice: number;         // 매도측 최고 매수호가
+  spreadPct: number;        // 실현 최우선호가 스프레드: (sell.bid - buy.ask) / buy.ask * 100, 항상 > 0
+}
+
+// 순차익 계산 결과 (NetCalculator 출력)
+export interface NetResult {
+  filledNotional: number;   // 최소주문 규모까지 실제 채운 금액(양쪽 min)
+  depthOk: boolean;         // 최소주문 규모를 양쪽 호가가 커버했는가
+  buyVwap: number;          // 매수측 체결 VWAP(지불 단가)
+  sellVwap: number;         // 매도측 체결 VWAP(수취 단가)
+  grossSpreadPct: number;   // (sellVwap − buyVwap)/buyVwap*100 (깊이 반영)
+  tradingFeePct: number;    // 양쪽 taker 수수료 합 %
+  withdrawFeePct: number;   // 출금료 %환산 (미확인=0)
+  withdrawFeeKnown: boolean;
+  netSpreadPct: number;     // grossSpreadPct − tradingFeePct − withdrawFeePct
 }
 
 // 실현가능성 태그 (spec §6, DB feasibility 컬럼과 동일 문자열)

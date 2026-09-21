@@ -6,7 +6,7 @@
 // (기록 dedup과 발송 게이팅은 별개 — dedup은 "어느 행에 쓸지"만 정하고, 발송 여부/쿨다운 판단은 그대로)
 import prisma from '../config/database';
 import { kakaoNotifyService } from './kakao-notify.service';
-import { EXCHANGE_LABELS, FeasibilityResult, SpreadCandidate } from './multi-arb-types';
+import { EXCHANGE_LABELS, FeasibilityResult, MIN_NOTIONAL_BY_ZONE, NetResult, SpreadCandidate } from './multi-arb-types';
 
 const COOLDOWN_MS = 30 * 60 * 1000; // 30분 (spec §2)
 
@@ -15,11 +15,40 @@ function formatPrice(price: number): string {
   return price.toLocaleString('ko-KR', { maximumFractionDigits: 8 });
 }
 
-// 카카오톡 메시지 포맷 (spec §7) — 순수함수, 단위테스트 대상
+// 검증 규모 표기 (spec §7): KRW권 "10만원", USDT권 "100USDT"
+function formatVerifiedNotional(currencyZone: SpreadCandidate['currencyZone']): string {
+  const minNotional = MIN_NOTIONAL_BY_ZONE[currencyZone];
+  return currencyZone === 'KRW' ? `${(minNotional / 10000).toFixed(0)}만원` : `${minNotional}USDT`;
+}
+
+// 출금료 표기 (2026-09-22 개편, H1 리뷰 반영): 정액/정률/미확인을 은폐 없이 명시
+// 미확인 시 순차익 계산에는 보수적 폴백률(withdrawFeePct)이 이미 반영돼 있으므로 그 값을 그대로 노출한다.
+function formatWithdrawFee(net: NetResult): string {
+  if (!net.withdrawFeeKnown) return `출금료 미확인 — 보수적 ${net.withdrawFeePct.toFixed(2)}% 가정`;
+  return `출금료 ${net.withdrawFeePct.toFixed(2)}%`;
+}
+
+// 순차익/실현/깊이 요약 줄 (spec §7 개편: 순차익 기준 선별로 변경)
+function buildNetSummaryLines(candidate: SpreadCandidate, feasibility: FeasibilityResult, net: NetResult): string[] {
+  const lines = [
+    `💰 순차익 +${net.netSpreadPct.toFixed(2)}% (실현 최우선호가 +${candidate.spreadPct.toFixed(1)}%)`,
+    `🔍 검증 규모: ${formatVerifiedNotional(candidate.currencyZone)} 깊이 확인 (${net.depthOk ? '충족' : '⚠️ 미충족'})`,
+    `💸 ${formatWithdrawFee(net)}`,
+  ];
+  if (feasibility.matchedNetwork) {
+    lines.push(`🌐 매칭 네트워크: ${feasibility.matchedNetwork}`);
+  }
+  return lines;
+}
+
+const SNAPSHOT_DISCLAIMER = '⏱️ 전송에 수분~수시간 소요 — 실현차익은 현재 호가 스냅샷 기준';
+
+// 카카오톡 메시지 포맷 (spec §7, 2026-09-22 개편: 순차익/깊이/출금료/스냅샷 주의 추가) — 순수함수, 단위테스트 대상
 export function buildAlertMessage(
   candidate: SpreadCandidate,
   feasibility: FeasibilityResult,
   kimchiPct: number | null,
+  net: NetResult,
 ): string {
   const buyLabel = EXCHANGE_LABELS[candidate.buyExchange];
   const sellLabel = EXCHANGE_LABELS[candidate.sellExchange];
@@ -31,11 +60,13 @@ export function buildAlertMessage(
       `📉 ${buyLabel} 매수 ${formatPrice(candidate.buyPrice)}`,
       `📈 ${sellLabel} 매도 ${formatPrice(candidate.sellPrice)}  → +${candidate.spreadPct.toFixed(1)}%`,
       `✅ ${feasibility.note}`,
+      ...buildNetSummaryLines(candidate, feasibility, net),
     ];
     if (kimchiPct !== null) {
       const sign = kimchiPct >= 0 ? '+' : '';
       lines.push(`참고 김프: 해외 대비 ${sign}${kimchiPct.toFixed(1)}%`);
     }
+    lines.push(SNAPSHOT_DISCLAIMER);
     lines.push(disclaimer);
     return lines.join('\n');
   }
@@ -45,11 +76,13 @@ export function buildAlertMessage(
     `⚠️ 차익 후보(주의) · ${candidate.symbol}  ${sellLabel} ${formatPrice(candidate.sellPrice)} / ${buyLabel} ${formatPrice(candidate.buyPrice)} (+${Math.round(candidate.spreadPct)}%)`,
     `⛔ ${feasibility.note}`,
     '→ 실현 어려움. 정보용 참고',
+    ...buildNetSummaryLines(candidate, feasibility, net),
   ];
   if (kimchiPct !== null) {
     const sign = kimchiPct >= 0 ? '+' : '';
     lines.push(`참고 김프: 해외 대비 ${sign}${kimchiPct.toFixed(1)}%`);
   }
+  lines.push(SNAPSHOT_DISCLAIMER);
   lines.push(disclaimer);
   return lines.join('\n');
 }
@@ -61,6 +94,7 @@ class MultiArbNotifierService {
     candidate: SpreadCandidate,
     feasibility: FeasibilityResult,
     kimchiPct: number | null,
+    net: NetResult,
     options?: { send?: boolean },
   ): Promise<boolean> {
     const send = options?.send ?? true;
@@ -104,7 +138,8 @@ class MultiArbNotifierService {
           feasibility: feasibility.feasibility,
           networkMatch: feasibility.networkMatch,
           matchedNetwork: feasibility.matchedNetwork,
-          note: feasibility.note,
+          // 2026-09-22 개편: DB 스키마는 그대로 두고 note에 순차익 요약을 덧붙여 기록 (은폐 금지)
+          note: `${feasibility.note} · 순차익 ${net.netSpreadPct.toFixed(2)}% (${formatWithdrawFee(net)}, 깊이 ${net.depthOk ? '충족' : '미충족'})`,
           kimchiPct,
           notifiedAt: null,
         },
@@ -114,7 +149,7 @@ class MultiArbNotifierService {
     // I-1: 발송 게이트/상한/필터에 걸린 후보는 여기서 종료 — notifiedAt=null 유지 (쿨다운 미발동)
     if (!send) return false;
 
-    const message = buildAlertMessage(candidate, feasibility, kimchiPct);
+    const message = buildAlertMessage(candidate, feasibility, kimchiPct, net);
     try {
       await kakaoNotifyService.sendToMe(message);
     } catch (err: any) {
