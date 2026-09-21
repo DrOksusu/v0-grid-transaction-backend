@@ -9,13 +9,17 @@ function priceMap(entries: Record<string, number>): PriceMap {
 }
 
 function candidate(overrides: Partial<SpreadCandidate>): SpreadCandidate {
+  const buyPrice = overrides.buyPrice ?? 1;
+  const sellPrice = overrides.sellPrice ?? 1.03;
   return {
     symbol: 'WLD',
     currencyZone: 'USDT',
     buyExchange: 'mexc',
-    buyPrice: 1,
+    buyPrice,
+    askPrice: buyPrice,
     sellExchange: 'gateio',
-    sellPrice: 1.03,
+    sellPrice,
+    bidPrice: sellPrice,
     spreadPct: 3,
     ...overrides,
   };

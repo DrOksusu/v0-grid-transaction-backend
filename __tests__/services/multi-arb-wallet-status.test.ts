@@ -36,7 +36,7 @@ describe('parseBinanceWalletConfig', () => {
       },
     ];
     const map = parseBinanceWalletConfig(rows);
-    expect(map.get('LSK')).toEqual([{ network: 'ETH', depositEnabled: true, withdrawEnabled: true }]);
+    expect(map.get('LSK')).toEqual([{ network: 'ETH', depositEnabled: true, withdrawEnabled: true, withdrawFee: 1.03 }]);
     expect(map.get('BTC')).toEqual([
       { network: 'BTC', depositEnabled: true, withdrawEnabled: false },
       { network: 'BSC', depositEnabled: false, withdrawEnabled: true },
