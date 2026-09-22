@@ -1,4 +1,4 @@
-import { computeNet } from '../../src/services/multi-arb-net-calculator';
+import { computeNet, computeMaxExecutable } from '../../src/services/multi-arb-net-calculator';
 import { BookLevel } from '../../src/services/multi-arb-types';
 
 describe('computeNet', () => {
@@ -113,5 +113,54 @@ describe('computeNet', () => {
     expect(r.depthOk).toBe(false);
     expect(r.buyVwap).toBe(0);
     expect(r.sellVwap).toBe(0);
+  });
+});
+
+describe('computeMaxExecutable', () => {
+  // 반환 notional 두 개로 순차익 재계산 (같은 수량이므로 sellVwap/buyVwap = sellN/buyN)
+  const netFromNotionals = (buyN: number, sellN: number, tradingPct: number, wdPct: number) =>
+    (sellN / buyN - 1) * 100 - tradingPct - wdPct;
+
+  it('(a) 단일 레벨에서 net이 임계 위 → 그 레벨 전량 규모, depthLimited=true', () => {
+    const buyLevels: BookLevel[] = [{ price: 1000, qty: 100 }];
+    const sellLevels: BookLevel[] = [{ price: 1020, qty: 100 }];
+    // gross 2% − 거래 0.2 − 출금 0.5 = net 1.3% ≥ 임계 1%
+    const r = computeMaxExecutable(buyLevels, sellLevels, 0.2, 0.5, 1);
+    expect(r.maxExecDepthLimited).toBe(true);
+    expect(r.maxExecBuyNotional).toBeCloseTo(100 * 1000, 6);
+    expect(r.maxExecSellNotional).toBeCloseTo(100 * 1020, 6);
+  });
+
+  it('(b) 다단계에서 깊어질수록 net 하락 → 이분탐색 종료(depthLimited=false), 반환 지점 net ≈ 임계', () => {
+    const buyLevels: BookLevel[] = [{ price: 1000, qty: 50 }, { price: 1012, qty: 1000 }];
+    const sellLevels: BookLevel[] = [{ price: 1020, qty: 50 }, { price: 1004, qty: 1000 }];
+    const r = computeMaxExecutable(buyLevels, sellLevels, 0.2, 0.5, 1);
+    expect(r.maxExecDepthLimited).toBe(false);
+    // 1레벨(50개)만으론 net 1.3%라 임계 위 → 더 깊이 들어가 임계에 닿는 지점에서 멈춤
+    expect(r.maxExecBuyNotional).toBeGreaterThan(50 * 1000);
+    // 반환 지점의 순차익은 임계값(1%)에 수렴
+    expect(netFromNotionals(r.maxExecBuyNotional, r.maxExecSellNotional, 0.2, 0.5)).toBeCloseTo(1, 2);
+  });
+
+  it('(c) 처음부터 net이 임계 미달 → 0/false', () => {
+    const buyLevels: BookLevel[] = [{ price: 1000, qty: 100 }];
+    const sellLevels: BookLevel[] = [{ price: 1005, qty: 100 }]; // gross 0.5% − 수수료 → 음수
+    const r = computeMaxExecutable(buyLevels, sellLevels, 0.2, 0.5, 1);
+    expect(r).toEqual({ maxExecBuyNotional: 0, maxExecSellNotional: 0, maxExecDepthLimited: false });
+  });
+
+  it('(d) 수량 매칭: 매수 체결수량 == 매도 체결수량', () => {
+    const buyLevels: BookLevel[] = [{ price: 1000, qty: 100 }];
+    const sellLevels: BookLevel[] = [{ price: 1020, qty: 100 }];
+    const r = computeMaxExecutable(buyLevels, sellLevels, 0.2, 0.5, 1);
+    const buyQty = r.maxExecBuyNotional / 1000;
+    const sellQty = r.maxExecSellNotional / 1020;
+    expect(buyQty).toBeCloseTo(sellQty, 6);
+  });
+
+  it('빈 호가 → 0/false', () => {
+    expect(computeMaxExecutable([], [], 0.2, 0.5, 1)).toEqual({
+      maxExecBuyNotional: 0, maxExecSellNotional: 0, maxExecDepthLimited: false,
+    });
   });
 });

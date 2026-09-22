@@ -40,6 +40,9 @@ const net: NetResult = {
   withdrawFeePct: 1,
   withdrawFeeKnown: true,
   netSpreadPct: 2.23,
+  maxExecBuyNotional: 1500000,
+  maxExecSellNotional: 1533450,
+  maxExecDepthLimited: false,
 };
 
 describe('multiArbNotifierService.notify', () => {
@@ -232,6 +235,7 @@ describe('buildAlertMessage', () => {
       filledNotional: 0, depthOk: false, buyVwap: 0, sellVwap: 0,
       grossSpreadPct: 0, tradingFeePct: 0, withdrawFeePct: 1,
       withdrawFeeKnown: false, netSpreadPct: -1,
+      maxExecBuyNotional: 0, maxExecSellNotional: 0, maxExecDepthLimited: false,
     };
     const msg = buildAlertMessage(lsk, mismatch, null, unverifiedNet);
     expect(msg).toContain('⚠️ 차익 후보(주의) · LSK');

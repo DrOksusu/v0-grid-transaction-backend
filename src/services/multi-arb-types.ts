@@ -75,6 +75,10 @@ export interface NetResult {
   withdrawFeePct: number;   // 출금료 %환산 (미확인=0)
   withdrawFeeKnown: boolean;
   netSpreadPct: number;     // grossSpreadPct − tradingFeePct − withdrawFeePct
+  // 순차익이 임계값(thresholdPct) 이상 유지되는 최대 체결 규모 (호가 깊이 기준). thresholdPct 미전달 시 0/false.
+  maxExecBuyNotional: number;   // 최대 매수 규모(지불액, 통화권 단위)
+  maxExecSellNotional: number;  // 같은 수량의 매도 수취액 (> 매수액)
+  maxExecDepthLimited: boolean; // 조회 호가 끝까지 임계 유지된 채 소진(실제론 더 클 수 있음)
 }
 
 // 실현가능성 태그 (spec §6, DB feasibility 컬럼과 동일 문자열)
