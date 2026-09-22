@@ -28,13 +28,33 @@ function formatWithdrawFee(net: NetResult): string {
   return `출금료 ${net.withdrawFeePct.toFixed(2)}%`;
 }
 
+// 통화권별 금액 표기: KRW권 "₩1,234,000", USDT권 "123.45 USDT"
+function formatNotional(amount: number, currencyZone: SpreadCandidate['currencyZone']): string {
+  return currencyZone === 'KRW'
+    ? `₩${Math.round(amount).toLocaleString('ko-KR')}`
+    : `${amount.toFixed(2)} USDT`;
+}
+
+// 최대 체결가능 규모 줄 (호가 깊이 기준, 순차익이 임계값 이상 유지되는 최대 매수·매도 금액)
+function formatMaxExecutable(candidate: SpreadCandidate, net: NetResult): string | null {
+  if (!(net.maxExecBuyNotional > 0)) return null;
+  const buy = formatNotional(net.maxExecBuyNotional, candidate.currencyZone);
+  const sell = formatNotional(net.maxExecSellNotional, candidate.currencyZone);
+  // 조회 호가 끝까지 임계 유지 시 실제론 더 클 수 있음 → "≥" + 한도 표기
+  const prefix = net.maxExecDepthLimited ? '≥ ' : '≈ ';
+  const suffix = net.maxExecDepthLimited ? ' (조회 호가 한도, 실제 더 큼)' : ' (순차익 유지 최대)';
+  return `📊 최대 체결가능 ${prefix}매수 ${buy} → 매도 ${sell}${suffix}`;
+}
+
 // 순차익/실현/깊이 요약 줄 (spec §7 개편: 순차익 기준 선별로 변경)
 function buildNetSummaryLines(candidate: SpreadCandidate, feasibility: FeasibilityResult, net: NetResult): string[] {
   const lines = [
     `💰 순차익 +${net.netSpreadPct.toFixed(2)}% (실현 최우선호가 +${candidate.spreadPct.toFixed(1)}%)`,
     `🔍 검증 규모: ${formatVerifiedNotional(candidate.currencyZone)} 깊이 확인 (${net.depthOk ? '충족' : '⚠️ 미충족'})`,
-    `💸 ${formatWithdrawFee(net)}`,
   ];
+  const maxExecLine = formatMaxExecutable(candidate, net);
+  if (maxExecLine) lines.push(maxExecLine);
+  lines.push(`💸 ${formatWithdrawFee(net)}`);
   if (feasibility.matchedNetwork) {
     lines.push(`🌐 매칭 네트워크: ${feasibility.matchedNetwork}`);
   }

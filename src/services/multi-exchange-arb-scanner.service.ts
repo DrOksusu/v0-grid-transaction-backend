@@ -279,6 +279,7 @@ class MultiExchangeArbScannerService {
               filledNotional: 0, depthOk: false, buyVwap: 0, sellVwap: 0,
               grossSpreadPct: 0, tradingFeePct: 0, withdrawFeePct: 0,
               withdrawFeeKnown: false, netSpreadPct: 0,
+              maxExecBuyNotional: 0, maxExecSellNotional: 0, maxExecDepthLimited: false,
             },
           });
           continue;
@@ -295,6 +296,7 @@ class MultiExchangeArbScannerService {
           sellFeeBps: EXCHANGE_FEE_BPS[candidate.sellExchange],
           withdrawFee,
           unknownWithdrawFallbackPct,
+          thresholdPct: SPREAD_THRESHOLD_PCT,
         });
         withNet.push({ candidate, feasibility, kimchiPct, net });
       } catch (err: any) {
