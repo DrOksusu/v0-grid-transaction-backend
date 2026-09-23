@@ -208,6 +208,84 @@ class UsdtInventoryService {
     }
   }
 
+  /**
+   * 실시간 상태 조회 (read-only, 주문 없음). 관리자 UI 대시보드용.
+   * runOnce와 동일하게 호가·잔고·순차익·판정을 계산하되 executeArb는 호출하지 않는다.
+   */
+  async getLiveStatus(bot: {
+    id: number; symbol: string; thresholdPct: number; orderUsdt: number;
+    autoExecute: boolean; enabled: boolean; killSwitch: boolean;
+  }): Promise<{
+    symbol: string;
+    gateAsk: number; gateBid: number; mexcAsk: number; mexcBid: number;
+    topSpreadPct: number;      // (mexcBid − gateAsk)/gateAsk*100 — 실현 최우선호가 방향 갭
+    netSpreadPct: number;      // 깊이 VWAP + 거래수수료 반영 순차익
+    depthOk: boolean;
+    thresholdPct: number;
+    qty: number | null;        // 실행 예정 수량(조건 충족 시)
+    mexcAleoBalance: number;
+    gateUsdtBalance: number;
+    decision: string;          // 'ready' | shouldExecute reason 코드
+    autoExecute: boolean; enabled: boolean; killSwitch: boolean;
+    fetchedAt: string;
+    error?: string;
+  }> {
+    const base = {
+      symbol: bot.symbol, thresholdPct: bot.thresholdPct,
+      autoExecute: bot.autoExecute, enabled: bot.enabled, killSwitch: bot.killSwitch,
+      fetchedAt: new Date().toISOString(),
+    };
+    try {
+      const mexcLeg = await this.getMexcLeg();
+      const gateLeg = await this.getGateLeg();
+      const [gateDepth, mexcDepth] = await Promise.all([
+        fetchGateioDepth(bot.symbol),
+        fetchMexcDepth(bot.symbol),
+      ]);
+      if (!gateDepth || !mexcDepth || gateDepth.askLevels.length === 0 || mexcDepth.bidLevels.length === 0) {
+        return { ...base, gateAsk: 0, gateBid: 0, mexcAsk: 0, mexcBid: 0, topSpreadPct: 0, netSpreadPct: 0, depthOk: false, qty: null, mexcAleoBalance: 0, gateUsdtBalance: 0, decision: 'depth_unavailable', error: '호가 조회 실패' };
+      }
+      const [mexcAleoBalance, gateUsdtBalance] = await Promise.all([
+        mexcLeg.getBalance(bot.symbol).catch(() => 0),
+        gateLeg.getBalance('USDT').catch(() => 0),
+      ]);
+      const gateAsk = gateDepth.askLevels[0].price;
+      const gateBid = gateDepth.bidLevels[0]?.price ?? gateAsk;
+      const mexcAsk = mexcDepth.askLevels[0]?.price ?? mexcDepth.bidLevels[0].price;
+      const mexcBid = mexcDepth.bidLevels[0].price;
+
+      const net = computeNet({
+        buyLevels: gateDepth.askLevels,
+        sellLevels: mexcDepth.bidLevels,
+        minNotional: bot.orderUsdt,
+        buyFeeBps: GATE_FEE_BPS,
+        sellFeeBps: MEXC_FEE_BPS,
+        withdrawFee: null,
+        thresholdPct: bot.thresholdPct,
+      });
+      const decision = shouldExecute({
+        gateAsk, gateBid, mexcAsk, mexcBid,
+        gateAskLevels: gateDepth.askLevels,
+        mexcBidLevels: mexcDepth.bidLevels,
+        mexcAleoBalance, gateUsdtBalance,
+        bot: { symbol: bot.symbol, thresholdPct: bot.thresholdPct, orderUsdt: bot.orderUsdt, killSwitch: bot.killSwitch },
+      });
+
+      return {
+        ...base,
+        gateAsk, gateBid, mexcAsk, mexcBid,
+        topSpreadPct: gateAsk > 0 ? ((mexcBid - gateAsk) / gateAsk) * 100 : 0,
+        netSpreadPct: net.netSpreadPct,
+        depthOk: net.depthOk,
+        qty: decision.go ? decision.qty ?? null : null,
+        mexcAleoBalance, gateUsdtBalance,
+        decision: decision.go ? 'ready' : (decision.reason ?? 'unknown'),
+      };
+    } catch (err: any) {
+      return { ...base, gateAsk: 0, gateBid: 0, mexcAsk: 0, mexcBid: 0, topSpreadPct: 0, netSpreadPct: 0, depthOk: false, qty: null, mexcAleoBalance: 0, gateUsdtBalance: 0, decision: 'error', error: err?.message ?? String(err) };
+    }
+  }
+
   private async persistResult(
     bot: { id: number; symbol: string },
     tradeId: number,

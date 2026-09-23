@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import mainPrisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
+import { usdtInventoryService } from '../services/inventory-arb/usdt-inventory.service';
 
 /** USDT권 재고형 아비(Gate↔MEXC) 봇 목록 */
 export async function getBots(req: AuthRequest, res: Response, next: NextFunction) {
@@ -61,6 +62,18 @@ export async function deleteBot(req: AuthRequest, res: Response, next: NextFunct
     await mainPrisma.usdtInventoryArbTrade.deleteMany({ where: { botId } });
     await mainPrisma.usdtInventoryArbBot.delete({ where: { id: botId } });
     return res.status(204).end();
+  } catch (e) { next(e); }
+}
+
+/** 봇 실시간 상태 (read-only, 주문 없음) — 호가·갭·순차익·재고·대기사유 */
+export async function getStatus(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const userId = req.userId!;
+    const botId = Number(req.params.id);
+    const bot = await mainPrisma.usdtInventoryArbBot.findFirst({ where: { id: botId, userId } });
+    if (!bot) return errorResponse(res, 'NOT_FOUND', 'not found', 404);
+    const status = await usdtInventoryService.getLiveStatus(bot);
+    return successResponse(res, status);
   } catch (e) { next(e); }
 }
 
