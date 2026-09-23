@@ -19,6 +19,13 @@ export class UsdtInventoryArbAgent extends BaseAgent {
   }
 
   protected async onStart(): Promise<void> {
+    // 크래시 복구: 이전 프로세스가 발주~정산 사이에서 죽어 남긴 'detected' 고아 거래 처리
+    // (발견 시 해당 봇 killSwitch+정지 + 긴급 카톡 — 안전 방향). 실패해도 기동은 계속.
+    try {
+      await usdtInventoryService.reconcileOrphans();
+    } catch (err: any) {
+      console.error('[UsdtInventoryArbAgent] 고아 거래 리컨실 실패:', err.message);
+    }
     console.log('[UsdtInventoryArbAgent] 시작 — 5초 주기 폴링 (기본 봇 OFF)');
   }
 

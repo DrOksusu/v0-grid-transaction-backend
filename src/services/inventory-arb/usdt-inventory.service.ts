@@ -292,6 +292,53 @@ class UsdtInventoryService {
     return { count: rows.length, netUsdt: rows.reduce((s, r) => s + r.netUsdt, 0) };
   }
 
+  /**
+   * 크래시 복구 리컨실 (critic Finding #1): record-before-fire와 persistResult 사이에서
+   * 프로세스가 죽으면 'detected' 행이 고아로 남는다 — killSwitch/알림 없이 일손실 집계에서 누락돼
+   * 안전망(일일 손실 한도)이 조용히 약화된다. 에이전트 onStart에서 호출.
+   * onStart 시점엔 이 프로세스의 in-flight 거래가 없으므로 'detected'는 전부 이전 크래시 잔재로 간주.
+   * 발견 시 해당 봇을 killSwitch+정지(안전 방향)하고 긴급 카톡 — 실제 체결/잔고는 사람이 수동 확인.
+   */
+  async reconcileOrphans(): Promise<void> {
+    const orphans = await mainPrisma.usdtInventoryArbTrade.findMany({
+      where: { status: 'detected' },
+      select: { botId: true, symbol: true },
+    });
+    if (orphans.length === 0) return;
+
+    const botIds = [...new Set(orphans.map((o) => o.botId))];
+    for (const botId of botIds) {
+      const sym = orphans.find((o) => o.botId === botId)?.symbol ?? '?';
+      try {
+        await mainPrisma.usdtInventoryArbBot.update({
+          where: { id: botId },
+          data: { killSwitch: true, enabled: false },
+        });
+      } catch (e: any) {
+        console.error(`[UsdtInventoryArb] 고아복구 봇 ${botId} 정지 실패:`, e.message);
+      }
+      try {
+        await kakaoNotifyService.sendToMe(
+          `🚨 USDT 재고형 아비 정산 미완료 거래 발견 · ${sym}\n`
+          + `프로세스 중단으로 체결/정산 불명 거래가 남았습니다. 봇 killSwitch ON + 정지.\n`
+          + `거래소에서 실제 체결·잔고를 수동 확인하세요.`,
+        );
+      } catch (e: any) {
+        console.error(`[UsdtInventoryArb] 고아복구 알림 실패 (봇 ${botId}):`, e.message);
+      }
+    }
+
+    // 재집계·재알림 방지 위해 터미널 상태로 마킹(실제 체결 여부 불명이므로 orphan_reconciled로 구분).
+    try {
+      await mainPrisma.usdtInventoryArbTrade.updateMany({
+        where: { status: 'detected' },
+        data: { status: 'orphan_reconciled', note: '크래시 고아 — 정산 미완료, killSwitch 처리. 수동 확인 필요' },
+      });
+    } catch (e: any) {
+      console.error('[UsdtInventoryArb] 고아 행 마킹 실패:', e.message);
+    }
+  }
+
   private async getMexcLeg(): Promise<MexcLeg> {
     if (this.mexcLegCache) return this.mexcLegCache;
     const creds = await getAdminCreds('mexc');
