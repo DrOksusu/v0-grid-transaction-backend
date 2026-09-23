@@ -77,8 +77,8 @@ export function buildAlertMessage(
   if (feasibility.feasibility === 'feasible') {
     const lines = [
       `🔔 차익 후보 (${candidate.currencyZone}권) · ${candidate.symbol}`,
-      `📉 ${buyLabel} 매수 ${formatPrice(candidate.buyPrice)}`,
-      `📈 ${sellLabel} 매도 ${formatPrice(candidate.sellPrice)}  → +${candidate.spreadPct.toFixed(1)}%`,
+      `📉 매수 ${buyLabel} 매도호가(ask) ${formatPrice(candidate.buyPrice)}`,
+      `📈 매도 ${sellLabel} 매수호가(bid) ${formatPrice(candidate.sellPrice)}  → +${candidate.spreadPct.toFixed(1)}%`,
       `✅ ${feasibility.note}`,
       ...buildNetSummaryLines(candidate, feasibility, net),
     ];
@@ -93,7 +93,7 @@ export function buildAlertMessage(
 
   // 함정 경고 (network_mismatch / deposit_halt / unverified) — 정보용(주의) 등급 (spec §6)
   const lines = [
-    `⚠️ 차익 후보(주의) · ${candidate.symbol}  ${sellLabel} ${formatPrice(candidate.sellPrice)} / ${buyLabel} ${formatPrice(candidate.buyPrice)} (+${Math.round(candidate.spreadPct)}%)`,
+    `⚠️ 차익 후보(주의) · ${candidate.symbol}  매수 ${buyLabel} 매도호가 ${formatPrice(candidate.buyPrice)} → 매도 ${sellLabel} 매수호가 ${formatPrice(candidate.sellPrice)} (+${Math.round(candidate.spreadPct)}%)`,
     `⛔ ${feasibility.note}`,
     '→ 실현 어려움. 정보용 참고',
     ...buildNetSummaryLines(candidate, feasibility, net),

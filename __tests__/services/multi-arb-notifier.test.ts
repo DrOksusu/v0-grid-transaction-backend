@@ -205,8 +205,8 @@ describe('buildAlertMessage', () => {
   it('feasible: 정상 기회 포맷 (spec §7) — 매수/매도/스프레드/네트워크/김프/면책 문구', () => {
     const msg = buildAlertMessage(cand, feasible, 0.8, net);
     expect(msg).toContain('🔔 차익 후보 (KRW권) · WLD');
-    expect(msg).toContain('📉 빗썸 매수 4,200');
-    expect(msg).toContain('📈 업비트 매도 4,340');
+    expect(msg).toContain('📉 매수 빗썸 매도호가(ask) 4,200');
+    expect(msg).toContain('📈 매도 업비트 매수호가(bid) 4,340');
     expect(msg).toContain('+3.3%');
     expect(msg).toContain('✅ 네트워크 일치(ETH) · 양쪽 입출금 정상');
     expect(msg).toContain('참고 김프: 해외 대비 +0.8%');
@@ -239,7 +239,7 @@ describe('buildAlertMessage', () => {
     };
     const msg = buildAlertMessage(lsk, mismatch, null, unverifiedNet);
     expect(msg).toContain('⚠️ 차익 후보(주의) · LSK');
-    expect(msg).toContain('빗썸 1,322 / 업비트 533 (+148%)');
+    expect(msg).toContain('매수 업비트 매도호가 533 → 매도 빗썸 매수호가 1,322 (+148%)');
     expect(msg).toContain('⛔ 전송불가: 네트워크 불일치');
     expect(msg).toContain('→ 실현 어려움. 정보용 참고');
     expect(msg).toContain('⚠️ 표시가 기준 · 실제 유동성/체결 확인 필요');
