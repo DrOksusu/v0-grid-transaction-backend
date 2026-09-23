@@ -20,6 +20,9 @@ export interface ExecuteArbInput {
   // net-short flatten(매도 거래소에서 되사기) 예산 기준가 = 매도 거래소 최우선 ask.
   // 미지정 시 sellPrice 폴백. depth 소비로 sellPrice가 최악 bid로 낮아져도 flatten 예산이 줄지 않도록 top-of-book 사용.
   flattenBuyRefPrice?: number;
+  // 상쇄 불가한 dust로 수용할 imbalance notional 상한(quote 통화). 미지정 시 KRW 기본(5000).
+  // USDT권(Gate/MEXC)은 거래소 최소주문(예 3 USDT) 전달. imbalance*price가 이 미만이면 flatten 없이 filled 수용.
+  minOrderQuote?: number;
 }
 
 function fillQty(r: { filledQty: number } | null): number {
@@ -28,6 +31,7 @@ function fillQty(r: { filledQty: number } | null): number {
 
 export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult> {
   const { buyLeg, sellLeg, symbol, qty, buyPrice, sellPrice, fallbackMode } = input;
+  const minOrder = input.minOrderQuote ?? MIN_ORDER_KRW; // quote 통화 dust 임계 (KRW 기본 5000)
 
   // 1. 양쪽 동시 발주 (record-before-fire는 호출자가 처리)
   const [sellSettled, buySettled] = await Promise.allSettled([
@@ -70,7 +74,7 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
 
   // 5. 완전 일치 또는 상쇄 불가한 소액(dust: 최소주문 미만) → filled 수용.
   //    fee-in-coin으로 인한 미세 불일치도 여기서 흡수한다(절대 KRW 기준 — 비율 밴드는 대형 주문에서 과다 흡수 위험이라 미사용).
-  if (absImbalance === 0 || absImbalance * referencePrice < MIN_ORDER_KRW) {
+  if (absImbalance === 0 || absImbalance * referencePrice < minOrder) {
     const netKrw = sellGrossKrw - buyGrossKrw - legFeeKrw;
     return {
       kind: 'filled',
@@ -82,7 +86,7 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
       netKrw: +netKrw.toFixed(6),
       note: absImbalance === 0
         ? 'exact match'
-        : `dust imbalance ${absImbalance} accepted (< ${MIN_ORDER_KRW} KRW)`,
+        : `dust imbalance ${absImbalance} accepted (< ${minOrder} quote)`,
     };
   }
 
