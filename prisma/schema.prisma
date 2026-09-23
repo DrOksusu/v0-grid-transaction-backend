@@ -884,3 +884,48 @@ model InventoryArbTrade {
   @@index([botId, status])
   @@map("inventory_arb_trades")
 }
+
+// USDT권 재고형 아비 (Gate.io↔MEXC) — 전송 없는 동시 양다리. 기본 OFF + canary.
+model UsdtInventoryArbBot {
+  id               Int      @id @default(autoincrement())
+  userId           Int
+  symbol           String   @default("ALEO")   // base 심볼
+  buyExchange      String   @default("gateio")  // 싼 쪽에서 매수
+  sellExchange     String   @default("mexc")    // 비싼 쪽에서 매도
+  enabled          Boolean  @default(false)     // canary OFF 기본
+  autoExecute      Boolean  @default(false)     // true=완전자동 즉시 실행
+  thresholdPct     Float    @default(2)         // 순차익 % 임계(조정 가능)
+  orderUsdt        Float    @default(10)        // 1회 매매 규모(USDT)
+  dailyMaxCount    Int?     @default(200)       // 일일 건수 한도
+  dailyMaxLossUsdt Float?   @default(5)         // 일일 손실 한도(USDT) 초과 시 자동 정지
+  killSwitch       Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([userId, enabled])
+  @@map("usdt_inventory_arb_bots")
+}
+
+model UsdtInventoryArbTrade {
+  id           Int      @id @default(autoincrement())
+  botId        Int
+  symbol       String
+  buyExchange  String
+  sellExchange String
+  qty          Float
+  buyPrice     Float
+  sellPrice    Float
+  buyFilled    Float    @default(0)
+  sellFilled   Float    @default(0)
+  grossUsdt    Float    @default(0) // 매도gross - 매수gross (수수료 전)
+  feeUsdt      Float    @default(0)
+  netUsdt      Float    @default(0)
+  status       String   // "filled" | "partial_flattened" | "partial_hold" | "flatten_failed" | "failed"
+  flattenSide  String?
+  note         String?  @db.Text
+  createdAt    DateTime @default(now())
+
+  @@index([botId, createdAt])
+  @@index([botId, status])
+  @@map("usdt_inventory_arb_trades")
+}

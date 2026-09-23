@@ -37,6 +37,25 @@ describe('executeArb', () => {
     expect(r.kind).toBe('filled');
   });
 
+  it('minOrderQuote(USDT 3) 지정: imbalance*price < 3 이면 flatten 없이 filled 수용', async () => {
+    // ALEO 시나리오: buy 500, sell 499 (imbalance 1), price 0.017 → 1*0.017 = 0.017 USDT < 3 → dust 수용
+    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 499, grossKrw: 9.19, feeKrw: 0.01 }) });
+    const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 500, grossKrw: 8.72, feeKrw: 0.01 }) });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'ALEO', qty: 500, buyPrice: 0.01744, sellPrice: 0.01842, fallbackMode: 'market_flatten', minOrderQuote: 3 });
+    expect(r.kind).toBe('filled'); // flatten 미발생
+  });
+
+  it('minOrderQuote 미전달 시 KRW 기본(5000) 유지 — 같은 imbalance라도 flatten (무회귀)', async () => {
+    // imbalance 6 × 1000 = 6000 KRW ≥ 5000 → dust 아님 → flatten 발생
+    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 4, grossKrw: 4040, feeKrw: 2 }) });
+    const buyLeg = mockLeg({
+      buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }),
+      sellIoc: async () => ({ filledQty: 6, grossKrw: 6000, feeKrw: 2 }),
+    });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
+    expect(r.kind).toBe('partial_flattened');
+  });
+
   // flatten/hold 경로: imbalance × price ≥ 5000 KRW 여야 dust 단락을 피함 (imbalance 6 × 1000 = 6000)
   it('net long (buy 10, sell 4) → 초과 6을 buyExchange에서 시장가 매도로 flatten', async () => {
     const sellCalls: any[] = [];
