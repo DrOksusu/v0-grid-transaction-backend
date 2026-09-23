@@ -1,6 +1,5 @@
 import { Response, NextFunction } from 'express';
 import axios from 'axios';
-import { parse } from 'node-html-parser';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { priceManager } from '../services/upbit-price-manager';
@@ -352,80 +351,45 @@ async function fetchKoreaEximRate(): Promise<{ rate: number; date: string } | nu
   }
 }
 
-// 네이버 금융 환율 스크래핑 함수
+// 네이버 금융 환율 조회 함수 (신규 JSON API)
+// 기존 finance.naver.com HTML 스크래핑은 네이버가 stock.naver.com(SPA)로 개편하며
+// 302 리다이렉트로 죽음 → 실시간 JSON API로 교체 (2026-09-23).
 async function fetchNaverExchangeRate(): Promise<{ rate: number; change: number } | null> {
   try {
     const response = await axios.get(
-      'https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW',
+      'https://m.stock.naver.com/front-api/marketIndex/prices',
       {
+        params: { category: 'exchange', reutersCode: 'FX_USDKRW', page: 1, pageSize: 10 },
         timeout: 5000,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Accept': 'application/json',
         },
       }
     );
 
-    const root = parse(response.data);
-
-    // 현재 환율 추출 - 개별 span 숫자들을 조합 (no0~no9, shim=쉼표, jum=소수점)
-    // 구조: <p class="no_today"><em><em><span class="no1">1</span><span class="shim">,</span>...
-    let rateText = '';
-    const rateSpans = root.querySelectorAll('.no_today em em span');
-    for (const span of rateSpans) {
-      const className = span.getAttribute('class') || '';
-      if (className.startsWith('no')) {
-        // no0, no1, ..., no9 -> 해당 숫자 추출
-        const digit = className.replace('no', '');
-        if (/^\d$/.test(digit)) {
-          rateText += digit;
-        }
-      } else if (className === 'jum') {
-        // 소수점
-        rateText += '.';
-      }
-      // shim(쉼표)는 무시
-    }
-
-    // 전일 대비 변동 추출
-    let changeText = '';
-    const changeSpans = root.querySelectorAll('.no_exday em span');
-    for (const span of changeSpans) {
-      const className = span.getAttribute('class') || '';
-      if (className.startsWith('no')) {
-        const digit = className.replace('no', '');
-        if (/^\d$/.test(digit)) {
-          changeText += digit;
-        }
-      } else if (className === 'jum') {
-        changeText += '.';
-      }
-    }
-
-    // 상승/하락 여부 확인
-    const noExday = root.querySelector('.no_exday');
-    const noTodayEm = root.querySelector('.no_today em');
-    const isDown = (noExday?.classNames?.includes('no_down')) ||
-                   (noTodayEm?.classNames?.includes('no_down'));
-
-    if (rateText) {
-      const rate = parseFloat(rateText);
-      let change = changeText ? parseFloat(changeText) : 0;
-      if (isDown) {
-        change = -Math.abs(change);
-      }
+    // 응답 구조: { isSuccess, result: [ { localTradedAt, closePrice: "1,351.00", fluctuations: "-4.50", fluctuationsType: { name: "FALLING" } }, ... ] }
+    // result[0]이 최신(당일) 값.
+    const rows = response.data?.result;
+    if (Array.isArray(rows) && rows.length > 0) {
+      const latest = rows[0];
+      const rate = parseFloat(String(latest.closePrice).replace(/,/g, ''));
+      let change = parseFloat(String(latest.fluctuations).replace(/,/g, ''));
+      // fluctuations에 부호가 있지만, 타입으로 한 번 더 보정
+      const typeName = latest.fluctuationsType?.name;
+      if (typeName === 'FALLING') change = -Math.abs(change);
+      else if (typeName === 'RISING') change = Math.abs(change);
 
       if (!isNaN(rate) && rate > 0) {
         console.log(`[Exchange] 네이버 환율 조회 성공: ${rate}원 (${change >= 0 ? '+' : ''}${change})`);
-        return { rate, change };
+        return { rate, change: isNaN(change) ? 0 : change };
       }
     }
 
-    console.log('[Exchange] 네이버 환율 파싱 실패, rateText:', rateText);
+    console.log('[Exchange] 네이버 환율 파싱 실패, result:', JSON.stringify(response.data?.result?.[0] ?? null));
     return null;
   } catch (error: any) {
-    console.error('[Exchange] 네이버 금융 스크래핑 에러:', error.message);
+    console.error('[Exchange] 네이버 금융 API 에러:', error.message);
     return null;
   }
 }
