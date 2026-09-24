@@ -21,6 +21,11 @@ export const MEXC_FEE_BPS = 10;
 const GATE_MIN_ORDER_USDT = 3; // GateLeg 최소주문(spec §0) — executor dust 임계로 그대로 전달
 const MIN_BASE_UNIT = 1; // ALEO 등 정수 단위 최소 체결수량
 
+// 드레인 알림: 수익 기회가 있는데 재고/현금 부족으로 실행 못 하는 상태가 지속될 때 리밸런싱 촉구(봇당 스로틀)
+const DRAIN_STARVED_REASONS = new Set(['inventory_not_stable', 'notional_below_min_order', 'buy_cash_insufficient']);
+const DRAIN_ALERT_THROTTLE_MS = 6 * 60 * 60 * 1000; // 봇당 6시간에 최대 1회
+const lastDrainAlertAt = new Map<number, number>();
+
 // ── (a) 순수 판정 함수 (양방향) ────────────────────────────────────────────
 export type UsdtArbDirection = 'buy_gate_sell_mexc' | 'buy_mexc_sell_gate';
 
@@ -110,19 +115,21 @@ export function shouldExecute(input: ShouldExecuteInput): ShouldExecuteResult {
   for (const c of candidates) {
     const targetQty = Math.floor(bot.orderUsdt / c.buyAsk);
     if (targetQty < MIN_BASE_UNIT) { lastReason = 'order_too_small'; continue; } // orderUsdt가 1코인 값보다 작음(설정)
-    // 안정 재고량(sellCoinBal)으로 거래량 캡 — 그리드가 방금 채운 신선분은 제외하고 안정분까지만
-    const qty = Math.min(targetQty, Math.floor(c.sellCoinBal));
-    if (qty < MIN_BASE_UNIT) { lastReason = 'inventory_not_stable'; continue; } // 안정 재고 부족(60초 관측 전 or 드레인)
-    const notional = qty * c.buyAsk; // 캡 후 실제 체결 규모
-    if (notional < GATE_MIN_ORDER_USDT) { lastReason = 'notional_below_min_order'; continue; }
+    // 먼저 목표 규모 기준 순차익으로 "실제 기회"인지 판정(보수적) — 재고 부족 사유가 무의미하게 뜨지 않도록
     const net = computeNet({
-      buyLevels: c.buyLevels, sellLevels: c.sellLevels, minNotional: notional,
+      buyLevels: c.buyLevels, sellLevels: c.sellLevels, minNotional: bot.orderUsdt,
       buyFeeBps: c.buyExchange === 'gateio' ? GATE_FEE_BPS : MEXC_FEE_BPS,
       sellFeeBps: c.sellExchange === 'gateio' ? GATE_FEE_BPS : MEXC_FEE_BPS,
       withdrawFee: null, thresholdPct: bot.thresholdPct,
     });
     if (!net.depthOk) { lastReason = 'depth_insufficient'; continue; }
     if (net.netSpreadPct < bot.thresholdPct) { lastReason = 'net_spread_below_threshold'; continue; }
+    // 여기부터는 수익 기회 존재 → 재고/현금 부족은 "리밸런싱 필요"(드레인 알림 대상)
+    // 안정 재고량(sellCoinBal)으로 거래량 캡 — 그리드가 방금 채운 신선분은 제외하고 안정분까지만
+    const qty = Math.min(targetQty, Math.floor(c.sellCoinBal));
+    if (qty < MIN_BASE_UNIT) { lastReason = 'inventory_not_stable'; continue; } // 안정 재고 부족(60초 관측 전 or 드레인)
+    const notional = qty * c.buyAsk; // 캡 후 실제 체결 규모
+    if (notional < GATE_MIN_ORDER_USDT) { lastReason = 'notional_below_min_order'; continue; }
     if (c.buyCashBal < notional) { lastReason = 'buy_cash_insufficient'; continue; }
     if (!best || net.netSpreadPct > best.netSpreadPct) {
       best = {
@@ -202,6 +209,15 @@ class UsdtInventoryService {
       });
 
       if (!decision.go) {
+        // 수익 기회는 있으나 재고/현금 부족으로 실행 못 하는 상태 → 리밸런싱 알림(스로틀)
+        // 단 워밍업(관측<60s라 안정재고=0) 오탐 제외: 실제 raw 잔고/현금이 최소주문도 못 채울 때만
+        if (bot.autoExecute && decision.reason && DRAIN_STARVED_REASONS.has(decision.reason)) {
+          const minCoin = GATE_MIN_ORDER_USDT / Math.max(gateAsk, mexcAsk, 1e-9);
+          const genuinelyLow = decision.reason === 'buy_cash_insufficient'
+            ? (mexcUsdtBalance < GATE_MIN_ORDER_USDT || gateUsdtBalance < GATE_MIN_ORDER_USDT)
+            : (mexcAleoBalance < minCoin || gateAleoBalance < minCoin);
+          if (genuinelyLow) await this.maybeNotifyDrain(bot, decision.reason);
+        }
         console.log(`[UsdtInventoryArb] bot ${bot.id} gate: ${decision.reason}`);
         return;
       }
@@ -344,6 +360,19 @@ class UsdtInventoryService {
         decision: 'error', error: err?.message ?? String(err),
       };
     }
+  }
+
+  // 수익 기회가 있는데 재고/현금 부족으로 실행 못 하는 상태 → 봇당 6시간에 1회 리밸런싱 카톡
+  private async maybeNotifyDrain(bot: { id: number; symbol: string }, reason: string): Promise<void> {
+    const now = Date.now();
+    if (now - (lastDrainAlertAt.get(bot.id) ?? 0) < DRAIN_ALERT_THROTTLE_MS) return;
+    lastDrainAlertAt.set(bot.id, now);
+    const label = reason === 'buy_cash_insufficient' ? '매수측 USDT 부족' : '매도측 코인 재고 소진';
+    try {
+      await kakaoNotifyService.sendToMe(
+        `⚠️ USDT 재고형 아비 [${bot.symbol}] 리밸런싱 필요\n순차익 기회가 있으나 ${label}(으)로 거래가 중단됐습니다. Gate↔MEXC 재고를 재배분하세요.`,
+      );
+    } catch { /* 알림 실패는 무시 — 다음 스로틀 창에서 재시도 */ }
   }
 
   private async persistResult(
