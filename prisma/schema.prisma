@@ -854,6 +854,10 @@ model InventoryArbBot {
   killSwitch    Boolean  @default(false)
   buyFeeBps     Int      @default(5)                // 매수 수수료(bp) — 예산 계산용
   lastResumeAt  DateTime?                           // enabled false→true 전환 시각 (canary 관찰 기준)
+  // USDT 봇과 파라미터 통일 (2026-09-24): net% 임계·고정 규모·손실 한도. 기존 컬럼은 백필 후 미사용(보존).
+  thresholdPct    Float  @default(2)                // 순차익(net) % 임계 — USDT 봇 thresholdPct와 동일 의미
+  orderKrw        Float  @default(100000)           // 1회 고정 주문 규모(KRW) — USDT 봇 orderUsdt와 동일 의미
+  dailyMaxLossKrw Float?                            // 일일 최대 손실(KRW) — USDT 봇 dailyMaxLossUsdt와 동일 의미
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

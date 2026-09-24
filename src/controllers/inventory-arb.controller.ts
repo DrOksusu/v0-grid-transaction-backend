@@ -49,18 +49,19 @@ export async function postExecute(req: AuthRequest, res: Response, next: NextFun
 export async function createBot(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const userId = req.userId!;
-    const { symbol, minSpreadBps, anomalyMaxBps, maxOrderKrw, dailyMaxKrw, dailyMaxCount, fallbackMode, buyFeeBps } = req.body;
-    if (!symbol || typeof maxOrderKrw !== 'number') {
-      return errorResponse(res, 'VALIDATION_ERROR', 'symbol, maxOrderKrw 필수', 400);
+    // USDT 봇과 통일된 파라미터: thresholdPct(순차익%)·orderKrw(고정규모)·dailyMaxLossKrw
+    const { symbol, thresholdPct, orderKrw, dailyMaxCount, dailyMaxLossKrw, anomalyMaxBps } = req.body;
+    if (!symbol || typeof orderKrw !== 'number') {
+      return errorResponse(res, 'VALIDATION_ERROR', 'symbol, orderKrw 필수', 400);
     }
     const bot = await mainPrisma.inventoryArbBot.create({
       data: {
         userId, symbol: String(symbol).toUpperCase(),
-        minSpreadBps: minSpreadBps ?? 30, anomalyMaxBps: anomalyMaxBps ?? 2000,
-        maxOrderKrw, dailyMaxKrw: dailyMaxKrw ?? null, dailyMaxCount: dailyMaxCount ?? null,
-        fallbackMode: fallbackMode === 'hold' ? 'hold' : 'market_flatten',
-        buyFeeBps: buyFeeBps ?? 5,
-        // enabled/autoExecute/killSwitch는 스키마 기본값(전부 안전측) 사용 — 생성 시 켜지 않음
+        thresholdPct: thresholdPct ?? 2, orderKrw,
+        dailyMaxCount: dailyMaxCount ?? null, dailyMaxLossKrw: dailyMaxLossKrw ?? null,
+        anomalyMaxBps: anomalyMaxBps ?? 2000, // 내부 안전장치(이상치 가드) 유지
+        maxOrderKrw: orderKrw, // 레거시 required 컬럼 — orderKrw와 동일값으로 채움(봇 로직 미사용)
+        // enabled/autoExecute/killSwitch는 스키마 기본값(전부 안전측) — 생성 시 켜지 않음
       },
     });
     return successResponse(res, bot, undefined, 201);
@@ -72,6 +73,18 @@ export async function getBots(req: AuthRequest, res: Response, next: NextFunctio
     const userId = req.userId!;
     const bots = await mainPrisma.inventoryArbBot.findMany({ where: { userId, symbol: { not: MANUAL_BOT_SYMBOL } }, orderBy: { id: 'desc' } });
     return successResponse(res, bots);
+  } catch (e) { next(e); }
+}
+
+/** 봇 실시간 상태 (read-only, 주문 없음) — 호가·갭·순차익·재고·대기사유 */
+export async function getStatus(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const userId = req.userId!;
+    const botId = Number(req.params.id);
+    const bot = await mainPrisma.inventoryArbBot.findFirst({ where: { id: botId, userId } });
+    if (!bot) return errorResponse(res, 'NOT_FOUND', 'not found', 404);
+    const status = await inventoryArbService.getLiveStatus(bot);
+    return successResponse(res, status);
   } catch (e) { next(e); }
 }
 
@@ -93,7 +106,7 @@ export async function updateBot(req: AuthRequest, res: Response, next: NextFunct
     const bot = await mainPrisma.inventoryArbBot.findFirst({ where: { id: botId, userId } });
     if (!bot) return errorResponse(res, 'NOT_FOUND', 'not found', 404);
 
-    const allowed = ['minSpreadBps', 'anomalyMaxBps', 'maxOrderKrw', 'dailyMaxKrw', 'dailyMaxCount', 'fallbackMode', 'buyFeeBps', 'autoExecute', 'enabled', 'killSwitch'] as const;
+    const allowed = ['thresholdPct', 'orderKrw', 'dailyMaxCount', 'dailyMaxLossKrw', 'anomalyMaxBps', 'autoExecute', 'enabled', 'killSwitch'] as const;
     const data: Record<string, any> = {};
     for (const k of allowed) if (k in req.body) data[k] = req.body[k];
 
