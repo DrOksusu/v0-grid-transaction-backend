@@ -39,6 +39,14 @@ const MANUAL_MIN_ORDER_KRW = 5000;
 // 수동 실행 기록용 sentinel 봇 심볼 (봇 목록에서 숨김)
 export const MANUAL_BOT_SYMBOL = '__MANUAL__';
 
+// USDT 봇과 파라미터 통일(2026-09-24): 봇 임계값은 순차익(net) % 기준.
+// 업비트+빗썸 왕복 taker 수수료 근사(각 ~5bps). net ≥ thresholdPct% 를 gross 게이트로 환산할 때 더함.
+const KRW_ROUNDTRIP_FEE_BPS = 10;
+// thresholdPct(net %) → detectOpportunity/feasibility에 넘길 gross bps 임계
+function netThresholdToGrossBps(thresholdPct: number): number {
+  return Math.round(thresholdPct * 100 + KRW_ROUNDTRIP_FEE_BPS);
+}
+
 /** 수동 1회 실행 결과 */
 export interface ManualExecuteResult {
   executed: boolean;
@@ -292,22 +300,33 @@ class InventoryArbService {
     ]);
     if (!upbitBook || !bithumbBook) return;
 
-    // 2. 감지 (minSpreadBps로 depth 누적 한계 설정 — spec §6 다단계 호가 사이징)
-    const opp = detectOpportunity(upbitBook, bithumbBook, bot.minSpreadBps);
+    // (통일) 임계값은 순차익(net) % — gross bps로 환산해 detector/gate에 전달
+    const grossThresholdBps = netThresholdToGrossBps(bot.thresholdPct);
+
+    // 2. 감지 (net 임계 = gross 임계로 환산 — 수수료 뺀 순차익이 thresholdPct% 이상일 때만)
+    const opp = detectOpportunity(upbitBook, bithumbBook, grossThresholdBps);
     if (!opp) return;
 
     // 3. 잔고 조회 (게이트 사이징용 — 매도측 코인, 매수측 KRW)
     const { sellCoinBalance, buyKrwBalance } =
       await this.fetchBalances(bot, opp, upbit.service, bithumbClient);
 
-    // 4. 오늘 집행량
-    const { todayNotionalKrw, todayCount } = await this.fetchTodayUsage(bot.id);
+    // 4. 오늘 집행량 (건수 + 순손익) — (통일) 일일 손실 한도는 USDT 봇과 동일하게 사전 체크
+    const { todayCount, todayNetKrw } = await this.fetchTodayUsage(bot.id);
+    if (bot.dailyMaxCount != null && todayCount >= bot.dailyMaxCount) {
+      console.log(`[InventoryArb] bot ${bot.id} 일일 건수 한도(${todayCount}/${bot.dailyMaxCount}) — skip`);
+      return;
+    }
+    if (bot.dailyMaxLossKrw != null && todayNetKrw <= -bot.dailyMaxLossKrw) {
+      console.log(`[InventoryArb] bot ${bot.id} 일일 손실 한도(${todayNetKrw}/${-bot.dailyMaxLossKrw}) — skip`);
+      return;
+    }
 
-    // 5. 게이트
+    // 5. 게이트 (규모=orderKrw 고정, 일일 notional 한도는 loss 한도로 대체하여 미사용)
     const feas = evaluateFeasibility({
-      opp, minSpreadBps: bot.minSpreadBps, anomalyMaxBps: bot.anomalyMaxBps,
-      maxOrderKrw: bot.maxOrderKrw, dailyMaxKrw: bot.dailyMaxKrw, dailyMaxCount: bot.dailyMaxCount,
-      todayNotionalKrw, todayCount, sellCoinBalance, buyKrwBalance, buyFeeBps: bot.buyFeeBps,
+      opp, minSpreadBps: grossThresholdBps, anomalyMaxBps: bot.anomalyMaxBps,
+      maxOrderKrw: bot.orderKrw, dailyMaxKrw: null, dailyMaxCount: bot.dailyMaxCount,
+      todayNotionalKrw: 0, todayCount, sellCoinBalance, buyKrwBalance, buyFeeBps: bot.buyFeeBps,
     });
     if (!feas.ok) {
       console.log(`[InventoryArb] bot ${bot.id} gate: ${feas.reason}`);
@@ -346,6 +365,94 @@ class InventoryArbService {
 
     // 10. 결과 기록 + 후처리
     await this.persistResult(bot, trade.id, opp, feas, result);
+  }
+
+  /**
+   * 실시간 상태 조회 (read-only, 주문 없음) — 관리자 UI 대시보드용. USDT 봇 getLiveStatus와 동일 개념.
+   * processBot과 동일하게 호가·잔고·순차익·판정을 계산하되 executeArb는 호출하지 않는다.
+   */
+  async getLiveStatus(bot: any): Promise<any> {
+    const base = {
+      symbol: bot.symbol, thresholdPct: bot.thresholdPct,
+      autoExecute: bot.autoExecute, enabled: bot.enabled, killSwitch: bot.killSwitch,
+      fetchedAt: new Date().toISOString(),
+    };
+    const zeros = {
+      upbitBid: 0, upbitAsk: 0, bithumbBid: 0, bithumbAsk: 0, bestGrossBps: 0,
+      netSpreadPct: 0, depthOk: false, qty: null, notionalKrw: null, direction: null,
+      buyExchange: null, sellExchange: null, buyPrice: 0, sellPrice: 0,
+      upbitCoin: 0, upbitKrw: 0, bithumbCoin: 0, bithumbKrw: 0,
+    };
+    try {
+      const upbit = await this.getUpbit(bot.userId);
+      const bithumbClient = await this.getBithumb(bot.userId);
+      const [upbitBook, bithumbBook] = await Promise.all([
+        fetchOrderbookDepth('upbit', bot.symbol),
+        fetchOrderbookDepth('bithumb', bot.symbol),
+      ]);
+      if (!upbitBook || !bithumbBook) {
+        return { ...base, ...zeros, decision: 'depth_unavailable', error: '호가 조회 실패' };
+      }
+      // 잔고(4종) — 표시용
+      const upbitAccounts = await upbit.service.getAccounts().catch(() => [] as any[]);
+      const upbitBal = (cur: string) => Number(upbitAccounts.find((a: any) => a.currency === cur)?.balance ?? 0);
+      const bithumbBalances = await bithumbClient.getBalances().catch(() => ({} as Record<string, { available: number }>));
+      const bithumbBal = (cur: string) => bithumbBalances[cur]?.available ?? 0;
+
+      // raw 최우선호가 크로스 스프레드(양방향, gross bps)
+      const bpsBuyUpbit = upbitBook.ask > 0 ? ((bithumbBook.bid - upbitBook.ask) / upbitBook.ask) * 10000 : -Infinity;
+      const bpsBuyBithumb = bithumbBook.ask > 0 ? ((upbitBook.bid - bithumbBook.ask) / bithumbBook.ask) * 10000 : -Infinity;
+      const bestGrossBps = Math.max(bpsBuyUpbit, bpsBuyBithumb);
+      const netBps = bestGrossBps - KRW_ROUNDTRIP_FEE_BPS; // 순차익 bps
+      const bestDir = bpsBuyUpbit >= bpsBuyBithumb ? 'buy_upbit_sell_bithumb' : 'buy_bithumb_sell_upbit';
+
+      // 실제 게이트 (processBot과 동일: net 임계 → gross 환산)
+      const grossThresholdBps = netThresholdToGrossBps(bot.thresholdPct);
+      const opp = detectOpportunity(upbitBook, bithumbBook, grossThresholdBps);
+
+      let decision = 'net_spread_below_threshold';
+      let qty: number | null = null;
+      let notionalKrw: number | null = null;
+      let direction: string | null = null;
+      let buyExchange: string | null = null;
+      let sellExchange: string | null = null;
+      let buyPrice = 0, sellPrice = 0;
+
+      if (bot.killSwitch) {
+        decision = 'kill_switch';
+      } else if (opp) {
+        direction = opp.direction; buyExchange = opp.buyExchange; sellExchange = opp.sellExchange;
+        buyPrice = opp.buyPrice; sellPrice = opp.sellPrice;
+        const { sellCoinBalance, buyKrwBalance } = await this.fetchBalances(bot, opp, upbit.service, bithumbClient);
+        const { todayCount, todayNetKrw } = await this.fetchTodayUsage(bot.id);
+        if (bot.dailyMaxCount != null && todayCount >= bot.dailyMaxCount) decision = 'daily_count_limit';
+        else if (bot.dailyMaxLossKrw != null && todayNetKrw <= -bot.dailyMaxLossKrw) decision = 'daily_loss_limit';
+        else {
+          const feas = evaluateFeasibility({
+            opp, minSpreadBps: grossThresholdBps, anomalyMaxBps: bot.anomalyMaxBps,
+            maxOrderKrw: bot.orderKrw, dailyMaxKrw: null, dailyMaxCount: bot.dailyMaxCount,
+            todayNotionalKrw: 0, todayCount, sellCoinBalance, buyKrwBalance, buyFeeBps: bot.buyFeeBps,
+          });
+          if (!feas.ok) decision = feas.reason ?? 'gate_blocked';
+          else { qty = feas.qty; notionalKrw = feas.notionalKrw; decision = bot.autoExecute ? 'ready' : 'detected_semi'; }
+        }
+      }
+
+      return {
+        ...base,
+        upbitBid: upbitBook.bid, upbitAsk: upbitBook.ask, bithumbBid: bithumbBook.bid, bithumbAsk: bithumbBook.ask,
+        bestGrossBps: Number.isFinite(bestGrossBps) ? bestGrossBps : 0,
+        netSpreadPct: Number.isFinite(netBps) ? netBps / 100 : 0, // 순차익 % (USDT 봇과 동일 필드)
+        bestDirection: bestDir,
+        depthOk: opp != null,
+        qty, notionalKrw, direction, buyExchange, sellExchange, buyPrice, sellPrice,
+        upbitCoin: upbitBal(bot.symbol), upbitKrw: upbitBal('KRW'),
+        bithumbCoin: bithumbBal(bot.symbol), bithumbKrw: bithumbBal('KRW'),
+        decision,
+      };
+    } catch (err: any) {
+      return { ...base, ...zeros, decision: 'error', error: err?.message ?? String(err) };
+    }
   }
 
   private async persistResult(bot: any, tradeId: number, opp: SpreadOpportunity, feas: any, result: ExecutorResult): Promise<void> {
@@ -436,7 +543,7 @@ class InventoryArbService {
     };
   }
 
-  private async fetchTodayUsage(botId: number): Promise<{ todayNotionalKrw: number; todayCount: number }> {
+  private async fetchTodayUsage(botId: number): Promise<{ todayNotionalKrw: number; todayCount: number; todayNetKrw: number }> {
     // 일일 한도 창은 KST 자정 기준으로 명시 계산 — 컨테이너 TZ가 UTC여도 안전(서버시계 의존 금지).
     const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
     const kstNow = new Date(Date.now() + KST_OFFSET_MS);
@@ -444,9 +551,13 @@ class InventoryArbService {
     const start = new Date(kstNow.getTime() - KST_OFFSET_MS); // 실제 UTC instant로 환산
     const rows = await mainPrisma.inventoryArbTrade.findMany({
       where: { botId, executedAt: { gte: start }, status: { in: ['filled', 'partial_flattened'] } },
-      select: { notionalKrw: true },
+      select: { notionalKrw: true, netKrw: true },
     });
-    return { todayNotionalKrw: rows.reduce((s, r) => s + r.notionalKrw, 0), todayCount: rows.length };
+    return {
+      todayNotionalKrw: rows.reduce((s, r) => s + r.notionalKrw, 0),
+      todayCount: rows.length,
+      todayNetKrw: rows.reduce((s, r) => s + r.netKrw, 0),
+    };
   }
 
   private async recordDetected(bot: any, opp: SpreadOpportunity, feas: any): Promise<void> {
