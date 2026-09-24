@@ -10,6 +10,7 @@ import { GateLeg } from '../exchange/gate-leg';
 import { fetchGateioDepth, fetchMexcDepth } from '../multi-arb-depth.service';
 import { computeNet } from '../multi-arb-net-calculator';
 import { executeArb } from './executor';
+import { checkInventoryStable, peekInventoryStable } from './inventory-stability';
 import { kakaoNotifyService } from '../kakao-notify.service';
 import type { BookLevel } from '../multi-arb-types';
 
@@ -112,6 +113,7 @@ class UsdtInventoryService {
     dailyMaxLossUsdt: number | null;
     killSwitch: boolean;
     autoExecute: boolean;
+    inventoryStableSec: number;
   }): Promise<void> {
     try {
       // 1. 일한도(KST) 체크 — 초과 시 정지 + 알림 + 리턴
@@ -168,6 +170,13 @@ class UsdtInventoryService {
         return;
       }
 
+      // 3.5 재고 안정화 게이트: 매도측(MEXC) 재고가 최근 무변동일 때만 실행(그리드봇 경합·자기 밀어올림 방지)
+      const stab = checkInventoryStable(`usdt:${bot.id}`, mexcAleoBalance, bot.inventoryStableSec);
+      if (!stab.stable) {
+        console.log(`[UsdtInventoryArb] bot ${bot.id} 재고 안정화 대기 (${Math.ceil(stab.waitMs / 1000)}s 남음, MEXC재고=${mexcAleoBalance})`);
+        return;
+      }
+
       // 4. 반자동(autoExecute=false) — 감지만, 발주 금지
       if (!bot.autoExecute) {
         console.log(`[UsdtInventoryArb] bot ${bot.id} detected (반자동, 미실행) qty=${decision.qty}`);
@@ -214,7 +223,7 @@ class UsdtInventoryService {
    */
   async getLiveStatus(bot: {
     id: number; symbol: string; thresholdPct: number; orderUsdt: number;
-    autoExecute: boolean; enabled: boolean; killSwitch: boolean;
+    autoExecute: boolean; enabled: boolean; killSwitch: boolean; inventoryStableSec: number;
   }): Promise<{
     symbol: string;
     gateAsk: number; gateBid: number; mexcAsk: number; mexcBid: number;
@@ -279,7 +288,11 @@ class UsdtInventoryService {
         depthOk: net.depthOk,
         qty: decision.go ? decision.qty ?? null : null,
         mexcAleoBalance, gateUsdtBalance,
-        decision: decision.go ? 'ready' : (decision.reason ?? 'unknown'),
+        decision: (() => {
+          if (!decision.go) return decision.reason ?? 'unknown';
+          const stab = bot.enabled ? peekInventoryStable(`usdt:${bot.id}`, bot.inventoryStableSec) : { stable: true, waitMs: 0 };
+          return stab.stable ? 'ready' : `재고 안정화 대기 (${Math.ceil(stab.waitMs / 1000)}s)`;
+        })(),
       };
     } catch (err: any) {
       return { ...base, gateAsk: 0, gateBid: 0, mexcAsk: 0, mexcBid: 0, topSpreadPct: 0, netSpreadPct: 0, depthOk: false, qty: null, mexcAleoBalance: 0, gateUsdtBalance: 0, decision: 'error', error: err?.message ?? String(err) };

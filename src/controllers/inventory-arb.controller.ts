@@ -126,7 +126,7 @@ export async function updateBot(req: AuthRequest, res: Response, next: NextFunct
     const bot = await mainPrisma.inventoryArbBot.findFirst({ where: { id: botId, userId } });
     if (!bot) return errorResponse(res, 'NOT_FOUND', 'not found', 404);
 
-    const allowed = ['thresholdPct', 'orderKrw', 'dailyMaxCount', 'dailyMaxLossKrw', 'anomalyMaxBps', 'autoExecute', 'enabled', 'killSwitch'] as const;
+    const allowed = ['thresholdPct', 'orderKrw', 'dailyMaxCount', 'dailyMaxLossKrw', 'anomalyMaxBps', 'inventoryStableSec', 'autoExecute', 'enabled', 'killSwitch'] as const;
     const data: Record<string, any> = {};
     for (const k of allowed) if (k in req.body) data[k] = req.body[k];
 
