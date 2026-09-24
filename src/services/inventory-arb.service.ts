@@ -11,7 +11,7 @@ import { UpbitLeg, BithumbLeg, type ExchangeLeg } from './exchange-leg';
 import { detectOpportunity } from './inventory-arb/spread-detector';
 import { fetchOrderbookDepth, fetchUpbitDepthBatch } from './inventory-arb/orderbook-depth';
 import { evaluateFeasibility } from './inventory-arb/feasibility-gate';
-import { checkInventoryStable, peekInventoryStable } from './inventory-arb/inventory-stability';
+import { stableTradeableAmount, peekStableAmount } from './inventory-arb/inventory-stability';
 import { executeArb } from './inventory-arb/executor';
 import { buildCandidate, rankCandidates, fetchCommonListings, EXCLUDED_STABLES } from './inventory-arb/candidate-scanner';
 import { summarizeCoinWallet } from './inventory-arb/wallet-info';
@@ -311,6 +311,9 @@ class InventoryArbService {
     // 3. 잔고 조회 (게이트 사이징용 — 매도측 코인, 매수측 KRW)
     const { sellCoinBalance, buyKrwBalance } =
       await this.fetchBalances(bot, opp, upbit.service, bithumbClient);
+    // 3.5 재고 안정화: 매도측 코인의 최근 inventoryStableSec 창 **최소 잔고**만 거래 상한으로 사용
+    //     (그리드가 방금 채운 신선분 제외 → 경합 방지). 매도 거래소별로 추적(방향 전환 시 리셋 방지).
+    const stableSellCoin = stableTradeableAmount(`krw:${bot.id}:${opp.sellExchange}`, sellCoinBalance, bot.inventoryStableSec);
 
     // 4. 오늘 집행량 (건수 + 순손익) — (통일) 일일 손실 한도는 USDT 봇과 동일하게 사전 체크
     const { todayCount, todayNetKrw } = await this.fetchTodayUsage(bot.id);
@@ -323,21 +326,14 @@ class InventoryArbService {
       return;
     }
 
-    // 5. 게이트 (규모=orderKrw 고정, 일일 notional 한도는 loss 한도로 대체하여 미사용)
+    // 5. 게이트 (규모=orderKrw 고정, 매도측 재고엔 안정 재고량을 전달 → 거래량 캡)
     const feas = evaluateFeasibility({
       opp, minSpreadBps: grossThresholdBps, anomalyMaxBps: bot.anomalyMaxBps,
       maxOrderKrw: bot.orderKrw, dailyMaxKrw: null, dailyMaxCount: bot.dailyMaxCount,
-      todayNotionalKrw: 0, todayCount, sellCoinBalance, buyKrwBalance, buyFeeBps: bot.buyFeeBps,
+      todayNotionalKrw: 0, todayCount, sellCoinBalance: stableSellCoin, buyKrwBalance, buyFeeBps: bot.buyFeeBps,
     });
     if (!feas.ok) {
       console.log(`[InventoryArb] bot ${bot.id} gate: ${feas.reason}`);
-      return;
-    }
-
-    // 5.5 재고 안정화 게이트: 매도측 재고가 최근 무변동일 때만 실행(그리드봇 경합·자기 밀어올림 방지)
-    const stab = checkInventoryStable(`krw:${bot.id}`, sellCoinBalance, bot.inventoryStableSec);
-    if (!stab.stable) {
-      console.log(`[InventoryArb] bot ${bot.id} 재고 안정화 대기 (${Math.ceil(stab.waitMs / 1000)}s 남음, 매도재고=${sellCoinBalance})`);
       return;
     }
 
@@ -436,17 +432,19 @@ class InventoryArbService {
         if (bot.dailyMaxCount != null && todayCount >= bot.dailyMaxCount) decision = 'daily_count_limit';
         else if (bot.dailyMaxLossKrw != null && todayNetKrw <= -bot.dailyMaxLossKrw) decision = 'daily_loss_limit';
         else {
+          // 실행 판정과 동일하게 매도측 안정 재고량으로 캡(read-only peek)
+          const stableSellCoin = bot.enabled
+            ? peekStableAmount(`krw:${bot.id}:${opp.sellExchange}`, bot.inventoryStableSec, sellCoinBalance)
+            : sellCoinBalance;
           const feas = evaluateFeasibility({
             opp, minSpreadBps: grossThresholdBps, anomalyMaxBps: bot.anomalyMaxBps,
             maxOrderKrw: bot.orderKrw, dailyMaxKrw: null, dailyMaxCount: bot.dailyMaxCount,
-            todayNotionalKrw: 0, todayCount, sellCoinBalance, buyKrwBalance, buyFeeBps: bot.buyFeeBps,
+            todayNotionalKrw: 0, todayCount, sellCoinBalance: stableSellCoin, buyKrwBalance, buyFeeBps: bot.buyFeeBps,
           });
           if (!feas.ok) decision = feas.reason ?? 'gate_blocked';
           else {
             qty = feas.qty; notionalKrw = feas.notionalKrw;
-            const stab = bot.enabled ? peekInventoryStable(`krw:${bot.id}`, bot.inventoryStableSec) : { stable: true, waitMs: 0 };
-            if (!stab.stable) decision = `재고 안정화 대기 (${Math.ceil(stab.waitMs / 1000)}s)`;
-            else decision = bot.autoExecute ? 'ready' : 'detected_semi';
+            decision = bot.autoExecute ? 'ready' : 'detected_semi';
           }
         }
       }
