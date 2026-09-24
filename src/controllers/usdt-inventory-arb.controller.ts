@@ -37,13 +37,12 @@ export async function getBots(req: AuthRequest, res: Response, next: NextFunctio
 export async function createBot(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const userId = req.userId!;
-    const { symbol, buyExchange, sellExchange, thresholdPct, orderUsdt, dailyMaxCount, dailyMaxLossUsdt } = req.body;
+    // buyExchange/sellExchange는 더 이상 받지 않음 — 방향은 실행 시 양방향으로 자동 선택(스키마 기본값만 유지)
+    const { symbol, thresholdPct, orderUsdt, dailyMaxCount, dailyMaxLossUsdt } = req.body;
     const bot = await mainPrisma.usdtInventoryArbBot.create({
       data: {
         userId,
         symbol: symbol ? String(symbol).toUpperCase() : undefined,
-        buyExchange: buyExchange ?? undefined,
-        sellExchange: sellExchange ?? undefined,
         thresholdPct: thresholdPct ?? undefined,
         orderUsdt: orderUsdt ?? undefined,
         dailyMaxCount: dailyMaxCount ?? undefined,
@@ -63,7 +62,7 @@ export async function updateBot(req: AuthRequest, res: Response, next: NextFunct
     const bot = await mainPrisma.usdtInventoryArbBot.findFirst({ where: { id: botId, userId } });
     if (!bot) return errorResponse(res, 'NOT_FOUND', 'not found', 404);
 
-    const allowed = ['thresholdPct', 'orderUsdt', 'dailyMaxCount', 'dailyMaxLossUsdt', 'buyExchange', 'sellExchange', 'inventoryStableSec', 'autoExecute', 'enabled', 'killSwitch'] as const;
+    const allowed = ['thresholdPct', 'orderUsdt', 'dailyMaxCount', 'dailyMaxLossUsdt', 'inventoryStableSec', 'autoExecute', 'enabled', 'killSwitch'] as const;
     const data: Record<string, any> = {};
     for (const k of allowed) if (k in req.body) data[k] = req.body[k];
 
