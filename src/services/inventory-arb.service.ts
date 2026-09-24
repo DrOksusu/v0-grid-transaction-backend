@@ -11,6 +11,7 @@ import { UpbitLeg, BithumbLeg, type ExchangeLeg } from './exchange-leg';
 import { detectOpportunity } from './inventory-arb/spread-detector';
 import { fetchOrderbookDepth, fetchUpbitDepthBatch } from './inventory-arb/orderbook-depth';
 import { evaluateFeasibility } from './inventory-arb/feasibility-gate';
+import { checkInventoryStable, peekInventoryStable } from './inventory-arb/inventory-stability';
 import { executeArb } from './inventory-arb/executor';
 import { buildCandidate, rankCandidates, fetchCommonListings, EXCLUDED_STABLES } from './inventory-arb/candidate-scanner';
 import { summarizeCoinWallet } from './inventory-arb/wallet-info';
@@ -333,6 +334,13 @@ class InventoryArbService {
       return;
     }
 
+    // 5.5 재고 안정화 게이트: 매도측 재고가 최근 무변동일 때만 실행(그리드봇 경합·자기 밀어올림 방지)
+    const stab = checkInventoryStable(`krw:${bot.id}`, sellCoinBalance, bot.inventoryStableSec);
+    if (!stab.stable) {
+      console.log(`[InventoryArb] bot ${bot.id} 재고 안정화 대기 (${Math.ceil(stab.waitMs / 1000)}s 남음, 매도재고=${sellCoinBalance})`);
+      return;
+    }
+
     // 6. 실행 여부 결정
     const decision = decideAction(bot);
     if (decision.action === 'notify') {
@@ -434,7 +442,12 @@ class InventoryArbService {
             todayNotionalKrw: 0, todayCount, sellCoinBalance, buyKrwBalance, buyFeeBps: bot.buyFeeBps,
           });
           if (!feas.ok) decision = feas.reason ?? 'gate_blocked';
-          else { qty = feas.qty; notionalKrw = feas.notionalKrw; decision = bot.autoExecute ? 'ready' : 'detected_semi'; }
+          else {
+            qty = feas.qty; notionalKrw = feas.notionalKrw;
+            const stab = bot.enabled ? peekInventoryStable(`krw:${bot.id}`, bot.inventoryStableSec) : { stable: true, waitMs: 0 };
+            if (!stab.stable) decision = `재고 안정화 대기 (${Math.ceil(stab.waitMs / 1000)}s)`;
+            else decision = bot.autoExecute ? 'ready' : 'detected_semi';
+          }
         }
       }
 

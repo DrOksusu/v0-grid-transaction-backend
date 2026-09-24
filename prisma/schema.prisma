@@ -858,6 +858,7 @@ model InventoryArbBot {
   thresholdPct    Float  @default(2)                // 순차익(net) % 임계 — USDT 봇 thresholdPct와 동일 의미
   orderKrw        Float  @default(100000)           // 1회 고정 주문 규모(KRW) — USDT 봇 orderUsdt와 동일 의미
   dailyMaxLossKrw Float?                            // 일일 최대 손실(KRW) — USDT 봇 dailyMaxLossUsdt와 동일 의미
+  inventoryStableSec Int @default(60)               // 매도측 재고가 이 시간(초) 무변동일 때만 실행(그리드봇 경합 방지). 0=비활성
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -900,6 +901,7 @@ model UsdtInventoryArbBot {
   autoExecute      Boolean  @default(false)     // true=완전자동 즉시 실행
   thresholdPct     Float    @default(2)         // 순차익 % 임계(조정 가능)
   orderUsdt        Float    @default(10)        // 1회 매매 규모(USDT)
+  inventoryStableSec Int    @default(60)        // 매도측 재고가 이 시간(초) 무변동일 때만 실행(경합 방지). 0=비활성
   dailyMaxCount    Int?     @default(200)       // 일일 건수 한도
   dailyMaxLossUsdt Float?   @default(5)         // 일일 손실 한도(USDT) 초과 시 자동 정지
   killSwitch       Boolean  @default(false)
