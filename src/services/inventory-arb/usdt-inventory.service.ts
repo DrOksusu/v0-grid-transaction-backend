@@ -21,16 +21,22 @@ export const MEXC_FEE_BPS = 10;
 const GATE_MIN_ORDER_USDT = 3; // GateLeg 최소주문(spec §0) — executor dust 임계로 그대로 전달
 const MIN_BASE_UNIT = 1; // ALEO 등 정수 단위 최소 체결수량
 
-// ── (a) 순수 판정 함수 ──────────────────────────────────────────────────
+// ── (a) 순수 판정 함수 (양방향) ────────────────────────────────────────────
+export type UsdtArbDirection = 'buy_gate_sell_mexc' | 'buy_mexc_sell_gate';
+
 export interface ShouldExecuteInput {
   gateAsk: number;
   gateBid: number;
   mexcAsk: number;
   mexcBid: number;
   gateAskLevels: BookLevel[];
+  gateBidLevels: BookLevel[];
+  mexcAskLevels: BookLevel[];
   mexcBidLevels: BookLevel[];
-  mexcAleoBalance: number;
+  gateAleoBalance: number;
   gateUsdtBalance: number;
+  mexcAleoBalance: number;
+  mexcUsdtBalance: number;
   bot: {
     symbol: string;
     thresholdPct: number;
@@ -41,61 +47,86 @@ export interface ShouldExecuteInput {
 
 export interface ShouldExecuteResult {
   go: boolean;
+  direction?: UsdtArbDirection;
+  buyExchange?: 'gateio' | 'mexc';
+  sellExchange?: 'gateio' | 'mexc';
   qty?: number;
-  buyPrice?: number;
-  sellPrice?: number;
+  buyPrice?: number;       // 매수 거래소 ask (지불)
+  sellPrice?: number;      // 매도 거래소 bid (수취)
+  flattenRefPrice?: number; // 매도 거래소 ask (net-short flatten 되사기 예산 기준)
+  netSpreadPct?: number;
   reason?: string;
-  stop?: boolean; // true = 재고 소진 등 자동정지 신호
 }
 
 /**
- * 순수 판정 함수(I/O 없음). 방향 게이트 → 재고 배치상 실행 가능은
- * "MEXC에서 매도(bid) + Gate에서 매수(ask)"뿐이므로 mexcBid > gateAsk일 때만 검토한다.
+ * 순수 판정 함수(I/O 없음). **양방향**:
+ *  - 방향A(buy_gate_sell_mexc): MEXC가 비쌀 때(mexcBid>gateAsk) — Gate 매수 + MEXC 매도. 재고: MEXC ALEO(매도)+Gate USDT(매수).
+ *  - 방향B(buy_mexc_sell_gate): Gate가 비쌀 때(gateBid>mexcAsk) — MEXC 매수 + Gate 매도. 재고: Gate ALEO(매도)+MEXC USDT(매수).
+ * 두 방향 중 순차익 최대이면서 모든 게이트(깊이·임계·재고)를 통과하는 것을 선택.
+ * 재고 소진은 자동정지가 아니라 skip(양방향이라 반대 방향/시세 변동으로 자가 리밸런싱됨).
  */
 export function shouldExecute(input: ShouldExecuteInput): ShouldExecuteResult {
-  const { gateAsk, mexcBid, gateAskLevels, mexcBidLevels, mexcAleoBalance, gateUsdtBalance, bot } = input;
+  const {
+    gateAsk, gateBid, mexcAsk, mexcBid,
+    gateAskLevels, gateBidLevels, mexcAskLevels, mexcBidLevels,
+    gateAleoBalance, gateUsdtBalance, mexcAleoBalance, mexcUsdtBalance, bot,
+  } = input;
 
-  // killSwitch가 최우선 — 재고 소진 stop 신호보다 먼저 걸려야 불필요한 자동정지 알림을 막는다.
   if (bot.killSwitch) return { go: false, reason: 'kill_switch' };
 
-  // 방향 게이트: MEXC가 더 비쌀 때만 재고 배치상 실행 가능(MEXC 매도 + Gate 매수)
-  if (!(mexcBid > gateAsk)) {
-    return { go: false, reason: 'no_gap_or_wrong_direction' };
+  interface Cand {
+    direction: UsdtArbDirection;
+    buyExchange: 'gateio' | 'mexc';
+    sellExchange: 'gateio' | 'mexc';
+    buyAsk: number; sellBid: number; sellAsk: number;
+    buyLevels: BookLevel[]; sellLevels: BookLevel[];
+    sellCoinBal: number; buyCashBal: number;
   }
+  const candidates: Cand[] = [];
+  // 방향A: MEXC 비쌈 → Gate 매수(ask) + MEXC 매도(bid)
+  if (mexcBid > gateAsk) {
+    candidates.push({
+      direction: 'buy_gate_sell_mexc', buyExchange: 'gateio', sellExchange: 'mexc',
+      buyAsk: gateAsk, sellBid: mexcBid, sellAsk: mexcAsk,
+      buyLevels: gateAskLevels, sellLevels: mexcBidLevels,
+      sellCoinBal: mexcAleoBalance, buyCashBal: gateUsdtBalance,
+    });
+  }
+  // 방향B: Gate 비쌈 → MEXC 매수(ask) + Gate 매도(bid)
+  if (gateBid > mexcAsk) {
+    candidates.push({
+      direction: 'buy_mexc_sell_gate', buyExchange: 'mexc', sellExchange: 'gateio',
+      buyAsk: mexcAsk, sellBid: gateBid, sellAsk: gateAsk,
+      buyLevels: mexcAskLevels, sellLevels: gateBidLevels,
+      sellCoinBal: gateAleoBalance, buyCashBal: mexcUsdtBalance,
+    });
+  }
+  if (candidates.length === 0) return { go: false, reason: 'no_gap_or_wrong_direction' };
 
-  // 목표 수량: orderUsdt만큼 Gate에서 매수할 수 있는 ALEO 수량, 정수 절사(최소 base 단위=1)
-  const qty = Math.floor(bot.orderUsdt / gateAsk);
-  if (qty < MIN_BASE_UNIT) {
-    return { go: false, reason: 'qty_below_min_base_unit' };
+  // 각 방향 평가 → 게이트 통과분 중 순차익 최대 선택
+  let best: (ShouldExecuteResult & { netSpreadPct: number }) | null = null;
+  let lastReason = 'net_spread_below_threshold';
+  for (const c of candidates) {
+    const qty = Math.floor(bot.orderUsdt / c.buyAsk);
+    if (qty < MIN_BASE_UNIT) { lastReason = 'qty_below_min_base_unit'; continue; }
+    const net = computeNet({
+      buyLevels: c.buyLevels, sellLevels: c.sellLevels, minNotional: bot.orderUsdt,
+      buyFeeBps: c.buyExchange === 'gateio' ? GATE_FEE_BPS : MEXC_FEE_BPS,
+      sellFeeBps: c.sellExchange === 'gateio' ? GATE_FEE_BPS : MEXC_FEE_BPS,
+      withdrawFee: null, thresholdPct: bot.thresholdPct,
+    });
+    if (!net.depthOk) { lastReason = 'depth_insufficient'; continue; }
+    if (net.netSpreadPct < bot.thresholdPct) { lastReason = 'net_spread_below_threshold'; continue; }
+    if (c.sellCoinBal < qty) { lastReason = 'sell_inventory_insufficient'; continue; }
+    if (c.buyCashBal < bot.orderUsdt) { lastReason = 'buy_cash_insufficient'; continue; }
+    if (!best || net.netSpreadPct > best.netSpreadPct) {
+      best = {
+        go: true, direction: c.direction, buyExchange: c.buyExchange, sellExchange: c.sellExchange,
+        qty, buyPrice: c.buyAsk, sellPrice: c.sellBid, flattenRefPrice: c.sellAsk, netSpreadPct: net.netSpreadPct,
+      };
+    }
   }
-
-  // 순차익 계산 — 재고형은 전송 없음 → withdrawFee null, 폴백 미적용(0)
-  const net = computeNet({
-    buyLevels: gateAskLevels,
-    sellLevels: mexcBidLevels,
-    minNotional: bot.orderUsdt,
-    buyFeeBps: GATE_FEE_BPS,
-    sellFeeBps: MEXC_FEE_BPS,
-    withdrawFee: null,
-    thresholdPct: bot.thresholdPct,
-  });
-
-  if (!net.depthOk) {
-    return { go: false, reason: 'depth_insufficient' };
-  }
-  if (net.netSpreadPct < bot.thresholdPct) {
-    return { go: false, reason: 'net_spread_below_threshold' };
-  }
-
-  // 재고 가드 — 소진 시 자동정지 신호(stop:true)
-  if (mexcAleoBalance < qty) {
-    return { go: false, reason: 'mexc_aleo_drained', stop: true };
-  }
-  if (gateUsdtBalance < bot.orderUsdt) {
-    return { go: false, reason: 'gate_usdt_low', stop: true };
-  }
-
-  return { go: true, qty, buyPrice: gateAsk, sellPrice: mexcBid };
+  return best ?? { go: false, reason: lastReason };
 }
 
 // ── (b) 오케스트레이션 ──────────────────────────────────────────────────
@@ -135,51 +166,51 @@ class UsdtInventoryService {
         fetchMexcDepth(bot.symbol),
       ]);
       if (!gateDepth || !mexcDepth) return; // 조회 실패 — 이번 사이클 skip
-      if (gateDepth.askLevels.length === 0 || mexcDepth.bidLevels.length === 0) return;
+      if (gateDepth.askLevels.length === 0 || gateDepth.bidLevels.length === 0
+        || mexcDepth.askLevels.length === 0 || mexcDepth.bidLevels.length === 0) return;
 
-      const [mexcAleoBalance, gateUsdtBalance] = await Promise.all([
+      // 양방향 판정을 위해 양쪽 거래소의 ALEO·USDT 4잔고 모두 조회
+      const [mexcAleoBalance, mexcUsdtBalance, gateAleoBalance, gateUsdtBalance] = await Promise.all([
         mexcLeg.getBalance(bot.symbol),
+        mexcLeg.getBalance('USDT'),
+        gateLeg.getBalance(bot.symbol),
         gateLeg.getBalance('USDT'),
       ]);
 
       const gateAsk = gateDepth.askLevels[0].price;
-      const gateBid = gateDepth.bidLevels[0]?.price ?? gateAsk;
-      const mexcAsk = mexcDepth.askLevels[0]?.price ?? mexcDepth.bidLevels[0].price;
+      const gateBid = gateDepth.bidLevels[0].price;
+      const mexcAsk = mexcDepth.askLevels[0].price;
       const mexcBid = mexcDepth.bidLevels[0].price;
 
-      // 3. 게이트
+      // 3. 양방향 게이트
       const decision = shouldExecute({
-        gateAsk,
-        gateBid,
-        mexcAsk,
-        mexcBid,
-        gateAskLevels: gateDepth.askLevels,
-        mexcBidLevels: mexcDepth.bidLevels,
-        mexcAleoBalance,
-        gateUsdtBalance,
+        gateAsk, gateBid, mexcAsk, mexcBid,
+        gateAskLevels: gateDepth.askLevels, gateBidLevels: gateDepth.bidLevels,
+        mexcAskLevels: mexcDepth.askLevels, mexcBidLevels: mexcDepth.bidLevels,
+        gateAleoBalance, gateUsdtBalance, mexcAleoBalance, mexcUsdtBalance,
         bot,
       });
 
-      if (decision.stop) {
-        const reasonLabel = decision.reason === 'mexc_aleo_drained' ? 'MEXC ALEO 소진' : 'Gate USDT 부족';
-        await this.autoStop(bot.id, bot.symbol, `${reasonLabel} — 리밸런싱 필요`);
-        return;
-      }
       if (!decision.go) {
         console.log(`[UsdtInventoryArb] bot ${bot.id} gate: ${decision.reason}`);
         return;
       }
 
-      // 3.5 재고 안정화 게이트: 매도측(MEXC) 재고가 최근 무변동일 때만 실행(그리드봇 경합·자기 밀어올림 방지)
-      const stab = checkInventoryStable(`usdt:${bot.id}`, mexcAleoBalance, bot.inventoryStableSec);
+      // 방향에 따라 leg·매도측 재고 결정
+      const buyLeg = decision.buyExchange === 'gateio' ? gateLeg : mexcLeg;
+      const sellLeg = decision.sellExchange === 'gateio' ? gateLeg : mexcLeg;
+      const sellSideBalance = decision.sellExchange === 'mexc' ? mexcAleoBalance : gateAleoBalance;
+
+      // 3.5 재고 안정화 게이트: 매도측 재고가 최근 무변동일 때만 실행(그리드봇 경합·자기 밀어올림 방지)
+      const stab = checkInventoryStable(`usdt:${bot.id}`, sellSideBalance, bot.inventoryStableSec);
       if (!stab.stable) {
-        console.log(`[UsdtInventoryArb] bot ${bot.id} 재고 안정화 대기 (${Math.ceil(stab.waitMs / 1000)}s 남음, MEXC재고=${mexcAleoBalance})`);
+        console.log(`[UsdtInventoryArb] bot ${bot.id} 재고 안정화 대기 (${Math.ceil(stab.waitMs / 1000)}s 남음, ${decision.sellExchange}재고=${sellSideBalance})`);
         return;
       }
 
       // 4. 반자동(autoExecute=false) — 감지만, 발주 금지
       if (!bot.autoExecute) {
-        console.log(`[UsdtInventoryArb] bot ${bot.id} detected (반자동, 미실행) qty=${decision.qty}`);
+        console.log(`[UsdtInventoryArb] bot ${bot.id} detected (반자동, 미실행) ${decision.direction} qty=${decision.qty}`);
         return;
       }
 
@@ -188,26 +219,26 @@ class UsdtInventoryService {
         data: {
           botId: bot.id,
           symbol: bot.symbol,
-          buyExchange: 'gateio',
-          sellExchange: 'mexc',
+          buyExchange: decision.buyExchange!,
+          sellExchange: decision.sellExchange!,
           qty: decision.qty!,
           buyPrice: decision.buyPrice!,
           sellPrice: decision.sellPrice!,
           status: 'detected',
-          note: 'pre-fire',
+          note: `pre-fire ${decision.direction}`,
         },
       });
 
       const result = await executeArb({
-        buyLeg: gateLeg,
-        sellLeg: mexcLeg,
+        buyLeg,
+        sellLeg,
         symbol: bot.symbol,
         qty: decision.qty!,
         buyPrice: decision.buyPrice!,
         sellPrice: decision.sellPrice!,
         fallbackMode: 'market_flatten',
         minOrderQuote: GATE_MIN_ORDER_USDT,
-        flattenBuyRefPrice: mexcAsk,
+        flattenBuyRefPrice: decision.flattenRefPrice!,
       });
 
       // 6. 결과 기록 + 후처리
@@ -227,13 +258,16 @@ class UsdtInventoryService {
   }): Promise<{
     symbol: string;
     gateAsk: number; gateBid: number; mexcAsk: number; mexcBid: number;
-    topSpreadPct: number;      // (mexcBid − gateAsk)/gateAsk*100 — 실현 최우선호가 방향 갭
-    netSpreadPct: number;      // 깊이 VWAP + 거래수수료 반영 순차익
+    topSpreadPct: number;      // 활성(최적) 방향의 실현 최우선호가 갭 %
+    netSpreadPct: number;      // 활성 방향의 깊이 VWAP + 거래수수료 반영 순차익
     depthOk: boolean;
     thresholdPct: number;
     qty: number | null;        // 실행 예정 수량(조건 충족 시)
+    direction: string;         // 활성 방향(buy_gate_sell_mexc | buy_mexc_sell_gate)
     mexcAleoBalance: number;
     gateUsdtBalance: number;
+    gateAleoBalance: number;
+    mexcUsdtBalance: number;
     decision: string;          // 'ready' | shouldExecute reason 코드
     autoExecute: boolean; enabled: boolean; killSwitch: boolean;
     fetchedAt: string;
@@ -251,43 +285,51 @@ class UsdtInventoryService {
         fetchGateioDepth(bot.symbol),
         fetchMexcDepth(bot.symbol),
       ]);
-      if (!gateDepth || !mexcDepth || gateDepth.askLevels.length === 0 || mexcDepth.bidLevels.length === 0) {
-        return { ...base, gateAsk: 0, gateBid: 0, mexcAsk: 0, mexcBid: 0, topSpreadPct: 0, netSpreadPct: 0, depthOk: false, qty: null, mexcAleoBalance: 0, gateUsdtBalance: 0, decision: 'depth_unavailable', error: '호가 조회 실패' };
+      const zeros = {
+        gateAsk: 0, gateBid: 0, mexcAsk: 0, mexcBid: 0, topSpreadPct: 0, netSpreadPct: 0, depthOk: false,
+        qty: null, direction: 'none', mexcAleoBalance: 0, gateUsdtBalance: 0, gateAleoBalance: 0, mexcUsdtBalance: 0,
+      };
+      if (!gateDepth || !mexcDepth || gateDepth.askLevels.length === 0 || gateDepth.bidLevels.length === 0
+        || mexcDepth.askLevels.length === 0 || mexcDepth.bidLevels.length === 0) {
+        return { ...base, ...zeros, decision: 'depth_unavailable', error: '호가 조회 실패' };
       }
-      const [mexcAleoBalance, gateUsdtBalance] = await Promise.all([
+      const [mexcAleoBalance, mexcUsdtBalance, gateAleoBalance, gateUsdtBalance] = await Promise.all([
         mexcLeg.getBalance(bot.symbol).catch(() => 0),
+        mexcLeg.getBalance('USDT').catch(() => 0),
+        gateLeg.getBalance(bot.symbol).catch(() => 0),
         gateLeg.getBalance('USDT').catch(() => 0),
       ]);
       const gateAsk = gateDepth.askLevels[0].price;
-      const gateBid = gateDepth.bidLevels[0]?.price ?? gateAsk;
-      const mexcAsk = mexcDepth.askLevels[0]?.price ?? mexcDepth.bidLevels[0].price;
+      const gateBid = gateDepth.bidLevels[0].price;
+      const mexcAsk = mexcDepth.askLevels[0].price;
       const mexcBid = mexcDepth.bidLevels[0].price;
 
-      const net = computeNet({
-        buyLevels: gateDepth.askLevels,
-        sellLevels: mexcDepth.bidLevels,
-        minNotional: bot.orderUsdt,
-        buyFeeBps: GATE_FEE_BPS,
-        sellFeeBps: MEXC_FEE_BPS,
-        withdrawFee: null,
-        thresholdPct: bot.thresholdPct,
-      });
+      // 양방향 실현 최우선호가 갭 → 큰 쪽을 활성 방향으로 표시
+      const dirAPct = gateAsk > 0 ? ((mexcBid - gateAsk) / gateAsk) * 100 : -Infinity; // MEXC 비쌈
+      const dirBPct = mexcAsk > 0 ? ((gateBid - mexcAsk) / mexcAsk) * 100 : -Infinity; // Gate 비쌈
+      const activeIsA = dirAPct >= dirBPct;
+      const netInput = activeIsA
+        ? { buyLevels: gateDepth.askLevels, sellLevels: mexcDepth.bidLevels, buyFeeBps: GATE_FEE_BPS, sellFeeBps: MEXC_FEE_BPS }
+        : { buyLevels: mexcDepth.askLevels, sellLevels: gateDepth.bidLevels, buyFeeBps: MEXC_FEE_BPS, sellFeeBps: GATE_FEE_BPS };
+      const net = computeNet({ ...netInput, minNotional: bot.orderUsdt, withdrawFee: null, thresholdPct: bot.thresholdPct });
+
       const decision = shouldExecute({
         gateAsk, gateBid, mexcAsk, mexcBid,
-        gateAskLevels: gateDepth.askLevels,
-        mexcBidLevels: mexcDepth.bidLevels,
-        mexcAleoBalance, gateUsdtBalance,
+        gateAskLevels: gateDepth.askLevels, gateBidLevels: gateDepth.bidLevels,
+        mexcAskLevels: mexcDepth.askLevels, mexcBidLevels: mexcDepth.bidLevels,
+        gateAleoBalance, gateUsdtBalance, mexcAleoBalance, mexcUsdtBalance,
         bot: { symbol: bot.symbol, thresholdPct: bot.thresholdPct, orderUsdt: bot.orderUsdt, killSwitch: bot.killSwitch },
       });
 
       return {
         ...base,
         gateAsk, gateBid, mexcAsk, mexcBid,
-        topSpreadPct: gateAsk > 0 ? ((mexcBid - gateAsk) / gateAsk) * 100 : 0,
+        topSpreadPct: activeIsA ? dirAPct : dirBPct,
         netSpreadPct: net.netSpreadPct,
         depthOk: net.depthOk,
         qty: decision.go ? decision.qty ?? null : null,
-        mexcAleoBalance, gateUsdtBalance,
+        direction: decision.go ? decision.direction! : (activeIsA ? 'buy_gate_sell_mexc' : 'buy_mexc_sell_gate'),
+        mexcAleoBalance, gateUsdtBalance, gateAleoBalance, mexcUsdtBalance,
         decision: (() => {
           if (!decision.go) return decision.reason ?? 'unknown';
           const stab = bot.enabled ? peekInventoryStable(`usdt:${bot.id}`, bot.inventoryStableSec) : { stable: true, waitMs: 0 };
@@ -295,7 +337,11 @@ class UsdtInventoryService {
         })(),
       };
     } catch (err: any) {
-      return { ...base, gateAsk: 0, gateBid: 0, mexcAsk: 0, mexcBid: 0, topSpreadPct: 0, netSpreadPct: 0, depthOk: false, qty: null, mexcAleoBalance: 0, gateUsdtBalance: 0, decision: 'error', error: err?.message ?? String(err) };
+      return {
+        ...base, gateAsk: 0, gateBid: 0, mexcAsk: 0, mexcBid: 0, topSpreadPct: 0, netSpreadPct: 0, depthOk: false,
+        qty: null, direction: 'none', mexcAleoBalance: 0, gateUsdtBalance: 0, gateAleoBalance: 0, mexcUsdtBalance: 0,
+        decision: 'error', error: err?.message ?? String(err),
+      };
     }
   }
 

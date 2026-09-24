@@ -52,23 +52,47 @@ function baseInput(overrides: Partial<Parameters<typeof shouldExecute>[0]> = {})
     mexcAsk: 0.0178,
     mexcBid: 0.0177,
     gateAskLevels: DEEP_GATE_ASK,
+    gateBidLevels: [{ price: 0.0169, qty: 1000 }],
+    mexcAskLevels: [{ price: 0.0178, qty: 1000 }],
     mexcBidLevels: DEEP_MEXC_BID,
-    mexcAleoBalance: 100000, // 충분
-    gateUsdtBalance: 1000, // 충분
+    gateAleoBalance: 100000, // dirB 매도측
+    gateUsdtBalance: 1000, // dirA 매수측
+    mexcAleoBalance: 100000, // dirA 매도측
+    mexcUsdtBalance: 1000, // dirB 매수측
     bot,
     ...overrides,
   };
 }
 
 describe('shouldExecute (순수 판정 함수)', () => {
-  it('정상: 갭 크고 재고 충분 → go:true, qty/prices 정확', () => {
+  it('정상(방향A, MEXC 비쌈): go:true, direction=buy_gate_sell_mexc, qty/prices 정확', () => {
     const r = shouldExecute(baseInput());
     expect(r.go).toBe(true);
-    expect(r.stop).toBeUndefined();
-    // qty = floor(orderUsdt / gateAsk) = floor(10 / 0.017) = floor(588.23...) = 588
+    expect(r.direction).toBe('buy_gate_sell_mexc');
+    expect(r.buyExchange).toBe('gateio');
+    expect(r.sellExchange).toBe('mexc');
+    // qty = floor(orderUsdt / gateAsk) = floor(10 / 0.017) = 588
     expect(r.qty).toBe(Math.floor(10 / 0.017));
-    expect(r.buyPrice).toBe(0.017);
-    expect(r.sellPrice).toBe(0.0177);
+    expect(r.buyPrice).toBe(0.017); // Gate ask
+    expect(r.sellPrice).toBe(0.0177); // MEXC bid
+    expect(r.flattenRefPrice).toBe(0.0178); // MEXC ask
+  });
+
+  it('방향B(Gate 비쌈): go:true, direction=buy_mexc_sell_gate — Gate 매도 + MEXC 매수', () => {
+    // Gate가 비싸도록: gateBid 0.0177(높음), mexcAsk 0.017(낮음). 매도측=Gate ALEO, 매수측=MEXC USDT.
+    const r = shouldExecute(baseInput({
+      gateAsk: 0.0181, gateBid: 0.0177, mexcAsk: 0.017, mexcBid: 0.0169,
+      gateBidLevels: [{ price: 0.0177, qty: 1000 }, { price: 0.0176, qty: 1000 }],
+      mexcAskLevels: [{ price: 0.017, qty: 1000 }, { price: 0.0171, qty: 1000 }],
+    }));
+    expect(r.go).toBe(true);
+    expect(r.direction).toBe('buy_mexc_sell_gate');
+    expect(r.buyExchange).toBe('mexc');
+    expect(r.sellExchange).toBe('gateio');
+    expect(r.qty).toBe(Math.floor(10 / 0.017)); // MEXC ask로 매수
+    expect(r.buyPrice).toBe(0.017); // MEXC ask
+    expect(r.sellPrice).toBe(0.0177); // Gate bid
+    expect(r.flattenRefPrice).toBe(0.0181); // Gate ask
   });
 
   it('방향 역전(mexcBid <= gateAsk) → go:false, wrong_direction', () => {
@@ -120,25 +144,22 @@ describe('shouldExecute (순수 판정 함수)', () => {
     expect(r.reason).toBe('depth_insufficient');
   });
 
-  it('재고 소진(MEXC ALEO < qty) → go:false, stop:true, mexc_aleo_drained', () => {
-    const r = shouldExecute(baseInput({ mexcAleoBalance: 10 })); // qty=588 > 10
+  it('매도측 재고 소진(방향A MEXC ALEO < qty) → go:false, sell_inventory_insufficient (양방향이라 stop 없음)', () => {
+    const r = shouldExecute(baseInput({ mexcAleoBalance: 10 })); // dirA 매도측 부족, dirB는 갭 없음
     expect(r.go).toBe(false);
-    expect(r.stop).toBe(true);
-    expect(r.reason).toBe('mexc_aleo_drained');
+    expect(r.reason).toBe('sell_inventory_insufficient');
   });
 
-  it('Gate USDT 부족(< orderUsdt) → go:false, stop:true, gate_usdt_low', () => {
+  it('매수측 현금 부족(방향A Gate USDT < orderUsdt) → go:false, buy_cash_insufficient (stop 없음)', () => {
     const r = shouldExecute(baseInput({ gateUsdtBalance: 1 })); // < orderUsdt(10)
     expect(r.go).toBe(false);
-    expect(r.stop).toBe(true);
-    expect(r.reason).toBe('gate_usdt_low');
+    expect(r.reason).toBe('buy_cash_insufficient');
   });
 
-  it('killSwitch=true → go:false, stop 없음(자동정지 오알림 방지)', () => {
+  it('killSwitch=true → go:false, kill_switch', () => {
     const r = shouldExecute(baseInput({ bot: { ...bot, killSwitch: true } }));
     expect(r.go).toBe(false);
     expect(r.reason).toBe('kill_switch');
-    expect(r.stop).toBeUndefined();
   });
 
   it('qty가 최소 base 단위(1) 미만이면 go:false', () => {
@@ -212,7 +233,7 @@ describe('runOnce 배선 (critic #2 — 방향 보장)', () => {
   });
 
   it('executeArb에 buyLeg=Gate, sellLeg=MEXC, flattenBuyRefPrice=mexcAsk 전달', async () => {
-    const liveBot = { id: 7, symbol: 'ALEO', thresholdPct: 2, orderUsdt: 10, autoExecute: true, enabled: true, killSwitch: false, dailyMaxCount: 200, dailyMaxLossUsdt: 5 };
+    const liveBot = { id: 7, symbol: 'ALEO', thresholdPct: 2, orderUsdt: 10, autoExecute: true, enabled: true, killSwitch: false, dailyMaxCount: 200, dailyMaxLossUsdt: 5, inventoryStableSec: 0 };
     await usdtInventoryService.runOnce(liveBot as any);
     expect(executeArb as jest.Mock).toHaveBeenCalledTimes(1);
     const arg = (executeArb as jest.Mock).mock.calls[0][0];
@@ -223,7 +244,7 @@ describe('runOnce 배선 (critic #2 — 방향 보장)', () => {
   });
 
   it('autoExecute=false면 executeArb 절대 호출 안 함(반자동)', async () => {
-    const semiBot = { id: 8, symbol: 'ALEO', thresholdPct: 2, orderUsdt: 10, autoExecute: false, enabled: true, killSwitch: false, dailyMaxCount: 200, dailyMaxLossUsdt: 5 };
+    const semiBot = { id: 8, symbol: 'ALEO', thresholdPct: 2, orderUsdt: 10, autoExecute: false, enabled: true, killSwitch: false, dailyMaxCount: 200, dailyMaxLossUsdt: 5, inventoryStableSec: 0 };
     await usdtInventoryService.runOnce(semiBot as any);
     expect(executeArb as jest.Mock).not.toHaveBeenCalled();
   });
