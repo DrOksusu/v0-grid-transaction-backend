@@ -72,7 +72,27 @@ export async function getBots(req: AuthRequest, res: Response, next: NextFunctio
   try {
     const userId = req.userId!;
     const bots = await mainPrisma.inventoryArbBot.findMany({ where: { userId, symbol: { not: MANUAL_BOT_SYMBOL } }, orderBy: { id: 'desc' } });
-    return successResponse(res, bots);
+    // 각 봇 거래 요약(건수·순이익 총/오늘) 첨부 — 프론트에서 수익을 한눈에
+    const KST = 9 * 60 * 60 * 1000;
+    const kst = new Date(Date.now() + KST); kst.setUTCHours(0, 0, 0, 0);
+    const dayStart = new Date(kst.getTime() - KST);
+    const withSummary = await Promise.all(bots.map(async (b) => {
+      const rows = await mainPrisma.inventoryArbTrade.findMany({
+        where: { botId: b.id, status: { in: ['filled', 'partial_flattened'] } },
+        select: { netKrw: true, detectedAt: true },
+      });
+      const today = rows.filter((r) => r.detectedAt >= dayStart);
+      return {
+        ...b,
+        summary: {
+          tradeCount: rows.length,
+          netKrwTotal: rows.reduce((s, r) => s + r.netKrw, 0),
+          todayCount: today.length,
+          todayNetKrw: today.reduce((s, r) => s + r.netKrw, 0),
+        },
+      };
+    }));
+    return successResponse(res, withSummary);
   } catch (e) { next(e); }
 }
 
