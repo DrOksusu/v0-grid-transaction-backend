@@ -1,7 +1,7 @@
 // USDT권 재고형 아비(Gate↔MEXC) 오케스트레이션: 스캔→순차익 게이트→(자동)실행→기록
-// - 실행 방향은 재고 배치상 고정: Gate에서 ALEO 매수 + MEXC에서 ALEO 매도(동시). 전송 없음.
-// - 재고 소진(MEXC ALEO 또는 Gate USDT 부족) → 자동 정지(enabled=false) + 카톡
-// - flatten_failed(터미널) → killSwitch ON + 봇 정지 + 긴급 카톡 (KRW inventory-arb.service와 동일 패턴)
+// - **양방향**: MEXC 비쌈(Gate매수/MEXC매도) 또는 Gate 비쌈(MEXC매수/Gate매도) 자동 선택. 전송 없음.
+// - 거래량은 매도측 코인의 **안정 재고량**(창 내 최소 잔고)으로 캡 — 그리드 신선분 제외
+// - 재고 소진은 자동정지 아닌 skip(양방향 자가 리밸런싱). flatten_failed(터미널)→killSwitch+긴급 카톡
 // - autoExecute=false(반자동)면 기회를 감지해도 절대 발주하지 않음
 import mainPrisma from '../../config/database';
 import { getAdminCreds } from '../admin-credentials';
@@ -10,7 +10,7 @@ import { GateLeg } from '../exchange/gate-leg';
 import { fetchGateioDepth, fetchMexcDepth } from '../multi-arb-depth.service';
 import { computeNet } from '../multi-arb-net-calculator';
 import { executeArb } from './executor';
-import { checkInventoryStable, peekInventoryStable } from './inventory-stability';
+import { stableTradeableAmount, peekStableAmount } from './inventory-stability';
 import { kakaoNotifyService } from '../kakao-notify.service';
 import type { BookLevel } from '../multi-arb-types';
 
@@ -33,6 +33,7 @@ export interface ShouldExecuteInput {
   gateBidLevels: BookLevel[];
   mexcAskLevels: BookLevel[];
   mexcBidLevels: BookLevel[];
+  // 매도측 코인 잔고 — 호출자가 **안정 재고량**(창 내 최소 잔고)을 넣어 거래량 상한으로 쓴다.
   gateAleoBalance: number;
   gateUsdtBalance: number;
   mexcAleoBalance: number;
@@ -107,18 +108,22 @@ export function shouldExecute(input: ShouldExecuteInput): ShouldExecuteResult {
   let best: (ShouldExecuteResult & { netSpreadPct: number }) | null = null;
   let lastReason = 'net_spread_below_threshold';
   for (const c of candidates) {
-    const qty = Math.floor(bot.orderUsdt / c.buyAsk);
-    if (qty < MIN_BASE_UNIT) { lastReason = 'qty_below_min_base_unit'; continue; }
+    const targetQty = Math.floor(bot.orderUsdt / c.buyAsk);
+    if (targetQty < MIN_BASE_UNIT) { lastReason = 'order_too_small'; continue; } // orderUsdt가 1코인 값보다 작음(설정)
+    // 안정 재고량(sellCoinBal)으로 거래량 캡 — 그리드가 방금 채운 신선분은 제외하고 안정분까지만
+    const qty = Math.min(targetQty, Math.floor(c.sellCoinBal));
+    if (qty < MIN_BASE_UNIT) { lastReason = 'inventory_not_stable'; continue; } // 안정 재고 부족(60초 관측 전 or 드레인)
+    const notional = qty * c.buyAsk; // 캡 후 실제 체결 규모
+    if (notional < GATE_MIN_ORDER_USDT) { lastReason = 'notional_below_min_order'; continue; }
     const net = computeNet({
-      buyLevels: c.buyLevels, sellLevels: c.sellLevels, minNotional: bot.orderUsdt,
+      buyLevels: c.buyLevels, sellLevels: c.sellLevels, minNotional: notional,
       buyFeeBps: c.buyExchange === 'gateio' ? GATE_FEE_BPS : MEXC_FEE_BPS,
       sellFeeBps: c.sellExchange === 'gateio' ? GATE_FEE_BPS : MEXC_FEE_BPS,
       withdrawFee: null, thresholdPct: bot.thresholdPct,
     });
     if (!net.depthOk) { lastReason = 'depth_insufficient'; continue; }
     if (net.netSpreadPct < bot.thresholdPct) { lastReason = 'net_spread_below_threshold'; continue; }
-    if (c.sellCoinBal < qty) { lastReason = 'sell_inventory_insufficient'; continue; }
-    if (c.buyCashBal < bot.orderUsdt) { lastReason = 'buy_cash_insufficient'; continue; }
+    if (c.buyCashBal < notional) { lastReason = 'buy_cash_insufficient'; continue; }
     if (!best || net.netSpreadPct > best.netSpreadPct) {
       best = {
         go: true, direction: c.direction, buyExchange: c.buyExchange, sellExchange: c.sellExchange,
@@ -182,12 +187,17 @@ class UsdtInventoryService {
       const mexcAsk = mexcDepth.askLevels[0].price;
       const mexcBid = mexcDepth.bidLevels[0].price;
 
-      // 3. 양방향 게이트
+      // 2.5 재고 안정화: 매도측 코인이 최근 inventoryStableSec 창 동안 유지된 **최소 잔고**만 거래 상한으로 사용
+      //     (그리드봇이 방금 채운 신선분은 제외 → 그리드 경합·자기 밀어올림 방지). 두 거래소를 각각 추적.
+      const mexcAleoStable = stableTradeableAmount(`usdt:${bot.id}:mexc`, mexcAleoBalance, bot.inventoryStableSec);
+      const gateAleoStable = stableTradeableAmount(`usdt:${bot.id}:gate`, gateAleoBalance, bot.inventoryStableSec);
+
+      // 3. 양방향 게이트 (매도측 재고엔 안정 재고량을 전달 → 거래량 캡)
       const decision = shouldExecute({
         gateAsk, gateBid, mexcAsk, mexcBid,
         gateAskLevels: gateDepth.askLevels, gateBidLevels: gateDepth.bidLevels,
         mexcAskLevels: mexcDepth.askLevels, mexcBidLevels: mexcDepth.bidLevels,
-        gateAleoBalance, gateUsdtBalance, mexcAleoBalance, mexcUsdtBalance,
+        gateAleoBalance: gateAleoStable, gateUsdtBalance, mexcAleoBalance: mexcAleoStable, mexcUsdtBalance,
         bot,
       });
 
@@ -196,17 +206,9 @@ class UsdtInventoryService {
         return;
       }
 
-      // 방향에 따라 leg·매도측 재고 결정
+      // 방향에 따라 leg 결정
       const buyLeg = decision.buyExchange === 'gateio' ? gateLeg : mexcLeg;
       const sellLeg = decision.sellExchange === 'gateio' ? gateLeg : mexcLeg;
-      const sellSideBalance = decision.sellExchange === 'mexc' ? mexcAleoBalance : gateAleoBalance;
-
-      // 3.5 재고 안정화 게이트: 매도측 재고가 최근 무변동일 때만 실행(그리드봇 경합·자기 밀어올림 방지)
-      const stab = checkInventoryStable(`usdt:${bot.id}`, sellSideBalance, bot.inventoryStableSec);
-      if (!stab.stable) {
-        console.log(`[UsdtInventoryArb] bot ${bot.id} 재고 안정화 대기 (${Math.ceil(stab.waitMs / 1000)}s 남음, ${decision.sellExchange}재고=${sellSideBalance})`);
-        return;
-      }
 
       // 4. 반자동(autoExecute=false) — 감지만, 발주 금지
       if (!bot.autoExecute) {
@@ -313,11 +315,14 @@ class UsdtInventoryService {
         : { buyLevels: mexcDepth.askLevels, sellLevels: gateDepth.bidLevels, buyFeeBps: MEXC_FEE_BPS, sellFeeBps: GATE_FEE_BPS };
       const net = computeNet({ ...netInput, minNotional: bot.orderUsdt, withdrawFee: null, thresholdPct: bot.thresholdPct });
 
+      // 매도측 안정 재고량(read-only) — 실행 판정과 동일 캡을 상태에도 반영
+      const mexcAleoStable = peekStableAmount(`usdt:${bot.id}:mexc`, bot.inventoryStableSec, mexcAleoBalance);
+      const gateAleoStable = peekStableAmount(`usdt:${bot.id}:gate`, bot.inventoryStableSec, gateAleoBalance);
       const decision = shouldExecute({
         gateAsk, gateBid, mexcAsk, mexcBid,
         gateAskLevels: gateDepth.askLevels, gateBidLevels: gateDepth.bidLevels,
         mexcAskLevels: mexcDepth.askLevels, mexcBidLevels: mexcDepth.bidLevels,
-        gateAleoBalance, gateUsdtBalance, mexcAleoBalance, mexcUsdtBalance,
+        gateAleoBalance: gateAleoStable, gateUsdtBalance, mexcAleoBalance: mexcAleoStable, mexcUsdtBalance,
         bot: { symbol: bot.symbol, thresholdPct: bot.thresholdPct, orderUsdt: bot.orderUsdt, killSwitch: bot.killSwitch },
       });
 
@@ -330,11 +335,7 @@ class UsdtInventoryService {
         qty: decision.go ? decision.qty ?? null : null,
         direction: decision.go ? decision.direction! : (activeIsA ? 'buy_gate_sell_mexc' : 'buy_mexc_sell_gate'),
         mexcAleoBalance, gateUsdtBalance, gateAleoBalance, mexcUsdtBalance,
-        decision: (() => {
-          if (!decision.go) return decision.reason ?? 'unknown';
-          const stab = bot.enabled ? peekInventoryStable(`usdt:${bot.id}`, bot.inventoryStableSec) : { stable: true, waitMs: 0 };
-          return stab.stable ? 'ready' : `재고 안정화 대기 (${Math.ceil(stab.waitMs / 1000)}s)`;
-        })(),
+        decision: decision.go ? 'ready' : (decision.reason ?? 'unknown'),
       };
     } catch (err: any) {
       return {
