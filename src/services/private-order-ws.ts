@@ -388,7 +388,9 @@ export async function dispatchFill(info: FillInfo, deps: DispatchFillDeps): Prom
   }
 
   if (deps.mode === 'shadow') {
-    console.log(`[RealtimeFill][shadow] ${info.exchange} ${info.market} uuid=${info.uuid} state=${info.state} gridId=${gridId}`);
+    // 수신 시각(ISO)을 남겨 30초 poll의 "체결 감지" 시각과 대조 → WS가 얼마나 빠른지 증거화.
+    const at = new Date(deps.now ? deps.now() : Date.now()).toISOString();
+    console.log(`[RealtimeFill][shadow] at=${at} ${info.exchange} ${info.market} uuid=${info.uuid} state=${info.state} gridId=${gridId}`);
     return;
   }
 
