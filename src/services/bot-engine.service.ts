@@ -1,3 +1,5 @@
+import jwt from 'jsonwebtoken';
+import { v4 as uuidv4 } from 'uuid';
 import prisma, { withRetry } from '../config/database';
 import { TradingService } from './trading.service';
 import { priceManager } from './upbit-price-manager';
@@ -6,6 +8,23 @@ import { socketService } from './socket.service';
 import { calculateBuyPrices } from './grid.service';
 import { UpbitService } from './upbit.service';
 import { decrypt } from '../utils/encryption';
+import { generateBithumbJwt } from './exchange/bithumb-client';
+import {
+  PrivateOrderWsPool,
+  getRealtimeFillWsMode,
+  dispatchFill,
+  type FillInfo,
+} from './private-order-ws';
+
+/** 업비트 private WS 인증용 JWT (query_hash 없음). upbit.service.ts의 JWT 로직과 동일. */
+function generateUpbitPrivateJwt(accessKey: string, secretKey: string): string {
+  return jwt.sign({ access_key: accessKey, nonce: uuidv4() }, secretKey);
+}
+
+/** 봇 ticker → 거래소 마켓 코드 정규화 (bot-engine 내 기존 관례와 동일: KRW- 접두사 보장). */
+function toMarketCode(ticker: string): string {
+  return `KRW-${ticker.replace('KRW-', '')}`;
+}
 
 class BotEngine {
   private isRunning: boolean = false;
@@ -40,6 +59,9 @@ class BotEngine {
   // 가격 리스너 (바인딩된 참조를 유지해야 해제 가능)
   private boundOnPriceUpdate = this.onPriceUpdate.bind(this);
 
+  // 실시간 체결 private WS 풀 (REALTIME_FILL_WS_MODE=off면 미사용)
+  private privateOrderWsPool: PrivateOrderWsPool | null = null;
+
   // 엔진 시작
   async start() {
     if (this.isRunning) {
@@ -52,6 +74,9 @@ class BotEngine {
 
     // WebSocket PriceManager 시작 및 실행 중인 봇 티커 구독
     await this.initializePriceManager();
+
+    // 실시간 체결 private WS (off면 연결하지 않음 — 기존 동작과 동일)
+    await this.initializePrivateOrderWs();
 
     // 주기적으로 봇 실행 (동적 간격 - 기본 3초마다 체크)
     this.interval = setInterval(async () => {
@@ -125,6 +150,101 @@ class BotEngine {
     } catch (error: any) {
       console.error('[BotEngine] Failed to initialize PriceManager:', error.message);
     }
+  }
+
+  /**
+   * 실시간 체결 private WS 초기화.
+   * REALTIME_FILL_WS_MODE=off(기본)면 연결 자체를 하지 않는다.
+   * 실행 중인 봇을 (exchange, credentialId)로 그룹핑해 credential당 연결 1개를 공유한다.
+   * 이 기능은 실거래 로직에 절대 영향을 주면 안 되므로 모든 실패는 로그만 남기고 삼킨다.
+   */
+  private async initializePrivateOrderWs() {
+    const mode = getRealtimeFillWsMode();
+    if (mode === 'off') return;
+
+    try {
+      if (!this.privateOrderWsPool) {
+        this.privateOrderWsPool = new PrivateOrderWsPool();
+        this.privateOrderWsPool.onFill((info) => {
+          this.onPrivateOrderFill(info).catch((err: any) => {
+            console.error('[BotEngine] onPrivateOrderFill 처리 실패:', err.message);
+          });
+        });
+      }
+
+      const runningBots = await withRetry(
+        () => prisma.bot.findMany({
+          where: { status: 'running', deletedAt: null },
+          select: {
+            id: true,
+            ticker: true,
+            exchange: true,
+            userId: true,
+            user: { include: { credentials: { select: { id: true, apiKey: true, secretKey: true, exchange: true } } } },
+          },
+        }),
+        { operationName: 'BotEngine.initializePrivateOrderWs' }
+      );
+
+      // (exchange, credentialId)로 그룹핑
+      const groups = new Map<string, { exchange: string; credentialId: number; apiKey: string; secretKey: string; userId: number; markets: Set<string> }>();
+      for (const bot of runningBots) {
+        const credential = bot.user.credentials.find(c => c.exchange === bot.exchange);
+        if (!credential) continue; // 인증정보 없는 봇은 스킵 (기존 폴링/크로스 감지로 정상 동작)
+
+        const groupKey = `${bot.exchange}:${credential.id}`;
+        if (!groups.has(groupKey)) {
+          groups.set(groupKey, {
+            exchange: bot.exchange as string,
+            credentialId: credential.id,
+            apiKey: decrypt(credential.apiKey),
+            secretKey: decrypt(credential.secretKey),
+            userId: bot.userId,
+            markets: new Set(),
+          });
+        }
+        groups.get(groupKey)!.markets.add(toMarketCode(bot.ticker));
+      }
+
+      for (const group of groups.values()) {
+        const generateJwt = group.exchange === 'bithumb'
+          ? () => generateBithumbJwt(group.apiKey, group.secretKey)
+          : () => generateUpbitPrivateJwt(group.apiKey, group.secretKey);
+
+        this.privateOrderWsPool!.getOrCreate({
+          exchange: group.exchange,
+          userId: group.userId,
+          credentialId: group.credentialId,
+          apiKey: group.apiKey,
+          secretKey: group.secretKey,
+          markets: [...group.markets],
+          generateJwt,
+        });
+      }
+
+      console.log(`[BotEngine] 실시간 체결 WS 초기화 완료 (mode=${mode}, credential그룹=${groups.size}개)`);
+    } catch (error: any) {
+      // 실패해도 30초 폴링/가격 크로스로 정상 동작 — 절대 start()를 실패시키지 않음
+      console.error('[BotEngine] 실시간 체결 WS 초기화 실패:', error.message);
+    }
+  }
+
+  /**
+   * 실시간 체결 수신 콜백. uuid(orderId)로 gridId를 찾아 모드별로 처리.
+   * shadow: 로그만. on: TradingService.checkAndProcessSingleOrder 트리거.
+   */
+  private async onPrivateOrderFill(info: FillInfo): Promise<void> {
+    await dispatchFill(info, {
+      mode: getRealtimeFillWsMode(),
+      lookupGridId: async (uuid: string) => {
+        const grid = await prisma.gridLevel.findFirst({
+          where: { orderId: uuid },
+          select: { id: true },
+        });
+        return grid ? grid.id : null;
+      },
+      trigger: (gridId: number) => TradingService.checkAndProcessSingleOrder(gridId),
+    });
   }
 
   // 체결 확인 (UUID 배치 조회 - 마켓 수와 무관하게 사용자당 1회 API 호출)
@@ -228,6 +348,12 @@ class BotEngine {
     // PriceManager 연결 종료
     priceManager.disconnect();
     bithumbPriceManager.disconnect();
+
+    // 실시간 체결 private WS 전체 종료
+    if (this.privateOrderWsPool) {
+      this.privateOrderWsPool.closeAll();
+      this.privateOrderWsPool = null;
+    }
 
     this.isRunning = false;
     console.log('Bot engine stopped');
