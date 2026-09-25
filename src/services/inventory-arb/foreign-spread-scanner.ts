@@ -4,10 +4,12 @@
 import { summarizeCoinWallet, type WalletInfo } from './wallet-info';
 import { multiArbWalletStatusService } from '../multi-arb-wallet-status.service';
 
-/** 거래소 최우선 호가 (USDT 페어) */
+/** 거래소 최우선 호가 (USDT 페어) — 수량은 해당 호가에 걸린 물량(top-of-book) */
 export interface ForeignTop {
   bid: number;
   ask: number;
+  bidQty: number;
+  askQty: number;
 }
 
 export type ForeignExchange = 'binance' | 'mexc';
@@ -18,6 +20,8 @@ export interface ForeignSpread {
   sellExchange: ForeignExchange;
   buyPrice: number; // 매수 거래소 ask
   sellPrice: number; // 매도 거래소 bid
+  maxExecutableQty: number; // 최우선호가 기준 최대 체결량 = min(매수측 ask물량, 매도측 bid물량)
+  maxExecutableUsdt: number; // 위 수량 × 매수가 (≈ 최우선호가 1레벨에서 소화 가능한 규모)
   spreadBps: number;
   binancePrice: number; // 참고: 바이낸스 mid(=(bid+ask)/2)
   mexcPrice: number; // 참고: MEXC mid
@@ -53,16 +57,26 @@ export function computeForeignSpread(symbol: string, binance: ForeignTop, mexc: 
   const spreadB = binance.bid / mexc.ask - 1;
 
   let buyExchange: ForeignExchange, sellExchange: ForeignExchange, buyPrice: number, sellPrice: number, spread: number;
+  let buyQty: number, sellQty: number;
   if (spreadA >= spreadB) {
+    // 바이낸스 매수(ask) → MEXC 매도(bid): 매수측 물량=바이낸스 ask, 매도측 물량=MEXC bid
     buyExchange = 'binance'; sellExchange = 'mexc'; buyPrice = binance.ask; sellPrice = mexc.bid; spread = spreadA;
+    buyQty = binance.askQty; sellQty = mexc.bidQty;
   } else {
+    // MEXC 매수(ask) → 바이낸스 매도(bid)
     buyExchange = 'mexc'; sellExchange = 'binance'; buyPrice = mexc.ask; sellPrice = binance.bid; spread = spreadB;
+    buyQty = mexc.askQty; sellQty = binance.bidQty;
   }
   if (spread <= 0) return null;
+
+  // 최우선호가 기준 최대 체결량 = 양측 물량 중 작은 쪽(더 깊이 들어가면 스프레드가 줄어듦)
+  const maxExecutableQty = Math.min(buyQty, sellQty);
+  const maxExecutableUsdt = maxExecutableQty * buyPrice;
 
   const spreadBps = Math.floor(spread * 10000);
   return {
     symbol, buyExchange, sellExchange, buyPrice, sellPrice,
+    maxExecutableQty, maxExecutableUsdt,
     spreadBps,
     netSpreadBps: spreadBps - FOREIGN_ROUNDTRIP_FEE_BPS,
     realizable: false, // 해외는 이 시스템에서 실행 미지원 — 관찰 전용
@@ -101,7 +115,8 @@ export async function fetchBookTickers(exchange: ForeignExchange): Promise<Map<s
     const base = sym.slice(0, -4);
     const bid = Number(t.bidPrice), ask = Number(t.askPrice);
     if (!base || !(bid > 0) || !(ask > 0)) continue;
-    out.set(base, { bid, ask });
+    const bidQty = Number(t.bidQty), askQty = Number(t.askQty);
+    out.set(base, { bid, ask, bidQty: bidQty > 0 ? bidQty : 0, askQty: askQty > 0 ? askQty : 0 });
   }
   return out;
 }
