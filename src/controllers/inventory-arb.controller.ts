@@ -40,7 +40,7 @@ export async function postExecute(req: AuthRequest, res: Response, next: NextFun
       userId,
       String(symbol).toUpperCase(),
       maxKrw,
-      typeof minSpreadBps === 'number' && minSpreadBps >= 0 ? minSpreadBps : 30,
+      typeof minSpreadBps === 'number' && minSpreadBps >= 0 ? minSpreadBps : 100,
     );
     return successResponse(res, result);
   } catch (e) { next(e); }
