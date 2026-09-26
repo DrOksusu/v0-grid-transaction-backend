@@ -20,7 +20,7 @@ jest.mock('../../../src/services/multi-arb-depth.service', () => ({
 }));
 jest.mock('../../../src/services/inventory-arb/executor', () => ({ executeArb: jest.fn() }));
 
-import { shouldExecute, GATE_FEE_BPS, MEXC_FEE_BPS, usdtInventoryService } from '../../../src/services/inventory-arb/usdt-inventory.service';
+import { shouldExecute, GATE_FEE_BPS, MEXC_FEE_BPS, usdtInventoryService, crossingQty, evalCandidateDirection } from '../../../src/services/inventory-arb/usdt-inventory.service';
 import mainPrisma from '../../../src/config/database';
 import { kakaoNotifyService } from '../../../src/services/kakao-notify.service';
 import { fetchGateioDepth, fetchMexcDepth } from '../../../src/services/multi-arb-depth.service';
@@ -194,6 +194,68 @@ describe('shouldExecute (순수 판정 함수)', () => {
   it('수수료 상수 확인 (Gate taker 0.2% / MEXC taker 0.1%)', () => {
     expect(GATE_FEE_BPS).toBe(20);
     expect(MEXC_FEE_BPS).toBe(10);
+  });
+});
+
+describe('crossingQty (호가 크로싱 최대 수량)', () => {
+  it('매도bid > 매수ask 구간만 누적', () => {
+    // buy asks: 100@10, 101@10 / sell bids: 102@5, 100.5@8, 99@100
+    // 걷기: 5개(102>100), 5개(100.5>100), 3개(100.5>101? No → stop at ask 101)
+    const q = crossingQty(
+      [{ price: 100, qty: 10 }, { price: 101, qty: 10 }],
+      [{ price: 102, qty: 5 }, { price: 100.5, qty: 8 }, { price: 99, qty: 100 }],
+    );
+    expect(q).toBe(10); // ask 100 소진(10개)까지 이익, ask 101 vs bid 100.5는 역마진
+  });
+
+  it('갭 없으면 0', () => {
+    expect(crossingQty([{ price: 100, qty: 10 }], [{ price: 100, qty: 10 }])).toBe(0);
+    expect(crossingQty([{ price: 100, qty: 10 }], [{ price: 99, qty: 10 }])).toBe(0);
+  });
+
+  it('빈 레벨 안전', () => {
+    expect(crossingQty([], [{ price: 100, qty: 1 }])).toBe(0);
+    expect(crossingQty([{ price: 100, qty: 1 }], [])).toBe(0);
+  });
+});
+
+describe('evalCandidateDirection (후보 방향 평가)', () => {
+  const buyAsks = [{ price: 0.017, qty: 1000 }, { price: 0.0171, qty: 1000 }];
+  const sellBids = [{ price: 0.0177, qty: 1000 }, { price: 0.0176, qty: 1000 }];
+  const base = {
+    symbol: 'ALEO', direction: 'buy_gate_sell_mexc' as const,
+    buyExchange: 'gateio' as const, sellExchange: 'mexc' as const,
+    buyAskLevels: buyAsks, sellBidLevels: sellBids,
+    sellCoinBal: 100000, buyCashBal: 1000,
+  };
+
+  it('정상: 실행가능 규모 = min(크로싱, 재고, 현금/가격)', () => {
+    const c = evalCandidateDirection(base);
+    expect(c).not.toBeNull();
+    // 크로싱 2000 > 현금 1000/0.017≈58823 vs 재고 100000 → 크로싱 2000이 최소
+    expect(c!.executableQty).toBe(2000);
+    expect(c!.netSpreadPct).toBeGreaterThan(0);
+    expect(c!.grossSpreadPct).toBeCloseTo((0.0177 / 0.017 - 1) * 100, 6);
+  });
+
+  it('재고가 상한이면 재고만큼', () => {
+    const c = evalCandidateDirection({ ...base, sellCoinBal: 500 });
+    expect(c!.executableQty).toBe(500);
+  });
+
+  it('현금이 상한이면 현금/가격만큼 (float 오차는 보수적 floor)', () => {
+    const c = evalCandidateDirection({ ...base, buyCashBal: 17 }); // 17/0.017 = 999.99…(float) → floor 999
+    expect(c!.executableQty).toBe(999);
+  });
+
+  it('갭 없으면 null', () => {
+    const c = evalCandidateDirection({ ...base, sellBidLevels: [{ price: 0.017, qty: 1000 }] });
+    expect(c).toBeNull();
+  });
+
+  it('규모가 최소주문(3 USDT) 미만이면 null', () => {
+    const c = evalCandidateDirection({ ...base, sellCoinBal: 100 }); // 100×0.017=1.7 < 3
+    expect(c).toBeNull();
   });
 });
 

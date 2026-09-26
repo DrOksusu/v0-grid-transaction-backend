@@ -2,13 +2,16 @@ import { Response, NextFunction } from 'express';
 import mainPrisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
-import { usdtInventoryService } from '../services/inventory-arb/usdt-inventory.service';
+import { usdtInventoryService, USDT_MANUAL_BOT_SYMBOL } from '../services/inventory-arb/usdt-inventory.service';
 
-/** USDT권 재고형 아비(Gate↔MEXC) 봇 목록 */
+/** USDT권 재고형 아비(Gate↔MEXC) 봇 목록 (수동실행 sentinel 봇은 숨김) */
 export async function getBots(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const userId = req.userId!;
-    const bots = await mainPrisma.usdtInventoryArbBot.findMany({ where: { userId }, orderBy: { id: 'desc' } });
+    const bots = await mainPrisma.usdtInventoryArbBot.findMany({
+      where: { userId, symbol: { not: USDT_MANUAL_BOT_SYMBOL } },
+      orderBy: { id: 'desc' },
+    });
     // 각 봇 거래 요약(건수·순이익 총/오늘) 첨부 — 프론트에서 수익을 한눈에
     const KST = 9 * 60 * 60 * 1000;
     const kst = new Date(Date.now() + KST); kst.setUTCHours(0, 0, 0, 0);
@@ -30,6 +33,35 @@ export async function getBots(req: AuthRequest, res: Response, next: NextFunctio
       };
     }));
     return successResponse(res, withSummary);
+  } catch (e) { next(e); }
+}
+
+/** 후보 스캔 — 보유 코인 기반 Gate↔MEXC 양방향 순차익 후보 (net ≥ minNetPct) */
+export async function getCandidates(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const minNetPct = req.query.minNetPct != null ? Number(req.query.minNetPct) : 1;
+    const candidates = await usdtInventoryService.scanCandidates(
+      Number.isFinite(minNetPct) && minNetPct >= 0 ? minNetPct : 1,
+    );
+    return successResponse(res, candidates);
+  } catch (e) { next(e); }
+}
+
+/** 수동 1회 실거래 실행 (후보 화면 "즉시 실행"). 클릭 시점 재검증 후 executeArb 1회. */
+export async function postExecute(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const userId = req.userId!;
+    const { symbol, maxUsdt, minNetPct } = req.body;
+    if (!symbol || typeof maxUsdt !== 'number' || maxUsdt <= 0) {
+      return errorResponse(res, 'VALIDATION_ERROR', 'symbol, maxUsdt(양수) 필수', 400);
+    }
+    const result = await usdtInventoryService.executeManual(
+      userId,
+      String(symbol).toUpperCase(),
+      maxUsdt,
+      typeof minNetPct === 'number' && minNetPct >= 0 ? minNetPct : 1,
+    );
+    return successResponse(res, result);
   } catch (e) { next(e); }
 }
 
