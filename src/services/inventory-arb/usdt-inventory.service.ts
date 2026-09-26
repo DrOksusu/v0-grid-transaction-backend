@@ -32,6 +32,23 @@ export const USDT_MANUAL_BOT_SYMBOL = '__MANUAL__'; // 수동 실행 기록용 s
 const MANUAL_MAX_USDT = 1000; // 수동 1회 서버 하드캡
 const CANDIDATE_SCAN_MAX_SYMBOLS = 100; // 후보 스캔 심볼 상한 (3거래소 보유 유니온 커버)
 const CANDIDATE_SCAN_BATCH = 5; // 심볼 동시 처리 수 (depth 조회 병렬 배치)
+
+// 지정가 IOC 가격 보호 밴드(bps). 판정가 대비 매수 +밴드 / 매도 −밴드 밖 체결을 차단해
+// 시장가 슬리피지 손실을 구조적으로 방지 (2026-09-25 ALEO 슬리피지 −3.3~3.6%p 손실 사고).
+// 최악 실현 순차익 ≈ 임계 − 밴드×2 (기본: 1% − 0.6% = +0.4%). 0 이하 설정 시 기존 시장가 경로(긴급 롤백용).
+const LIMIT_PROTECT_BPS = Number(process.env.USDT_ARB_LIMIT_PROTECT_BPS ?? '30');
+
+/** executeArb protect 입력 생성 — 보호 밴드 0 이하면 undefined(시장가 경로) */
+export function buildProtect(
+  buyPrice: number,
+  sellPrice: number,
+): { buyLimitPrice: number; sellLimitPrice: number } | undefined {
+  if (!(LIMIT_PROTECT_BPS > 0)) return undefined;
+  return {
+    buyLimitPrice: buyPrice * (1 + LIMIT_PROTECT_BPS / 10000),
+    sellLimitPrice: sellPrice * (1 - LIMIT_PROTECT_BPS / 10000),
+  };
+}
 const manualInFlight = new Set<string>(); // `${userId}:${symbol}` 동시실행 가드
 
 // ── (a) 거래소 쌍 레지스트리 + 순수 판정 함수 (양방향) ─────────────────────
@@ -327,6 +344,8 @@ class UsdtInventoryService {
         // 쌍별 최소주문(예: binance 6) — 이보다 작은 불균형은 dust로 수용해 killSwitch 오탐 방지 (critic MAJOR-1)
         minOrderQuote: pairMinOrderUsdt(decision.buyExchange!, decision.sellExchange!),
         flattenBuyRefPrice: decision.flattenRefPrice!,
+        // 지정가 IOC 가격 보호 — 판정가 ± 밴드 밖 체결 차단 (슬리피지 손실 방지)
+        protect: buildProtect(decision.buyPrice!, decision.sellPrice!),
       });
 
       // 6. 결과 기록 + 후처리
@@ -759,6 +778,8 @@ class UsdtInventoryService {
         fallbackMode: 'market_flatten',
         minOrderQuote: pairMinOrderUsdt(best.buyExchange, best.sellExchange),
         flattenBuyRefPrice: sellSideAsk,
+        // 지정가 IOC 가격 보호 — 수동 실행도 동일하게 슬리피지 차단
+        protect: buildProtect(best.buyPrice, best.sellPrice),
       });
       // persistResult에 실제 심볼을 덮어쓴 봇 전달 — flatten_failed 긴급 알림이 sentinel 대신 실제 코인 명시
       await this.persistResult({ ...manualBot, symbol }, trade.id, result);

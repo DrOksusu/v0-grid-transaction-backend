@@ -16,6 +16,8 @@ const GATE_MIN_QUOTE_USDT = 3; // Gate.io 최소 주문금액(3 USDT) — buyOnG
 export class GateLeg implements ExchangeLeg {
   // 마켓 정밀도 캐시 (프로세스 생명주기 동안 유효) — getGateioAmountPrecision 원본 그대로 이식
   private amountPrecisionCache: Map<string, number> = new Map();
+  // 가격 정밀도(precision 필드) 캐시 — 지정가 IOC 주문의 price 절사에 사용
+  private pricePrecisionCache: Map<string, number> = new Map();
 
   constructor(private readonly creds: { apiKey: string; secretKey: string }) {}
 
@@ -64,19 +66,30 @@ export class GateLeg implements ExchangeLeg {
    * gateioRequest로 바꾸지 않음). 조회 실패 시 8자리 default. 캐시로 반복 조회 방지.
    */
   private async getAmountPrecision(symbol: string): Promise<number> {
-    const cached = this.amountPrecisionCache.get(symbol);
-    if (cached !== undefined) return cached;
+    return (await this.getPairPrecision(symbol)).amount;
+  }
+
+  /** amount_precision(수량) + precision(가격) 동시 조회·캐시 — 지정가 IOC의 price 절사에 가격 정밀도 필요 */
+  private async getPairPrecision(symbol: string): Promise<{ amount: number; price: number }> {
+    const cachedAmount = this.amountPrecisionCache.get(symbol);
+    const cachedPrice = this.pricePrecisionCache.get(symbol);
+    if (cachedAmount !== undefined && cachedPrice !== undefined) {
+      return { amount: cachedAmount, price: cachedPrice };
+    }
     try {
       const res = await axios.get(
         `https://api.gateio.ws/api/v4/spot/currency_pairs/${symbol}_USDT`,
         { timeout: 4000 },
       );
-      const precision = Number(res.data?.amount_precision);
-      const safe = Number.isFinite(precision) && precision >= 0 ? precision : 8;
-      this.amountPrecisionCache.set(symbol, safe);
-      return safe;
+      const amountRaw = Number(res.data?.amount_precision);
+      const priceRaw = Number(res.data?.precision);
+      const amount = Number.isFinite(amountRaw) && amountRaw >= 0 ? amountRaw : 8;
+      const price = Number.isFinite(priceRaw) && priceRaw >= 0 ? priceRaw : 8;
+      this.amountPrecisionCache.set(symbol, amount);
+      this.pricePrecisionCache.set(symbol, price);
+      return { amount, price };
     } catch {
-      return 8;
+      return { amount: this.amountPrecisionCache.get(symbol) ?? 8, price: this.pricePrecisionCache.get(symbol) ?? 8 };
     }
   }
 
@@ -183,6 +196,71 @@ export class GateLeg implements ExchangeLeg {
   }
 
   /**
+   * 지정가 IOC 매수 (가격 보호). limitPrice보다 비싸게 체결되지 않음.
+   * - Gate limit 주문의 amount = base(코인) 수량 (market buy의 quote 방식과 다름 — 혼동 주의)
+   * - price/amount 는 마켓 정밀도로 절사(내림) — 매수 limit 내림 = 보호 강화 방향
+   * - 체결 파싱·fee-in-coin 처리는 buyIoc와 동일
+   */
+  async buyLimitIoc(symbol: string, quantity: number, limitPrice: number): Promise<IocResult> {
+    if (!quantity || quantity <= 0 || !(limitPrice > 0)) return null;
+    const { amount: amountPrecision, price: pricePrecision } = await this.getPairPrecision(symbol);
+    const qFactor = Math.pow(10, amountPrecision);
+    const qty = Math.floor(quantity * qFactor) / qFactor;
+    const pFactor = Math.pow(10, pricePrecision);
+    const price = Math.floor(limitPrice * pFactor) / pFactor;
+    if (qty <= 0 || price <= 0) return null;
+    if (qty * price < GATE_MIN_QUOTE_USDT) return null;
+
+    const body = JSON.stringify({
+      currency_pair: `${symbol}_USDT`,
+      type: 'limit',
+      side: 'buy',
+      amount: qty.toString(),
+      price: price.toFixed(pricePrecision),
+      time_in_force: 'ioc',
+    });
+
+    const data = await gateioRequest(this.creds.apiKey, this.creds.secretKey, 'POST', '/api/v4/spot/orders', '', body);
+    const orderId = String(data.id ?? '');
+
+    let filledAmount = parseFloat(data.filled_amount ?? '0');
+    let avgDealPrice = parseFloat(data.avg_deal_price ?? '0');
+    let filledTotal = parseFloat(data.filled_total ?? '0');
+    let fee = parseFloat(data.fee ?? '0');
+    let feeCurrency = String(data.fee_currency ?? '');
+
+    // 즉시 응답에 체결 정보 없으면 폴링 (IOC는 미체결 잔량 자동취소 — 폴링은 체결분 확인용)
+    if (filledAmount <= 0 && orderId) {
+      const polled = await this.pollOrderStatus(symbol, orderId);
+      filledAmount = polled.filledAmount;
+      avgDealPrice = polled.avgDealPrice;
+      filledTotal = polled.filledTotal;
+      fee = 0;
+      feeCurrency = '';
+    }
+
+    if (filledAmount <= 0) return null;
+
+    const grossUsdt = filledTotal > 0
+      ? filledTotal
+      : filledAmount * (avgDealPrice > 0 ? avgDealPrice : price);
+
+    let filledQty = filledAmount;
+    let feeUsdt = 0;
+    if (fee > 0 && feeCurrency) {
+      if (feeCurrency.toUpperCase() === symbol.toUpperCase()) {
+        filledQty = filledAmount - fee;
+        const avgPrice = avgDealPrice > 0 ? avgDealPrice : (filledAmount > 0 ? grossUsdt / filledAmount : 0);
+        feeUsdt = fee * avgPrice;
+      } else if (feeCurrency.toUpperCase() === 'USDT') {
+        feeUsdt = fee;
+      }
+    }
+
+    return { filledQty, grossKrw: grossUsdt, feeKrw: feeUsdt };
+  }
+
+  /**
    * 시장가 IOC 매도. sellOnGateio 이식.
    * - 실잔고(getBalance) min 보정 (매수 시 fee-in-coin 차감 대응 — SPX 2026-06-16 사고 교훈)
    * - amount_precision 절사(내림)
@@ -242,6 +320,71 @@ export class GateLeg implements ExchangeLeg {
       grossKrw: grossUsdt,
       feeKrw: feeUsdt,
     };
+  }
+
+  /**
+   * 지정가 IOC 매도 (가격 보호). limitPrice보다 싸게 체결되지 않음.
+   * - 실잔고 min 보정 + amount_precision 절사는 sellIoc와 동일
+   * - price는 마켓 정밀도 절사(내림) — 한 틱 미만의 보호 완화만 허용(무시 가능 수준)
+   */
+  async sellLimitIoc(symbol: string, quantity: number, limitPrice: number): Promise<IocResult> {
+    if (!quantity || quantity <= 0 || !(limitPrice > 0)) return null;
+
+    let actualBalance: number | null;
+    try {
+      actualBalance = await this.getBalance(symbol);
+    } catch {
+      actualBalance = null;
+    }
+    let sellQty = quantity;
+    if (actualBalance !== null && actualBalance > 0) {
+      sellQty = Math.min(quantity, actualBalance);
+    } else if (actualBalance === 0) {
+      return null;
+    }
+
+    const { amount: amountPrecision, price: pricePrecision } = await this.getPairPrecision(symbol);
+    const qFactor = Math.pow(10, amountPrecision);
+    sellQty = Math.floor(sellQty * qFactor) / qFactor;
+    const pFactor = Math.pow(10, pricePrecision);
+    const price = Math.floor(limitPrice * pFactor) / pFactor;
+    if (sellQty <= 0 || price <= 0) return null;
+
+    const body = JSON.stringify({
+      currency_pair: `${symbol}_USDT`,
+      type: 'limit',
+      side: 'sell',
+      amount: sellQty.toString(),
+      price: price.toFixed(pricePrecision),
+      time_in_force: 'ioc',
+    });
+
+    const data = await gateioRequest(this.creds.apiKey, this.creds.secretKey, 'POST', '/api/v4/spot/orders', '', body);
+    const orderId = String(data.id ?? '');
+
+    let avgDealPrice = parseFloat(data.avg_deal_price ?? '0');
+    let filledTotal = parseFloat(data.filled_total ?? '0');
+    const left = parseFloat(data.left ?? '0');
+    const requestedQty = parseFloat(data.amount ?? String(sellQty));
+    let filledQty = parseFloat(data.filled_amount ?? '0') || (requestedQty - left) || 0;
+    let fee = parseFloat(data.fee ?? '0');
+    let feeCurrency = String(data.fee_currency ?? '');
+
+    if (filledQty <= 0 && orderId) {
+      const polled = await this.pollOrderStatus(symbol, orderId);
+      filledQty = polled.filledAmount;
+      avgDealPrice = polled.avgDealPrice;
+      filledTotal = polled.filledTotal;
+      fee = 0;
+      feeCurrency = '';
+    }
+
+    if (filledQty <= 0) return null;
+
+    const grossUsdt = filledTotal > 0 ? filledTotal : (avgDealPrice > 0 ? avgDealPrice * filledQty : price * filledQty);
+    const feeUsdt = fee > 0 && feeCurrency.toUpperCase() === 'USDT' ? fee : 0;
+
+    return { filledQty, grossKrw: grossUsdt, feeKrw: feeUsdt };
   }
 
   async buyGtc(_symbol: string, _quantity: number, _price: number): Promise<string | null> {

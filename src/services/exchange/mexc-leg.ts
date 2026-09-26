@@ -20,7 +20,26 @@ function parseFillsCommission(data: any): { total: number; asset: string } | nul
 }
 
 export class MexcLeg implements ExchangeLeg {
+  // 가격 소수 자릿수 캐시 (exchangeInfo quotePrecision) — 지정가 IOC price 절사용
+  private pricePrecisionCache: Map<string, number> = new Map();
+
   constructor(private readonly creds: { apiKey: string; secretKey: string }) {}
+
+  /** 가격 소수 자릿수 조회 (/api/v3/exchangeInfo, 공개). 실패 시 6자리 default. */
+  private async getPricePrecision(symbol: string): Promise<number> {
+    const cached = this.pricePrecisionCache.get(symbol);
+    if (cached !== undefined) return cached;
+    try {
+      const res = await axios.get(`${MEXC.baseUrl}/api/v3/exchangeInfo?symbol=${symbol}USDT`, { timeout: 8000 });
+      const info = res.data?.symbols?.[0];
+      const raw = Number(info?.quotePrecision ?? info?.quoteAssetPrecision);
+      const safe = Number.isFinite(raw) && raw >= 0 && raw <= 18 ? raw : 6;
+      this.pricePrecisionCache.set(symbol, safe);
+      return safe;
+    } catch {
+      return 6;
+    }
+  }
 
   /**
    * MEXC 코인 잔고 조회 (/api/v3/account).
@@ -240,6 +259,114 @@ export class MexcLeg implements ExchangeLeg {
       grossKrw: cummulativeQuoteQty,
       feeKrw,
     };
+  }
+
+  /**
+   * 지정가 IOC 매수 (가격 보호). MEXC type=IMMEDIATE_OR_CANCEL (quantity+price 필수).
+   * limitPrice보다 비싸게 체결되지 않음. 체결 파싱·fee-in-coin 처리는 buyIoc와 동일.
+   */
+  async buyLimitIoc(symbol: string, quantity: number, limitPrice: number): Promise<IocResult> {
+    if (!quantity || quantity <= 0 || !(limitPrice > 0)) return null;
+    const qtyStr = parseFloat(quantity.toFixed(8)).toString();
+    if (parseFloat(qtyStr) <= 0) return null;
+    const pricePrecision = await this.getPricePrecision(symbol);
+    // 매수 limit은 내림 절사 = 보호 강화 방향
+    const priceStr = (Math.floor(limitPrice * Math.pow(10, pricePrecision)) / Math.pow(10, pricePrecision)).toFixed(pricePrecision);
+    if (parseFloat(priceStr) <= 0) return null;
+
+    const mexcSymbol = `${symbol}USDT`;
+    const data = await mexcPost(this.creds.apiKey, this.creds.secretKey, '/api/v3/order', {
+      symbol: mexcSymbol,
+      side: 'BUY',
+      type: 'IMMEDIATE_OR_CANCEL',
+      quantity: qtyStr,
+      price: priceStr,
+    });
+
+    const orderId = String(data.orderId ?? '');
+    let executedQty = parseFloat(data.executedQty ?? '0');
+    let cummulativeQuoteQty = parseFloat(data.cummulativeQuoteQty ?? '0');
+    let commission = parseFillsCommission(data);
+
+    if (executedQty <= 0 && orderId) {
+      const polled = await this.pollOrderStatus(mexcSymbol, orderId);
+      executedQty = polled.executedQty;
+      cummulativeQuoteQty = polled.cummulativeQuoteQty;
+      commission = null;
+    }
+    if (executedQty <= 0) {
+      // IOC는 잔량 자동취소되나 방어적으로 취소 시도 (이미 종료면 무시됨)
+      if (orderId) await this.cancelOrderQuiet(mexcSymbol, orderId);
+      return null;
+    }
+
+    let filledQty = executedQty;
+    let feeKrw = 0;
+    if (commission) {
+      if (commission.asset.toUpperCase() === symbol.toUpperCase()) {
+        filledQty = executedQty - commission.total;
+        const avgPrice = executedQty > 0 ? cummulativeQuoteQty / executedQty : 0;
+        feeKrw = commission.total * avgPrice;
+      } else if (commission.asset.toUpperCase() === 'USDT') {
+        feeKrw = commission.total;
+      }
+    }
+
+    return { filledQty, grossKrw: cummulativeQuoteQty, feeKrw };
+  }
+
+  /**
+   * 지정가 IOC 매도 (가격 보호). limitPrice보다 싸게 체결되지 않음.
+   * 실잔고 min 보정 + 8자리 반올림은 sellIoc와 동일.
+   */
+  async sellLimitIoc(symbol: string, quantity: number, limitPrice: number): Promise<IocResult> {
+    if (!quantity || quantity <= 0 || !(limitPrice > 0)) return null;
+
+    let actualBalance: number | null;
+    try {
+      actualBalance = await this.getBalance(symbol);
+    } catch {
+      actualBalance = null;
+    }
+    let sellQty = quantity;
+    if (actualBalance !== null && actualBalance > 0) {
+      sellQty = Math.min(quantity, actualBalance);
+    } else if (actualBalance === 0) {
+      return null;
+    }
+    const qtyStr = parseFloat(sellQty.toFixed(8)).toString();
+    if (parseFloat(qtyStr) <= 0) return null;
+    const pricePrecision = await this.getPricePrecision(symbol);
+    const priceStr = (Math.floor(limitPrice * Math.pow(10, pricePrecision)) / Math.pow(10, pricePrecision)).toFixed(pricePrecision);
+    if (parseFloat(priceStr) <= 0) return null;
+
+    const mexcSymbol = `${symbol}USDT`;
+    const data = await mexcPost(this.creds.apiKey, this.creds.secretKey, '/api/v3/order', {
+      symbol: mexcSymbol,
+      side: 'SELL',
+      type: 'IMMEDIATE_OR_CANCEL',
+      quantity: qtyStr,
+      price: priceStr,
+    });
+
+    const orderId = String(data.orderId ?? '');
+    let executedQty = parseFloat(data.executedQty ?? '0');
+    let cummulativeQuoteQty = parseFloat(data.cummulativeQuoteQty ?? '0');
+    let commission = parseFillsCommission(data);
+
+    if (executedQty <= 0 && orderId) {
+      const polled = await this.pollOrderStatus(mexcSymbol, orderId);
+      executedQty = polled.executedQty;
+      cummulativeQuoteQty = polled.cummulativeQuoteQty;
+      commission = null;
+    }
+    if (executedQty <= 0) {
+      if (orderId) await this.cancelOrderQuiet(mexcSymbol, orderId);
+      return null;
+    }
+
+    const feeKrw = commission && commission.asset.toUpperCase() === 'USDT' ? commission.total : 0;
+    return { filledQty: executedQty, grossKrw: cummulativeQuoteQty, feeKrw };
   }
 
   async buyGtc(_symbol: string, _quantity: number, _price: number): Promise<string | null> {

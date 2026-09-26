@@ -26,6 +26,8 @@ function parseFillsCommission(data: any): { total: number; asset: string } | nul
 export class BinanceLeg implements ExchangeLeg {
   // LOT_SIZE stepSize 캐시 (프로세스 생명주기 동안 유효) — GateLeg amountPrecision 패턴
   private stepSizeCache: Map<string, number> = new Map();
+  // PRICE_FILTER tickSize 캐시 — 지정가 IOC price 절사용 (미준수 가격은 주문 거부)
+  private tickSizeCache: Map<string, number> = new Map();
 
   constructor(private readonly creds: { apiKey: string; secretKey: string }) {}
 
@@ -69,18 +71,31 @@ export class BinanceLeg implements ExchangeLeg {
    * Binance는 stepSize 미준수 수량을 거부하므로 매도 전 절사 필수.
    */
   private async getStepSize(symbol: string): Promise<number> {
-    const cached = this.stepSizeCache.get(symbol);
-    if (cached !== undefined) return cached;
+    return (await this.getSymbolFilters(symbol)).stepSize;
+  }
+
+  /** LOT_SIZE stepSize + PRICE_FILTER tickSize 동시 조회·캐시 (/api/v3/exchangeInfo, 공개). */
+  private async getSymbolFilters(symbol: string): Promise<{ stepSize: number; tickSize: number }> {
+    const cachedStep = this.stepSizeCache.get(symbol);
+    const cachedTick = this.tickSizeCache.get(symbol);
+    if (cachedStep !== undefined && cachedTick !== undefined) {
+      return { stepSize: cachedStep, tickSize: cachedTick };
+    }
     try {
       const res = await axios.get(`${BINANCE.baseUrl}/api/v3/exchangeInfo?symbol=${symbol}USDT`, { timeout: 8000 });
       const filters = res.data?.symbols?.[0]?.filters ?? [];
       const lot = filters.find((f: any) => f.filterType === 'LOT_SIZE');
+      const priceFilter = filters.find((f: any) => f.filterType === 'PRICE_FILTER');
       const step = parseFloat(lot?.stepSize ?? '0');
-      const val = step > 0 ? step : 1e-8;
-      this.stepSizeCache.set(symbol, val);
-      return val;
+      const tick = parseFloat(priceFilter?.tickSize ?? '0');
+      const stepSize = step > 0 ? step : 1e-8;
+      const tickSize = tick > 0 ? tick : 1e-8;
+      this.stepSizeCache.set(symbol, stepSize);
+      this.tickSizeCache.set(symbol, tickSize);
+      return { stepSize, tickSize };
     } catch {
-      return 1e-8; // 조회 실패 — 절사 없이 시도(8자리 반올림만)
+      // 조회 실패 — 절사 없이 시도(8자리 반올림만)
+      return { stepSize: this.stepSizeCache.get(symbol) ?? 1e-8, tickSize: this.tickSizeCache.get(symbol) ?? 1e-8 };
     }
   }
 
@@ -88,6 +103,12 @@ export class BinanceLeg implements ExchangeLeg {
   private truncateToStep(qty: number, step: number): number {
     if (step <= 0) return qty;
     return Math.floor(Math.round(qty / step * 1e8) / 1e8) * step;
+  }
+
+  /** step/tick 단위 문자열 포맷 — 1e-4 같은 지수 표기 방지를 위해 소수 자릿수로 고정 */
+  private formatByUnit(value: number, unit: number): string {
+    const decimals = unit >= 1 ? 0 : Math.min(8, Math.max(0, Math.round(-Math.log10(unit))));
+    return value.toFixed(decimals);
   }
 
   /** 주문 상태 폴링 (/api/v3/order). Binance MARKET은 대개 즉시 FULL 응답이라 보조 경로. */
@@ -244,6 +265,113 @@ export class BinanceLeg implements ExchangeLeg {
     }
 
     return { filledQty, grossKrw: cummulativeQuoteQty, feeKrw };
+  }
+
+  /**
+   * 지정가 IOC 매수 (가격 보호). type=LIMIT + timeInForce=IOC.
+   * limitPrice보다 비싸게 체결되지 않음. quantity는 stepSize, price는 tickSize 절사(내림 = 보호 강화 방향).
+   */
+  async buyLimitIoc(symbol: string, quantity: number, limitPrice: number): Promise<IocResult> {
+    if (!quantity || quantity <= 0 || !(limitPrice > 0)) return null;
+    const { stepSize, tickSize } = await this.getSymbolFilters(symbol);
+    const qty = this.truncateToStep(quantity, stepSize);
+    const price = this.truncateToStep(limitPrice, tickSize);
+    if (qty <= 0 || price <= 0) return null;
+    const qtyStr = this.formatByUnit(qty, stepSize);
+    const priceStr = this.formatByUnit(price, tickSize);
+
+    const bnbSymbol = `${symbol}USDT`;
+    const data = await signedPost(
+      BINANCE.baseUrl, BINANCE.apiKeyHeader, this.creds.apiKey, this.creds.secretKey,
+      '/api/v3/order',
+      { symbol: bnbSymbol, side: 'BUY', type: 'LIMIT', timeInForce: 'IOC', quantity: qtyStr, price: priceStr },
+      BINANCE.paramsInBody,
+    );
+
+    const orderId = String(data.orderId ?? '');
+    let executedQty = parseFloat(data.executedQty ?? '0');
+    let cummulativeQuoteQty = parseFloat(data.cummulativeQuoteQty ?? '0');
+    let commission = parseFillsCommission(data);
+
+    if (executedQty <= 0 && orderId) {
+      const polled = await this.pollOrderStatus(bnbSymbol, orderId);
+      executedQty = polled.executedQty;
+      cummulativeQuoteQty = polled.cummulativeQuoteQty;
+      commission = null;
+    }
+    if (executedQty <= 0) {
+      if (orderId) await this.cancelOrderQuiet(bnbSymbol, orderId);
+      return null;
+    }
+
+    let filledQty = executedQty;
+    let feeKrw = 0;
+    if (commission) {
+      if (commission.asset.toUpperCase() === symbol.toUpperCase()) {
+        filledQty = executedQty - commission.total;
+        const avgPrice = executedQty > 0 ? cummulativeQuoteQty / executedQty : 0;
+        feeKrw = commission.total * avgPrice;
+      } else if (commission.asset.toUpperCase() === 'USDT') {
+        feeKrw = commission.total;
+      }
+    }
+
+    return { filledQty, grossKrw: cummulativeQuoteQty, feeKrw };
+  }
+
+  /**
+   * 지정가 IOC 매도 (가격 보호). limitPrice보다 싸게 체결되지 않음.
+   * 실잔고 min 보정 + stepSize 절사는 sellIoc와 동일, price는 tickSize 절사.
+   */
+  async sellLimitIoc(symbol: string, quantity: number, limitPrice: number): Promise<IocResult> {
+    if (!quantity || quantity <= 0 || !(limitPrice > 0)) return null;
+
+    let actualBalance: number | null;
+    try {
+      actualBalance = await this.getBalance(symbol);
+    } catch {
+      actualBalance = null;
+    }
+    let sellQty = quantity;
+    if (actualBalance !== null && actualBalance > 0) {
+      sellQty = Math.min(quantity, actualBalance);
+    } else if (actualBalance === 0) {
+      return null;
+    }
+
+    const { stepSize, tickSize } = await this.getSymbolFilters(symbol);
+    sellQty = this.truncateToStep(sellQty, stepSize);
+    const price = this.truncateToStep(limitPrice, tickSize);
+    if (sellQty <= 0 || price <= 0) return null;
+    const qtyStr = this.formatByUnit(sellQty, stepSize);
+    const priceStr = this.formatByUnit(price, tickSize);
+
+    const bnbSymbol = `${symbol}USDT`;
+    const data = await signedPost(
+      BINANCE.baseUrl, BINANCE.apiKeyHeader, this.creds.apiKey, this.creds.secretKey,
+      '/api/v3/order',
+      { symbol: bnbSymbol, side: 'SELL', type: 'LIMIT', timeInForce: 'IOC', quantity: qtyStr, price: priceStr },
+      BINANCE.paramsInBody,
+    );
+
+    const orderId = String(data.orderId ?? '');
+    let executedQty = parseFloat(data.executedQty ?? '0');
+    let cummulativeQuoteQty = parseFloat(data.cummulativeQuoteQty ?? '0');
+    let commission = parseFillsCommission(data);
+
+    if (executedQty <= 0 && orderId) {
+      const polled = await this.pollOrderStatus(bnbSymbol, orderId);
+      executedQty = polled.executedQty;
+      cummulativeQuoteQty = polled.cummulativeQuoteQty;
+      commission = null;
+    }
+    if (executedQty <= 0) {
+      if (orderId) await this.cancelOrderQuiet(bnbSymbol, orderId);
+      return null;
+    }
+
+    const feeKrw = commission && commission.asset.toUpperCase() === 'USDT' ? commission.total : 0;
+    return { filledQty: executedQty, grossKrw: cummulativeQuoteQty, feeKrw };
   }
 
   // ── inventory arb 미사용 인터페이스 스텁 (MexcLeg 동일) ──

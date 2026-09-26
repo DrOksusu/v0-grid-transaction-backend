@@ -35,6 +35,26 @@ export interface ExchangeLeg {
   ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null>;
 
   /**
+   * 지정가 IOC 매수 (가격 보호). limitPrice보다 비싸게 체결되지 않고,
+   * 즉시 체결 가능한 만큼만 채운 뒤 잔량은 자동 취소된다. null = 체결 없음.
+   * USDT권 leg(Gate/MEXC/Binance)만 구현 — 미구현 거래소는 executor가 시장가로 폴백.
+   */
+  buyLimitIoc?(
+    symbol: string,
+    quantity: number,
+    limitPrice: number,
+  ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null>;
+
+  /**
+   * 지정가 IOC 매도 (가격 보호). limitPrice보다 싸게 체결되지 않음. null = 체결 없음.
+   */
+  sellLimitIoc?(
+    symbol: string,
+    quantity: number,
+    limitPrice: number,
+  ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null>;
+
+  /**
    * GTC 지정가 매수. 미체결 시 주문 유지. 주문 ID 반환. null = 주문 실패.
    * @param price 단가(KRW)
    */

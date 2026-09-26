@@ -307,6 +307,10 @@ describe('runOnce 배선 (critic #2 — 방향 보장)', () => {
     expect(arg.sellLeg.__tag).toBe('mexc');  // MEXC에서 매도(ALEO)
     expect(arg.flattenBuyRefPrice).toBeCloseTo(0.0178, 6); // MEXC ask
     expect(arg.minOrderQuote).toBe(3);
+    // 지정가 IOC 가격 보호 — 판정가 ± 기본 30bps 밴드 전달 (슬리피지 손실 방지)
+    expect(arg.protect).toBeDefined();
+    expect(arg.protect.buyLimitPrice).toBeCloseTo(0.017 * 1.003, 10);   // Gate ask + 30bps
+    expect(arg.protect.sellLimitPrice).toBeCloseTo(0.0177 * 0.997, 10); // MEXC bid − 30bps
     // 기록 방향 정합
     const created = (db.usdtInventoryArbTrade.create as jest.Mock).mock.calls[0][0].data;
     expect(created.buyExchange).toBe('gateio');
