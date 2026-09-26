@@ -45,48 +45,53 @@ const DEEP_MEXC_BID: BookLevel[] = [
   { price: 0.0176, qty: 1000 },
 ];
 
-function baseInput(overrides: Partial<Parameters<typeof shouldExecute>[0]> = {}) {
+// A=Gate(쌈) / B=MEXC(비쌈) 기본 스냅샷 — 방향1(buy_gateio_sell_mexc)이 성립
+function sideA(over: Partial<import('../../../src/services/inventory-arb/usdt-inventory.service').ExchangeSide> = {}) {
   return {
-    gateAsk: 0.017,
-    gateBid: 0.0169,
-    mexcAsk: 0.0178,
-    mexcBid: 0.0177,
-    gateAskLevels: DEEP_GATE_ASK,
-    gateBidLevels: [{ price: 0.0169, qty: 1000 }],
-    mexcAskLevels: [{ price: 0.0178, qty: 1000 }],
-    mexcBidLevels: DEEP_MEXC_BID,
-    gateAleoBalance: 100000, // dirB 매도측
-    gateUsdtBalance: 1000, // dirA 매수측
-    mexcAleoBalance: 100000, // dirA 매도측
-    mexcUsdtBalance: 1000, // dirB 매수측
-    bot,
-    ...overrides,
+    name: 'gateio' as const, ask: 0.017, bid: 0.0169,
+    askLevels: DEEP_GATE_ASK, bidLevels: [{ price: 0.0169, qty: 1000 }],
+    coinBalance: 100000, usdtBalance: 1000, ...over,
   };
 }
+function sideB(over: Partial<import('../../../src/services/inventory-arb/usdt-inventory.service').ExchangeSide> = {}) {
+  return {
+    name: 'mexc' as const, ask: 0.0178, bid: 0.0177,
+    askLevels: [{ price: 0.0178, qty: 1000 }], bidLevels: DEEP_MEXC_BID,
+    coinBalance: 100000, usdtBalance: 1000, ...over,
+  };
+}
+function baseInput(a = sideA(), b = sideB(), botOver: Partial<typeof bot> = {}) {
+  return { a, b, bot: { ...bot, ...botOver } };
+}
 
-describe('shouldExecute (순수 판정 함수)', () => {
-  it('정상(방향A, MEXC 비쌈): go:true, direction=buy_gate_sell_mexc, qty/prices 정확', () => {
+describe('shouldExecute (순수 판정 함수, 거래소 쌍 무관 A/B 슬롯)', () => {
+  it('정상(방향1, B=MEXC 비쌈): go:true, direction=buy_gateio_sell_mexc, qty/prices 정확', () => {
     const r = shouldExecute(baseInput());
     expect(r.go).toBe(true);
-    expect(r.direction).toBe('buy_gate_sell_mexc');
+    expect(r.direction).toBe('buy_gateio_sell_mexc');
     expect(r.buyExchange).toBe('gateio');
     expect(r.sellExchange).toBe('mexc');
-    // qty = floor(orderUsdt / gateAsk) = floor(10 / 0.017) = 588
+    // qty = floor(orderUsdt / a.ask) = floor(10 / 0.017) = 588
     expect(r.qty).toBe(Math.floor(10 / 0.017));
     expect(r.buyPrice).toBe(0.017); // Gate ask
     expect(r.sellPrice).toBe(0.0177); // MEXC bid
     expect(r.flattenRefPrice).toBe(0.0178); // MEXC ask
   });
 
-  it('방향B(Gate 비쌈): go:true, direction=buy_mexc_sell_gate — Gate 매도 + MEXC 매수', () => {
-    // Gate가 비싸도록: gateBid 0.0177(높음), mexcAsk 0.017(낮음). 매도측=Gate ALEO, 매수측=MEXC USDT.
-    const r = shouldExecute(baseInput({
-      gateAsk: 0.0181, gateBid: 0.0177, mexcAsk: 0.017, mexcBid: 0.0169,
-      gateBidLevels: [{ price: 0.0177, qty: 1000 }, { price: 0.0176, qty: 1000 }],
-      mexcAskLevels: [{ price: 0.017, qty: 1000 }, { price: 0.0171, qty: 1000 }],
-    }));
+  it('방향2(A=Gate 비쌈): go:true, direction=buy_mexc_sell_gateio — Gate 매도 + MEXC 매수', () => {
+    const a = sideA({
+      ask: 0.0181, bid: 0.0177,
+      askLevels: [{ price: 0.0181, qty: 1000 }],
+      bidLevels: [{ price: 0.0177, qty: 1000 }, { price: 0.0176, qty: 1000 }],
+    });
+    const b = sideB({
+      ask: 0.017, bid: 0.0169,
+      askLevels: [{ price: 0.017, qty: 1000 }, { price: 0.0171, qty: 1000 }],
+      bidLevels: [{ price: 0.0169, qty: 1000 }],
+    });
+    const r = shouldExecute(baseInput(a, b));
     expect(r.go).toBe(true);
-    expect(r.direction).toBe('buy_mexc_sell_gate');
+    expect(r.direction).toBe('buy_mexc_sell_gateio');
     expect(r.buyExchange).toBe('mexc');
     expect(r.sellExchange).toBe('gateio');
     expect(r.qty).toBe(Math.floor(10 / 0.017)); // MEXC ask로 매수
@@ -95,98 +100,72 @@ describe('shouldExecute (순수 판정 함수)', () => {
     expect(r.flattenRefPrice).toBe(0.0181); // Gate ask
   });
 
-  it('방향 역전(mexcBid <= gateAsk) → go:false, wrong_direction', () => {
-    const r = shouldExecute(
-      baseInput({
-        gateAsk: 0.018,
-        mexcBid: 0.0177, // MEXC가 더 쌈 — 재고 배치상 실행 불가 방향
-      }),
-    );
-    expect(r.go).toBe(false);
-    expect(r.reason).toBe('no_gap_or_wrong_direction');
+  it('binance 쌍도 동일 로직: A=binance면 direction=buy_binance_sell_mexc', () => {
+    const a = sideA({ name: 'binance' as any });
+    const r = shouldExecute(baseInput(a, sideB()));
+    expect(r.go).toBe(true);
+    expect(r.direction).toBe('buy_binance_sell_mexc');
+    expect(r.buyExchange).toBe('binance');
   });
 
-  it('방향 동일가(mexcBid === gateAsk) → go:false (경계는 실행 불가)', () => {
-    const r = shouldExecute(baseInput({ gateAsk: 0.0177, mexcBid: 0.0177 }));
+  it('방향 역전/동일가 → go:false, no_gap_or_wrong_direction', () => {
+    // B가 더 쌈: b.bid(0.0169) <= a.ask(0.017), a.bid(0.0169) <= b.ask(0.0178)
+    const r = shouldExecute(baseInput(sideA(), sideB({ ask: 0.0178, bid: 0.0169, bidLevels: [{ price: 0.0169, qty: 1000 }] })));
     expect(r.go).toBe(false);
     expect(r.reason).toBe('no_gap_or_wrong_direction');
+    const r2 = shouldExecute(baseInput(sideA({ ask: 0.0177 }), sideB({ bid: 0.0177 })));
+    expect(r2.go).toBe(false);
+    expect(r2.reason).toBe('no_gap_or_wrong_direction');
   });
 
   it('순차익 미달(임계 상향) → go:false, net_spread_below_threshold', () => {
-    // gross ≈ 4.1%인데 threshold를 10%로 올리면 미달
-    const r = shouldExecute(baseInput({ bot: { ...bot, thresholdPct: 10 } }));
-    expect(r.go).toBe(false);
-    expect(r.reason).toBe('net_spread_below_threshold');
-  });
-
-  it('갭이 수수료(0.3%)만 겨우 넘고 임계(2%) 미달인 좁은 스프레드 → go:false', () => {
-    // gross ≈ 0.5%: (0.01709-0.017)/0.017 ≈ 0.53% < threshold 2%
-    const r = shouldExecute(
-      baseInput({
-        gateAsk: 0.017,
-        gateAskLevels: [{ price: 0.017, qty: 1000 }],
-        mexcBid: 0.01709,
-        mexcBidLevels: [{ price: 0.01709, qty: 1000 }],
-      }),
-    );
+    const r = shouldExecute(baseInput(sideA(), sideB(), { thresholdPct: 10 }));
     expect(r.go).toBe(false);
     expect(r.reason).toBe('net_spread_below_threshold');
   });
 
   it('깊이 부족(주문 규모를 못 채움) → go:false, depth_insufficient', () => {
-    const r = shouldExecute(
-      baseInput({
-        gateAskLevels: [{ price: 0.017, qty: 0.001 }], // orderUsdt=10 못 채움
-        mexcBidLevels: [{ price: 0.0177, qty: 0.001 }],
-      }),
-    );
+    const a = sideA({ askLevels: [{ price: 0.017, qty: 0.001 }] });
+    const b = sideB({ bidLevels: [{ price: 0.0177, qty: 0.001 }] });
+    const r = shouldExecute(baseInput(a, b));
     expect(r.go).toBe(false);
     expect(r.reason).toBe('depth_insufficient');
   });
 
-  it('안정 재고량으로 거래량 캡: 안정 ALEO 200 < 목표 588 → qty=200으로 축소 실행', () => {
-    // mexcAleoBalance(=매도측 안정 재고량) 200. 목표 qty=floor(10/0.017)=588. min(588,200)=200.
-    const r = shouldExecute(baseInput({ mexcAleoBalance: 200 }));
+  it('안정 재고량으로 거래량 캡: 안정 200 < 목표 588 → qty=200으로 축소 실행', () => {
+    const r = shouldExecute(baseInput(sideA(), sideB({ coinBalance: 200 })));
     expect(r.go).toBe(true);
     expect(r.qty).toBe(200); // 안정분까지만
-    expect(r.direction).toBe('buy_gate_sell_mexc');
   });
 
   it('안정 재고 0(60초 관측 전 or 드레인) → go:false, inventory_not_stable', () => {
-    const r = shouldExecute(baseInput({ mexcAleoBalance: 0 }));
+    const r = shouldExecute(baseInput(sideA(), sideB({ coinBalance: 0 })));
     expect(r.go).toBe(false);
     expect(r.reason).toBe('inventory_not_stable');
   });
 
   it('캡 후 규모가 최소주문(3 USDT) 미만 → go:false, notional_below_min_order', () => {
-    // 안정 ALEO 10 → qty=10, notional=10*0.017=0.17 USDT < 3
-    const r = shouldExecute(baseInput({ mexcAleoBalance: 10 }));
+    const r = shouldExecute(baseInput(sideA(), sideB({ coinBalance: 10 }))); // 10×0.017=0.17 < 3
     expect(r.go).toBe(false);
     expect(r.reason).toBe('notional_below_min_order');
   });
 
-  it('매수측 현금 부족(방향A Gate USDT < 실제 규모) → go:false, buy_cash_insufficient (stop 없음)', () => {
-    const r = shouldExecute(baseInput({ gateUsdtBalance: 1 })); // notional≈10 > 1
+  it('매수측 현금 부족 → go:false, buy_cash_insufficient (stop 없음)', () => {
+    const r = shouldExecute(baseInput(sideA({ usdtBalance: 1 }), sideB()));
     expect(r.go).toBe(false);
     expect(r.reason).toBe('buy_cash_insufficient');
   });
 
   it('killSwitch=true → go:false, kill_switch', () => {
-    const r = shouldExecute(baseInput({ bot: { ...bot, killSwitch: true } }));
+    const r = shouldExecute(baseInput(sideA(), sideB(), { killSwitch: true }));
     expect(r.go).toBe(false);
     expect(r.reason).toBe('kill_switch');
   });
 
-  it('qty가 최소 base 단위(1) 미만이면 go:false', () => {
-    // orderUsdt=10, gateAsk=20 → floor(10/20)=0 < 1. mexcBid도 방향 게이트를 통과하도록 비례 상향.
-    const r = shouldExecute(
-      baseInput({
-        gateAsk: 20,
-        gateAskLevels: [{ price: 20, qty: 1000 }],
-        mexcBid: 21,
-        mexcBidLevels: [{ price: 21, qty: 1000 }],
-      }),
-    );
+  it('qty가 최소 base 단위(1) 미만이면 go:false, order_too_small', () => {
+    const a = sideA({ ask: 20, askLevels: [{ price: 20, qty: 1000 }] });
+    const b = sideB({ bid: 21, bidLevels: [{ price: 21, qty: 1000 }] });
+    const r = shouldExecute(baseInput(a, b));
     expect(r.go).toBe(false);
     expect(r.reason).toBe('order_too_small');
   });
@@ -223,7 +202,7 @@ describe('evalCandidateDirection (후보 방향 평가)', () => {
   const buyAsks = [{ price: 0.017, qty: 1000 }, { price: 0.0171, qty: 1000 }];
   const sellBids = [{ price: 0.0177, qty: 1000 }, { price: 0.0176, qty: 1000 }];
   const base = {
-    symbol: 'ALEO', direction: 'buy_gate_sell_mexc' as const,
+    symbol: 'ALEO', direction: 'buy_gateio_sell_mexc',
     buyExchange: 'gateio' as const, sellExchange: 'mexc' as const,
     buyAskLevels: buyAsks, sellBidLevels: sellBids,
     sellCoinBal: 100000, buyCashBal: 1000,
