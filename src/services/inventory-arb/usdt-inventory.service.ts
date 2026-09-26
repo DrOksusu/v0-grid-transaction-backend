@@ -618,18 +618,24 @@ class UsdtInventoryService {
    * 후보 스캔: 3개 거래소(Gate/MEXC/Binance) 보유 코인(합집합) × 등록된 쌍(USDT_ARB_PAIRS) 양방향 평가.
    * 방향별 실행가능 규모(호가 크로싱 × 재고 × 현금)와 순차익을 계산해 net ≥ minNetPct만 반환.
    */
-  async scanCandidates(minNetPct: number): Promise<UsdtCandidate[]> {
+  /** 3거래소 non-zero 잔고 일괄 조회 (실패한 거래소는 제외). 해외 스프레드 보유 필터에도 사용. */
+  async getBalancesByExchange(): Promise<Map<UsdtExchange, Record<string, number>>> {
     const exchanges: UsdtExchange[] = ['gateio', 'mexc', 'binance'];
-    // 거래소별 non-zero 잔고 (실패한 거래소는 스캔에서 제외)
     const balances = new Map<UsdtExchange, Record<string, number>>();
     await Promise.all(exchanges.map(async (ex) => {
       try {
         const leg = await this.getLeg(ex);
         balances.set(ex, await leg.getNonZeroBalances());
       } catch (e: any) {
-        console.error(`[UsdtInventoryArb] ${ex} 잔고 조회 실패 — 스캔 제외:`, e.message);
+        console.error(`[UsdtInventoryArb] ${ex} 잔고 조회 실패 — 제외:`, e.message);
       }
     }));
+    return balances;
+  }
+
+  async scanCandidates(minNetPct: number): Promise<UsdtCandidate[]> {
+    const exchanges: UsdtExchange[] = ['gateio', 'mexc', 'binance'];
+    const balances = await this.getBalancesByExchange();
     const symbols = [...new Set([...balances.values()].flatMap((b) => Object.keys(b)))]
       .filter((s) => s !== 'USDT')
       .slice(0, CANDIDATE_SCAN_MAX_SYMBOLS);

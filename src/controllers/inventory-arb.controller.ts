@@ -4,13 +4,26 @@ import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { inventoryArbService, MANUAL_BOT_SYMBOL } from '../services/inventory-arb.service';
 import { scanForeignSpreads } from '../services/inventory-arb/foreign-spread-scanner';
+import { usdtInventoryService } from '../services/inventory-arb/usdt-inventory.service';
 
-/** 해외 거래소(바이낸스↔MEXC) 재고-무관 스프레드 스캔 (정보용, 관리자 minSpreadBps 지정) */
+/** 해외 거래소(3쌍) 스프레드 스캔. heldOnly=1이면 어느 한쪽에 보유한 코인만 + 보유량 첨부 (KRW 후보 미러) */
 export async function getForeignSpreads(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const raw = req.query.minSpreadBps != null ? Number(req.query.minSpreadBps) : 30;
     const minSpreadBps = Number.isFinite(raw) && raw >= 0 ? raw : 30;
-    const spreads = await scanForeignSpreads(minSpreadBps);
+    const heldOnly = req.query.heldOnly === '1' || req.query.heldOnly === 'true';
+    let spreads = await scanForeignSpreads(minSpreadBps);
+    if (heldOnly) {
+      // 3거래소 잔고 첨부 → 어느 한쪽에라도 코인이 있는 행만 (KRW 후보처럼 실행 가능성 있는 것만 추천)
+      const balances = await usdtInventoryService.getBalancesByExchange();
+      spreads = spreads.filter((sp) => {
+        const buyHeld = balances.get(sp.buyExchange as any)?.[sp.symbol] ?? 0;
+        const sellHeld = balances.get(sp.sellExchange as any)?.[sp.symbol] ?? 0;
+        sp.buyHeld = buyHeld;
+        sp.sellHeld = sellHeld;
+        return buyHeld > 0 || sellHeld > 0;
+      });
+    }
     return successResponse(res, spreads);
   } catch (e) { next(e); }
 }

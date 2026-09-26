@@ -38,6 +38,8 @@ export interface ForeignSpread {
   realizabilityReason: string; // 관찰 전용 사유 (입출금 동결 등)
   buyWallet?: WalletInfo; // 매수 거래소 입출금 상태
   sellWallet?: WalletInfo; // 매도 거래소 입출금 상태
+  buyHeld?: number; // 매수 거래소 보유량 (heldOnly 조회 시 첨부)
+  sellHeld?: number; // 매도 거래소 보유량 — 재고형 실행의 매도측 재고
   // (레거시 호환) 바이낸스↔MEXC 쌍에서만 채움 — 구 프론트 대비
   binancePrice?: number;
   mexcPrice?: number;
