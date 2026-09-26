@@ -150,6 +150,16 @@ describe('shouldExecute (순수 판정 함수, 거래소 쌍 무관 A/B 슬롯)'
     expect(r.reason).toBe('notional_below_min_order');
   });
 
+  it('binance 쌍은 최소주문 6 USDT (NOTIONAL 필터, critic MAJOR-1): 5.1 USDT 규모는 거부', () => {
+    // notional = 300×0.017 = 5.1 — gate쌍(min 3)이면 통과, binance쌍(min 6)이면 거부
+    const gatePair = shouldExecute(baseInput(sideA(), sideB({ coinBalance: 300 })));
+    expect(gatePair.go).toBe(true);
+    expect(gatePair.qty).toBe(300);
+    const bnbPair = shouldExecute(baseInput(sideA({ name: 'binance' as any }), sideB({ coinBalance: 300 })));
+    expect(bnbPair.go).toBe(false);
+    expect(bnbPair.reason).toBe('notional_below_min_order');
+  });
+
   it('매수측 현금 부족 → go:false, buy_cash_insufficient (stop 없음)', () => {
     const r = shouldExecute(baseInput(sideA({ usdtBalance: 1 }), sideB()));
     expect(r.go).toBe(false);

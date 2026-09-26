@@ -30,7 +30,8 @@ const lastDrainAlertAt = new Map<number, number>();
 // 후보 수동 실행 (KRW inventory-arb.service의 executeManual 패턴 미러)
 export const USDT_MANUAL_BOT_SYMBOL = '__MANUAL__'; // 수동 실행 기록용 sentinel 봇 (봇 목록에서 숨김)
 const MANUAL_MAX_USDT = 1000; // 수동 1회 서버 하드캡
-const CANDIDATE_SCAN_MAX_SYMBOLS = 30; // 후보 스캔 심볼 상한 (depth 조회 폭주 방지)
+const CANDIDATE_SCAN_MAX_SYMBOLS = 100; // 후보 스캔 심볼 상한 (3거래소 보유 유니온 커버)
+const CANDIDATE_SCAN_BATCH = 5; // 심볼 동시 처리 수 (depth 조회 병렬 배치)
 const manualInFlight = new Set<string>(); // `${userId}:${symbol}` 동시실행 가드
 
 // ── (a) 거래소 쌍 레지스트리 + 순수 판정 함수 (양방향) ─────────────────────
@@ -39,6 +40,12 @@ export type UsdtArbDirection = string; // `buy_${거래소}_sell_${거래소}` (
 
 // 거래소별 taker 수수료(bps) — 보수적 상한값
 export const EXCHANGE_FEE_BPS: Record<UsdtExchange, number> = { gateio: GATE_FEE_BPS, mexc: MEXC_FEE_BPS, binance: 10 };
+// 거래소별 최소 주문금액(USDT) — Binance NOTIONAL 필터(~5)는 보수적으로 6 (critic MAJOR-1)
+export const EXCHANGE_MIN_ORDER_USDT: Record<UsdtExchange, number> = { gateio: 3, mexc: 3, binance: 6 };
+/** 쌍의 최소주문 = 두 거래소 중 큰 값 — 주문·flatten이 어느 쪽에서든 발생할 수 있어 max로 gate */
+export function pairMinOrderUsdt(x: UsdtExchange, y: UsdtExchange): number {
+  return Math.max(EXCHANGE_MIN_ORDER_USDT[x], EXCHANGE_MIN_ORDER_USDT[y]);
+}
 // 지원 거래소 쌍 (봇의 exchangePair 값)
 export const USDT_ARB_PAIRS: Record<string, [UsdtExchange, UsdtExchange]> = {
   gateio_mexc: ['gateio', 'mexc'],
@@ -121,7 +128,8 @@ export function shouldExecute(input: ShouldExecuteInput): ShouldExecuteResult {
     const qty = Math.min(targetQty, Math.floor(c.sellEx.coinBalance));
     if (qty < MIN_BASE_UNIT) { lastReason = 'inventory_not_stable'; continue; } // 안정 재고 부족(60초 관측 전 or 드레인)
     const notional = qty * buyAsk; // 캡 후 실제 체결 규모
-    if (notional < GATE_MIN_ORDER_USDT) { lastReason = 'notional_below_min_order'; continue; }
+    const minOrder = pairMinOrderUsdt(c.buyEx.name, c.sellEx.name);
+    if (notional < minOrder) { lastReason = 'notional_below_min_order'; continue; }
     if (c.buyEx.usdtBalance < notional) { lastReason = 'buy_cash_insufficient'; continue; }
     if (!best || net.netSpreadPct > best.netSpreadPct) {
       best = {
@@ -193,7 +201,7 @@ export function evalCandidateDirection(input: {
   const qty = Math.floor(rawQty);
   if (qty < MIN_BASE_UNIT) return null;
   const notional = qty * buyAsk;
-  if (notional < GATE_MIN_ORDER_USDT) return null;
+  if (notional < pairMinOrderUsdt(input.buyExchange, input.sellExchange)) return null;
 
   const net = computeNet({
     buyLevels: buyAskLevels, sellLevels: sellBidLevels, minNotional: notional,
@@ -315,7 +323,8 @@ class UsdtInventoryService {
         buyPrice: decision.buyPrice!,
         sellPrice: decision.sellPrice!,
         fallbackMode: 'market_flatten',
-        minOrderQuote: GATE_MIN_ORDER_USDT,
+        // 쌍별 최소주문(예: binance 6) — 이보다 작은 불균형은 dust로 수용해 killSwitch 오탐 방지 (critic MAJOR-1)
+        minOrderQuote: pairMinOrderUsdt(decision.buyExchange!, decision.sellExchange!),
         flattenBuyRefPrice: decision.flattenRefPrice!,
       });
 
@@ -625,7 +634,7 @@ class UsdtInventoryService {
       .slice(0, CANDIDATE_SCAN_MAX_SYMBOLS);
 
     const out: UsdtCandidate[] = [];
-    for (const sym of symbols) {
+    const evalSymbol = async (sym: string): Promise<UsdtCandidate | null> => {
       // 심볼별 depth 캐시 (거래소당 1회)
       const depths = new Map<UsdtExchange, { askLevels: BookLevel[]; bidLevels: BookLevel[] }>();
       await Promise.all(exchanges.filter((ex) => balances.has(ex)).map(async (ex) => {
@@ -652,7 +661,12 @@ class UsdtInventoryService {
         if (dir2) cands.push(dir2);
       }
       const best = cands.sort((x, y) => y.netSpreadPct - x.netSpreadPct)[0];
-      if (best && best.netSpreadPct >= minNetPct) out.push(best);
+      return best && best.netSpreadPct >= minNetPct ? best : null;
+    };
+    // 배치 병렬 (거래소 API 부하 제한)
+    for (let i = 0; i < symbols.length; i += CANDIDATE_SCAN_BATCH) {
+      const batch = await Promise.all(symbols.slice(i, i + CANDIDATE_SCAN_BATCH).map(evalSymbol));
+      out.push(...batch.filter((c): c is UsdtCandidate => c !== null));
     }
     out.sort((x, y) => y.netSpreadPct - x.netSpreadPct);
     return out;
@@ -713,8 +727,9 @@ class UsdtInventoryService {
       // 규모 상한: maxUsdt 캡 (buyCashBal에 이미 반영됐지만 크로싱/재고가 더 클 수 있어 재차 캡)
       const qty = Math.min(best.executableQty, Math.floor(cappedMax / best.buyPrice));
       const notional = qty * best.buyPrice;
-      if (qty < MIN_BASE_UNIT || notional < GATE_MIN_ORDER_USDT) {
-        return { executed: false, reason: `실행가능 규모(${notional.toFixed(2)} USDT)가 최소주문 미만` };
+      const minOrder = pairMinOrderUsdt(best.buyExchange, best.sellExchange);
+      if (qty < MIN_BASE_UNIT || notional < minOrder) {
+        return { executed: false, reason: `실행가능 규모(${notional.toFixed(2)} USDT)가 최소주문(${minOrder}) 미만` };
       }
 
       // record-before-fire (수동 sentinel 봇에 기록)
@@ -735,7 +750,7 @@ class UsdtInventoryService {
         buyLeg, sellLeg, symbol, qty,
         buyPrice: best.buyPrice, sellPrice: best.sellPrice,
         fallbackMode: 'market_flatten',
-        minOrderQuote: GATE_MIN_ORDER_USDT,
+        minOrderQuote: pairMinOrderUsdt(best.buyExchange, best.sellExchange),
         flattenBuyRefPrice: sellSideAsk,
       });
       // persistResult에 실제 심볼을 덮어쓴 봇 전달 — flatten_failed 긴급 알림이 sentinel 대신 실제 코인 명시
