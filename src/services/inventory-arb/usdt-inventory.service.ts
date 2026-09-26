@@ -26,6 +26,12 @@ const DRAIN_STARVED_REASONS = new Set(['inventory_not_stable', 'notional_below_m
 const DRAIN_ALERT_THROTTLE_MS = 6 * 60 * 60 * 1000; // 봇당 6시간에 최대 1회
 const lastDrainAlertAt = new Map<number, number>();
 
+// 후보 수동 실행 (KRW inventory-arb.service의 executeManual 패턴 미러)
+export const USDT_MANUAL_BOT_SYMBOL = '__MANUAL__'; // 수동 실행 기록용 sentinel 봇 (봇 목록에서 숨김)
+const MANUAL_MAX_USDT = 1000; // 수동 1회 서버 하드캡
+const CANDIDATE_SCAN_MAX_SYMBOLS = 30; // 후보 스캔 심볼 상한 (depth 조회 폭주 방지)
+const manualInFlight = new Set<string>(); // `${userId}:${symbol}` 동시실행 가드
+
 // ── (a) 순수 판정 함수 (양방향) ────────────────────────────────────────────
 export type UsdtArbDirection = 'buy_gate_sell_mexc' | 'buy_mexc_sell_gate';
 
@@ -139,6 +145,88 @@ export function shouldExecute(input: ShouldExecuteInput): ShouldExecuteResult {
     }
   }
   return best ?? { go: false, reason: lastReason };
+}
+
+// ── (a-2) 후보 스캔 순수 헬퍼 ──────────────────────────────────────────
+/**
+ * 호가 크로싱 최대 수량: 매수측 ask 레벨과 매도측 bid 레벨을 병합 워크하며
+ * "다음 한 단위의 매도가 > 매수가"인 동안 누적. (수수료 미반영 — 순차익은 computeNet으로 별도 판정)
+ */
+export function crossingQty(buyAsks: BookLevel[], sellBids: BookLevel[]): number {
+  let qty = 0;
+  let bi = 0, si = 0;
+  let bRem = buyAsks[0]?.qty ?? 0;
+  let sRem = sellBids[0]?.qty ?? 0;
+  while (bi < buyAsks.length && si < sellBids.length) {
+    if (sellBids[si].price <= buyAsks[bi].price) break; // 더 이상 이익 구간 아님
+    const step = Math.min(bRem, sRem);
+    qty += step;
+    bRem -= step; sRem -= step;
+    if (bRem <= 0) { bi++; bRem = buyAsks[bi]?.qty ?? 0; }
+    if (sRem <= 0) { si++; sRem = sellBids[si]?.qty ?? 0; }
+  }
+  return qty;
+}
+
+export interface UsdtCandidate {
+  symbol: string;
+  direction: UsdtArbDirection;
+  buyExchange: 'gateio' | 'mexc';
+  sellExchange: 'gateio' | 'mexc';
+  buyPrice: number;        // 매수 거래소 최우선 ask
+  sellPrice: number;       // 매도 거래소 최우선 bid
+  grossSpreadPct: number;  // 최우선호가 갭 %
+  netSpreadPct: number;    // 체결가능 규모 깊이 VWAP + 수수료 반영 순차익 %
+  executableQty: number;   // min(호가 크로싱, 매도측 재고, 매수측 USDT/가격) — 정수 floor
+  executableUsdt: number;  // executableQty × buyPrice
+}
+
+/** 한 방향 후보 평가 (순수). 실행가능 규모가 최소주문 미만이거나 갭이 없으면 null. */
+export function evalCandidateDirection(input: {
+  symbol: string;
+  direction: UsdtArbDirection;
+  buyExchange: 'gateio' | 'mexc';
+  sellExchange: 'gateio' | 'mexc';
+  buyAskLevels: BookLevel[];
+  sellBidLevels: BookLevel[];
+  sellCoinBal: number;
+  buyCashBal: number;
+}): UsdtCandidate | null {
+  const { buyAskLevels, sellBidLevels } = input;
+  const buyAsk = buyAskLevels[0]?.price ?? 0;
+  const sellBid = sellBidLevels[0]?.price ?? 0;
+  if (!(buyAsk > 0) || sellBid <= buyAsk) return null;
+
+  const rawQty = Math.min(
+    crossingQty(buyAskLevels, sellBidLevels),
+    input.sellCoinBal,
+    input.buyCashBal / buyAsk,
+  );
+  const qty = Math.floor(rawQty);
+  if (qty < MIN_BASE_UNIT) return null;
+  const notional = qty * buyAsk;
+  if (notional < GATE_MIN_ORDER_USDT) return null;
+
+  const net = computeNet({
+    buyLevels: buyAskLevels, sellLevels: sellBidLevels, minNotional: notional,
+    buyFeeBps: input.buyExchange === 'gateio' ? GATE_FEE_BPS : MEXC_FEE_BPS,
+    sellFeeBps: input.sellExchange === 'gateio' ? GATE_FEE_BPS : MEXC_FEE_BPS,
+    withdrawFee: null, thresholdPct: 0,
+  });
+  if (!net.depthOk) return null;
+
+  return {
+    symbol: input.symbol,
+    direction: input.direction,
+    buyExchange: input.buyExchange,
+    sellExchange: input.sellExchange,
+    buyPrice: buyAsk,
+    sellPrice: sellBid,
+    grossSpreadPct: (sellBid / buyAsk - 1) * 100,
+    netSpreadPct: net.netSpreadPct,
+    executableQty: qty,
+    executableUsdt: notional,
+  };
 }
 
 // ── (b) 오케스트레이션 ──────────────────────────────────────────────────
@@ -504,6 +592,150 @@ class UsdtInventoryService {
     } catch (e: any) {
       console.error('[UsdtInventoryArb] 고아 행 마킹 실패:', e.message);
     }
+  }
+
+  /**
+   * 후보 스캔: 양쪽 거래소 보유 코인(합집합) × Gate/MEXC 공통 호가 → 양방향 평가.
+   * 방향별 실행가능 규모(호가 크로싱 × 재고 × 현금)와 순차익을 계산해 net ≥ minNetPct만 반환.
+   */
+  async scanCandidates(minNetPct: number): Promise<UsdtCandidate[]> {
+    const mexcLeg = await this.getMexcLeg();
+    const gateLeg = await this.getGateLeg();
+    const [mexcBal, gateBal] = await Promise.all([
+      mexcLeg.getNonZeroBalances(),
+      gateLeg.getNonZeroBalances(),
+    ]);
+    const gateUsdt = gateBal['USDT'] ?? 0;
+    const mexcUsdt = mexcBal['USDT'] ?? 0;
+    const symbols = [...new Set([...Object.keys(mexcBal), ...Object.keys(gateBal)])]
+      .filter((s) => s !== 'USDT')
+      .slice(0, CANDIDATE_SCAN_MAX_SYMBOLS);
+
+    const out: UsdtCandidate[] = [];
+    for (const sym of symbols) {
+      const [gd, md] = await Promise.all([fetchGateioDepth(sym), fetchMexcDepth(sym)]);
+      if (!gd || !md || gd.askLevels.length === 0 || gd.bidLevels.length === 0
+        || md.askLevels.length === 0 || md.bidLevels.length === 0) continue; // 한쪽 미상장/호가없음
+      const dirA = evalCandidateDirection({
+        symbol: sym, direction: 'buy_gate_sell_mexc', buyExchange: 'gateio', sellExchange: 'mexc',
+        buyAskLevels: gd.askLevels, sellBidLevels: md.bidLevels,
+        sellCoinBal: mexcBal[sym] ?? 0, buyCashBal: gateUsdt,
+      });
+      const dirB = evalCandidateDirection({
+        symbol: sym, direction: 'buy_mexc_sell_gate', buyExchange: 'mexc', sellExchange: 'gateio',
+        buyAskLevels: md.askLevels, sellBidLevels: gd.bidLevels,
+        sellCoinBal: gateBal[sym] ?? 0, buyCashBal: mexcUsdt,
+      });
+      const best = [dirA, dirB]
+        .filter((c): c is UsdtCandidate => c !== null)
+        .sort((x, y) => y.netSpreadPct - x.netSpreadPct)[0];
+      if (best && best.netSpreadPct >= minNetPct) out.push(best);
+    }
+    out.sort((x, y) => y.netSpreadPct - x.netSpreadPct);
+    return out;
+  }
+
+  /**
+   * 수동 1회 실거래 실행 (후보 화면 "즉시 실행" 버튼) — KRW executeManual 패턴 미러.
+   * 클릭 시점 실시간 호가+잔고 재검증 → 여전히 net ≥ minNetPct일 때만 executeArb 1회.
+   * @param maxUsdt 이번 주문 상한 (서버 하드캡 MANUAL_MAX_USDT로 재차 제한)
+   */
+  async executeManual(userId: number, symbol: string, maxUsdt: number, minNetPct: number): Promise<{
+    executed: boolean; reason?: string; kind?: string; symbol?: string; direction?: string;
+    qty?: number; notionalUsdt?: number; netSpreadPct?: number; netUsdt?: number; note?: string;
+  }> {
+    const key = `${userId}:${symbol}`;
+    if (manualInFlight.has(key)) return { executed: false, reason: '이미 실행 중입니다' };
+    manualInFlight.add(key);
+    try {
+      const cappedMax = Math.min(Number(maxUsdt) || 0, MANUAL_MAX_USDT);
+      if (cappedMax < GATE_MIN_ORDER_USDT) {
+        return { executed: false, reason: `주문 규모가 최소주문(${GATE_MIN_ORDER_USDT} USDT) 미만` };
+      }
+
+      const mexcLeg = await this.getMexcLeg();
+      const gateLeg = await this.getGateLeg();
+      // 재검증: 클릭 시점 실시간 호가+잔고 (스캔 스냅샷 아님)
+      const [gd, md] = await Promise.all([fetchGateioDepth(symbol), fetchMexcDepth(symbol)]);
+      if (!gd || !md || gd.askLevels.length === 0 || gd.bidLevels.length === 0
+        || md.askLevels.length === 0 || md.bidLevels.length === 0) {
+        return { executed: false, reason: '호가 조회 실패' };
+      }
+      const [mexcCoin, mexcUsdt, gateCoin, gateUsdt] = await Promise.all([
+        mexcLeg.getBalance(symbol), mexcLeg.getBalance('USDT'),
+        gateLeg.getBalance(symbol), gateLeg.getBalance('USDT'),
+      ]);
+
+      const dirA = evalCandidateDirection({
+        symbol, direction: 'buy_gate_sell_mexc', buyExchange: 'gateio', sellExchange: 'mexc',
+        buyAskLevels: gd.askLevels, sellBidLevels: md.bidLevels,
+        sellCoinBal: mexcCoin, buyCashBal: Math.min(gateUsdt, cappedMax),
+      });
+      const dirB = evalCandidateDirection({
+        symbol, direction: 'buy_mexc_sell_gate', buyExchange: 'mexc', sellExchange: 'gateio',
+        buyAskLevels: md.askLevels, sellBidLevels: gd.bidLevels,
+        sellCoinBal: gateCoin, buyCashBal: Math.min(mexcUsdt, cappedMax),
+      });
+      const best = [dirA, dirB]
+        .filter((c): c is UsdtCandidate => c !== null)
+        .sort((x, y) => y.netSpreadPct - x.netSpreadPct)[0];
+      if (!best) return { executed: false, reason: '현재 갭/실행가능 규모 없음 — 기회 사라짐' };
+      if (best.netSpreadPct < minNetPct) {
+        return { executed: false, reason: `현재 순차익 ${best.netSpreadPct.toFixed(2)}% < 임계 ${minNetPct}% — 기회 사라짐` };
+      }
+
+      // 규모 상한: maxUsdt 캡 (buyCashBal에 이미 반영됐지만 크로싱/재고가 더 클 수 있어 재차 캡)
+      const qty = Math.min(best.executableQty, Math.floor(cappedMax / best.buyPrice));
+      const notional = qty * best.buyPrice;
+      if (qty < MIN_BASE_UNIT || notional < GATE_MIN_ORDER_USDT) {
+        return { executed: false, reason: `실행가능 규모(${notional.toFixed(2)} USDT)가 최소주문 미만` };
+      }
+
+      // record-before-fire (수동 sentinel 봇에 기록)
+      const manualBot = await this.getOrCreateManualBot(userId);
+      const trade = await mainPrisma.usdtInventoryArbTrade.create({
+        data: {
+          botId: manualBot.id, symbol,
+          buyExchange: best.buyExchange, sellExchange: best.sellExchange,
+          qty, buyPrice: best.buyPrice, sellPrice: best.sellPrice,
+          status: 'detected', note: `수동실행 pre-fire ${best.direction} net=${best.netSpreadPct.toFixed(2)}%`,
+        },
+      });
+
+      const buyLeg = best.buyExchange === 'gateio' ? gateLeg : mexcLeg;
+      const sellLeg = best.sellExchange === 'gateio' ? gateLeg : mexcLeg;
+      const sellSideAsk = best.sellExchange === 'mexc' ? md.askLevels[0].price : gd.askLevels[0].price;
+      const result = await executeArb({
+        buyLeg, sellLeg, symbol, qty,
+        buyPrice: best.buyPrice, sellPrice: best.sellPrice,
+        fallbackMode: 'market_flatten',
+        minOrderQuote: GATE_MIN_ORDER_USDT,
+        flattenBuyRefPrice: sellSideAsk,
+      });
+      // persistResult에 실제 심볼을 덮어쓴 봇 전달 — flatten_failed 긴급 알림이 sentinel 대신 실제 코인 명시
+      await this.persistResult({ ...manualBot, symbol }, trade.id, result);
+
+      const netUsdt = result.kind === 'filled' || result.kind === 'partial_flattened' ? result.netKrw : undefined;
+      const note = 'note' in result ? result.note : 'reason' in result ? (result as any).reason : undefined;
+      return {
+        executed: true, kind: result.kind, symbol, direction: best.direction,
+        qty, notionalUsdt: notional, netSpreadPct: best.netSpreadPct, netUsdt, note,
+      };
+    } catch (err: any) {
+      console.error(`[UsdtInventoryArb] 수동실행 ${symbol} 실패:`, err.message);
+      return { executed: false, reason: err.message ?? '실행 오류' };
+    } finally {
+      manualInFlight.delete(key);
+    }
+  }
+
+  /** 수동 실행 기록용 sentinel 봇 (userId당 1개, enabled=false, 봇 목록에서 숨김) */
+  private async getOrCreateManualBot(userId: number): Promise<{ id: number; symbol: string }> {
+    const existing = await mainPrisma.usdtInventoryArbBot.findFirst({ where: { userId, symbol: USDT_MANUAL_BOT_SYMBOL } });
+    if (existing) return existing;
+    return mainPrisma.usdtInventoryArbBot.create({
+      data: { userId, symbol: USDT_MANUAL_BOT_SYMBOL, enabled: false, autoExecute: false },
+    });
   }
 
   private async getMexcLeg(): Promise<MexcLeg> {

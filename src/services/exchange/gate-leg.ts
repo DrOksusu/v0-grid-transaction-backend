@@ -39,6 +39,25 @@ export class GateLeg implements ExchangeLeg {
     return 0;
   }
 
+  /** 전체 non-zero available 잔고 (심볼 대문자 → 수량). 후보 스캔용. */
+  async getNonZeroBalances(): Promise<Record<string, number>> {
+    const data = await gateioRequest(
+      this.creds.apiKey,
+      this.creds.secretKey,
+      'GET',
+      '/api/v4/spot/accounts',
+      '',
+    );
+    const out: Record<string, number> = {};
+    if (Array.isArray(data)) {
+      for (const a of data) {
+        const available = parseFloat(a?.available ?? '0');
+        if (available > 0 && a?.currency) out[String(a.currency).toUpperCase()] = available;
+      }
+    }
+    return out;
+  }
+
   /**
    * Gate.io 마켓 amount_precision 조회 (/api/v4/spot/currency_pairs/{ticker}_USDT).
    * getGateioAmountPrecision 원본 그대로 이식 — 공개 엔드포인트라 비서명 axios.get 사용(원본과 동일,

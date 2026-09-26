@@ -39,6 +39,24 @@ export class MexcLeg implements ExchangeLeg {
     return found ? parseFloat(found.free) : 0;
   }
 
+  /** 전체 non-zero available 잔고 (심볼 대문자 → 수량). 후보 스캔용. */
+  async getNonZeroBalances(): Promise<Record<string, number>> {
+    const data = await signedGet(
+      MEXC.baseUrl,
+      MEXC.apiKeyHeader,
+      this.creds.apiKey,
+      this.creds.secretKey,
+      '/api/v3/account',
+    );
+    const balances: Array<{ asset: string; free: string }> = data.balances ?? [];
+    const out: Record<string, number> = {};
+    for (const b of balances) {
+      const free = parseFloat(b.free ?? '0');
+      if (free > 0) out[b.asset.toUpperCase()] = free;
+    }
+    return out;
+  }
+
   /**
    * MEXC 주문 폴링 (/api/v3/order). fills 정보는 제공하지 않음 — executedQty/cummulativeQuoteQty만.
    * pollMexcFilledQty/pollMexcFilledUsdt 이식.
