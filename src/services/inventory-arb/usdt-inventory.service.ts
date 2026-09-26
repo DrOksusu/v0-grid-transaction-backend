@@ -50,6 +50,7 @@ export function pairMinOrderUsdt(x: UsdtExchange, y: UsdtExchange): number {
 export const USDT_ARB_PAIRS: Record<string, [UsdtExchange, UsdtExchange]> = {
   gateio_mexc: ['gateio', 'mexc'],
   binance_mexc: ['binance', 'mexc'],
+  gateio_binance: ['gateio', 'binance'],
 };
 
 /** 한 거래소의 스냅샷 (호가 + 잔고). coinBalance엔 호출자가 안정 재고량을 넣어 거래량 상한으로 쓴다. */
