@@ -49,6 +49,30 @@ export function buildProtect(
     sellLimitPrice: sellPrice * (1 - LIMIT_PROTECT_BPS / 10000),
   };
 }
+
+/**
+ * 보호 밴드 안에서 소화 가능한 수량 — 매수는 ask ≤ limit, 매도는 bid ≥ limit인 레벨의 qty 합.
+ * (asks 오름차순 / bids 내림차순 정렬 전제 — 첫 이탈 레벨에서 중단)
+ * 판정 수량을 이 값으로 캡해 "지정가 IOC가 일부만 물고 반대편은 전량 체결 → 시장가 flatten 손실"
+ * (2026-09-26 ZIL #209 −1.44 USDT) 재발을 방지한다.
+ */
+export function depthWithinLimit(levels: BookLevel[], limitPrice: number, side: 'buy' | 'sell'): number {
+  let qty = 0;
+  for (const l of levels) {
+    if (side === 'buy' ? l.price <= limitPrice : l.price >= limitPrice) qty += l.qty;
+    else break;
+  }
+  return qty;
+}
+
+/** 양쪽 밴드 내 깊이 중 작은 값 (보호 비활성 시 Infinity = 캡 없음) */
+export function bandCappedQty(buyAskLevels: BookLevel[], sellBidLevels: BookLevel[], buyAsk: number, sellBid: number): number {
+  if (!(LIMIT_PROTECT_BPS > 0)) return Infinity;
+  return Math.min(
+    depthWithinLimit(buyAskLevels, buyAsk * (1 + LIMIT_PROTECT_BPS / 10000), 'buy'),
+    depthWithinLimit(sellBidLevels, sellBid * (1 - LIMIT_PROTECT_BPS / 10000), 'sell'),
+  );
+}
 const manualInFlight = new Set<string>(); // `${userId}:${symbol}` 동시실행 가드
 
 // ── (a) 거래소 쌍 레지스트리 + 순수 판정 함수 (양방향) ─────────────────────
@@ -143,8 +167,11 @@ export function shouldExecute(input: ShouldExecuteInput): ShouldExecuteResult {
     if (net.netSpreadPct < bot.thresholdPct) { lastReason = 'net_spread_below_threshold'; continue; }
     // 여기부터는 수익 기회 존재 → 재고/현금 부족은 "리밸런싱 필요"(드레인 알림 대상)
     // 안정 재고량(sellEx.coinBalance)으로 거래량 캡 — 그리드가 방금 채운 신선분은 제외하고 안정분까지만
-    const qty = Math.min(targetQty, Math.floor(c.sellEx.coinBalance));
+    let qty = Math.min(targetQty, Math.floor(c.sellEx.coinBalance));
     if (qty < MIN_BASE_UNIT) { lastReason = 'inventory_not_stable'; continue; } // 안정 재고 부족(60초 관측 전 or 드레인)
+    // 보호 밴드 내 깊이로 추가 캡 — 밴드 밖 레벨은 지정가 IOC가 못 물어 불균형→flatten 손실이 되므로 애초에 주문량에서 제외
+    qty = Math.min(qty, Math.floor(bandCappedQty(c.buyEx.askLevels, c.sellEx.bidLevels, buyAsk, c.sellEx.bid)));
+    if (qty < MIN_BASE_UNIT) { lastReason = 'band_depth_insufficient'; continue; }
     const notional = qty * buyAsk; // 캡 후 실제 체결 규모
     const minOrder = pairMinOrderUsdt(c.buyEx.name, c.sellEx.name);
     if (notional < minOrder) { lastReason = 'notional_below_min_order'; continue; }
@@ -215,6 +242,8 @@ export function evalCandidateDirection(input: {
     crossingQty(buyAskLevels, sellBidLevels),
     input.sellCoinBal,
     input.buyCashBal / buyAsk,
+    // 보호 밴드 내 깊이 캡 — 밴드 밖 레벨은 지정가 IOC가 못 무는 물량 (ZIL #209 flatten 손실 재발 방지)
+    bandCappedQty(buyAskLevels, sellBidLevels, buyAsk, sellBid),
   );
   const qty = Math.floor(rawQty);
   if (qty < MIN_BASE_UNIT) return null;
