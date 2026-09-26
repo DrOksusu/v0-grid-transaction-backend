@@ -20,7 +20,7 @@ jest.mock('../../../src/services/multi-arb-depth.service', () => ({
 }));
 jest.mock('../../../src/services/inventory-arb/executor', () => ({ executeArb: jest.fn() }));
 
-import { shouldExecute, GATE_FEE_BPS, MEXC_FEE_BPS, usdtInventoryService, crossingQty, evalCandidateDirection } from '../../../src/services/inventory-arb/usdt-inventory.service';
+import { shouldExecute, GATE_FEE_BPS, MEXC_FEE_BPS, usdtInventoryService, crossingQty, evalCandidateDirection, depthWithinLimit } from '../../../src/services/inventory-arb/usdt-inventory.service';
 import mainPrisma from '../../../src/config/database';
 import { kakaoNotifyService } from '../../../src/services/kakao-notify.service';
 import { fetchGateioDepth, fetchMexcDepth } from '../../../src/services/multi-arb-depth.service';
@@ -218,11 +218,12 @@ describe('evalCandidateDirection (후보 방향 평가)', () => {
     sellCoinBal: 100000, buyCashBal: 1000,
   };
 
-  it('정상: 실행가능 규모 = min(크로싱, 재고, 현금/가격)', () => {
+  it('정상: 실행가능 규모 = min(크로싱, 재고, 현금/가격, 밴드 내 깊이)', () => {
     const c = evalCandidateDirection(base);
     expect(c).not.toBeNull();
-    // 크로싱 2000 > 현금 1000/0.017≈58823 vs 재고 100000 → 크로싱 2000이 최소
-    expect(c!.executableQty).toBe(2000);
+    // 크로싱은 2000이지만 보호 밴드(30bps) 안 깊이는 양쪽 1레벨(1000)뿐
+    // (buy 0.0171 > 0.017×1.003, sell 0.0176 < 0.0177×0.997) → 밴드 캡 1000
+    expect(c!.executableQty).toBe(1000);
     expect(c!.netSpreadPct).toBeGreaterThan(0);
     expect(c!.grossSpreadPct).toBeCloseTo((0.0177 / 0.017 - 1) * 100, 6);
   });
@@ -245,6 +246,36 @@ describe('evalCandidateDirection (후보 방향 평가)', () => {
   it('규모가 최소주문(3 USDT) 미만이면 null', () => {
     const c = evalCandidateDirection({ ...base, sellCoinBal: 100 }); // 100×0.017=1.7 < 3
     expect(c).toBeNull();
+  });
+});
+
+// ── 보호 밴드 내 깊이 캡 — 2026-09-26 ZIL #209(부분체결→flatten −1.44 USDT) 재발 방지 ──
+describe('depthWithinLimit + 밴드 캡', () => {
+  it('depthWithinLimit: buy는 ask ≤ limit 레벨 합, sell은 bid ≥ limit 레벨 합', () => {
+    const asks = [{ price: 100, qty: 5 }, { price: 100.2, qty: 7 }, { price: 101, qty: 100 }];
+    const bids = [{ price: 99, qty: 4 }, { price: 98.8, qty: 6 }, { price: 97, qty: 100 }];
+    expect(depthWithinLimit(asks, 100.3, 'buy')).toBe(12);  // 100, 100.2만
+    expect(depthWithinLimit(asks, 99.9, 'buy')).toBe(0);
+    expect(depthWithinLimit(bids, 98.7, 'sell')).toBe(10);  // 99, 98.8만
+    expect(depthWithinLimit(bids, 99.5, 'sell')).toBe(0);
+    expect(depthWithinLimit([], 100, 'buy')).toBe(0);
+  });
+
+  it('shouldExecute: 밴드 안 깊이가 1개 미만이면 band_depth_insufficient (ZIL #209 시나리오)', () => {
+    // 매수측 최우선 잔량이 0.5개뿐이고 다음 레벨(0.0173)은 밴드(0.017×1.003) 밖 —
+    // 순차익 게이트는 통과하지만 지정가 IOC로는 사실상 못 사는 상황 → 주문 자체를 막아야 함
+    const a = sideA({ askLevels: [{ price: 0.017, qty: 0.5 }, { price: 0.0173, qty: 10000 }] });
+    const r = shouldExecute(baseInput(a, sideB(), { thresholdPct: 1 }));
+    expect(r.go).toBe(false);
+    expect(r.reason).toBe('band_depth_insufficient');
+  });
+
+  it('shouldExecute: 밴드 안 깊이가 목표수량보다 작으면 그만큼만 주문 (qty 캡)', () => {
+    // 매수측 밴드 안 잔량 200개, 목표 588개(10 USDT/0.017) → qty 200으로 캡
+    const a = sideA({ askLevels: [{ price: 0.017, qty: 200 }, { price: 0.0173, qty: 10000 }] });
+    const r = shouldExecute(baseInput(a, sideB(), { thresholdPct: 1 }));
+    expect(r.go).toBe(true);
+    expect(r.qty).toBe(200);
   });
 });
 
