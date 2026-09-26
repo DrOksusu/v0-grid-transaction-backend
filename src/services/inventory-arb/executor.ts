@@ -23,6 +23,11 @@ export interface ExecuteArbInput {
   // 상쇄 불가한 dust로 수용할 imbalance notional 상한(quote 통화). 미지정 시 KRW 기본(5000).
   // USDT권(Gate/MEXC)은 거래소 최소주문(예 3 USDT) 전달. imbalance*price가 이 미만이면 flatten 없이 filled 수용.
   minOrderQuote?: number;
+  // 가격 보호(지정가 IOC): 지정 시 초기 양다리를 시장가 대신 지정가 IOC로 발주해
+  // 매수는 buyLimitPrice보다 비싸게, 매도는 sellLimitPrice보다 싸게 체결되지 않도록 슬리피지를 차단한다.
+  // 이탈분은 미체결(무손실 스킵). flatten은 반드시 완결돼야 하므로 항상 시장가 유지.
+  // leg가 buyLimitIoc/sellLimitIoc 미구현이면 기존 시장가로 폴백(KRW권 무회귀).
+  protect?: { buyLimitPrice: number; sellLimitPrice: number };
 }
 
 function fillQty(r: { filledQty: number } | null): number {
@@ -34,10 +39,14 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
   const minOrder = input.minOrderQuote ?? MIN_ORDER_KRW; // quote 통화 dust 임계 (KRW 기본 5000)
 
   // 1. 양쪽 동시 발주 (record-before-fire는 호출자가 처리)
-  const [sellSettled, buySettled] = await Promise.allSettled([
-    sellLeg.sellIoc(symbol, qty, sellPrice),
-    buyLeg.buyIoc(symbol, qty, buyPrice, undefined),
-  ]);
+  //    protect 지정 + leg 지원 시 지정가 IOC(가격 보호), 아니면 기존 시장가
+  const sellFire = input.protect && sellLeg.sellLimitIoc
+    ? sellLeg.sellLimitIoc(symbol, qty, input.protect.sellLimitPrice)
+    : sellLeg.sellIoc(symbol, qty, sellPrice);
+  const buyFire = input.protect && buyLeg.buyLimitIoc
+    ? buyLeg.buyLimitIoc(symbol, qty, input.protect.buyLimitPrice)
+    : buyLeg.buyIoc(symbol, qty, buyPrice, undefined);
+  const [sellSettled, buySettled] = await Promise.allSettled([sellFire, buyFire]);
 
   const sellRejected = sellSettled.status === 'rejected';
   const buyRejected = buySettled.status === 'rejected';

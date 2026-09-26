@@ -9,6 +9,9 @@ function mockLeg(overrides: Partial<Record<keyof ExchangeLeg, any>>): ExchangeLe
   return {
     sellIoc: overrides.sellIoc ?? (async () => null),
     buyIoc: overrides.buyIoc ?? (async () => null),
+    // 지정가 IOC(가격 보호)는 옵션 메서드 — 지정한 경우에만 leg에 존재 (미지원 거래소 시뮬레이션)
+    ...(overrides.buyLimitIoc ? { buyLimitIoc: overrides.buyLimitIoc } : {}),
+    ...(overrides.sellLimitIoc ? { sellLimitIoc: overrides.sellLimitIoc } : {}),
     buyGtc: notImpl,
     placeMakerBid: notImpl,
     pollOrder: notImpl,
@@ -202,5 +205,106 @@ describe('executeArb', () => {
       fallbackMode: 'market_flatten',
     });
     expect(r.kind).toBe('failed');
+  });
+});
+
+// ── 가격 보호(지정가 IOC) — 2026-09-25 ALEO 슬리피지 손실 재발 방지 ──
+describe('executeArb protect (지정가 IOC 가격 보호)', () => {
+  const PROTECT = { buyLimitPrice: 1003, sellLimitPrice: 1006.97 };
+
+  it('protect + 지원 leg → buyLimitIoc/sellLimitIoc가 보호 가격으로 호출, 시장가 미호출', async () => {
+    const calls: Record<string, any[]> = { buyLimit: [], sellLimit: [], buyMkt: [], sellMkt: [] };
+    const sellLeg = mockLeg({
+      sellIoc: async (...a: any[]) => { calls.sellMkt.push(a); return { filledQty: 10, grossKrw: 10100, feeKrw: 4 }; },
+      sellLimitIoc: async (sym: string, q: number, p: number) => {
+        calls.sellLimit.push({ sym, q, p });
+        return { filledQty: 10, grossKrw: 10080, feeKrw: 4 };
+      },
+    });
+    const buyLeg = mockLeg({
+      buyIoc: async (...a: any[]) => { calls.buyMkt.push(a); return { filledQty: 10, grossKrw: 10000, feeKrw: 5 }; },
+      buyLimitIoc: async (sym: string, q: number, p: number) => {
+        calls.buyLimit.push({ sym, q, p });
+        return { filledQty: 10, grossKrw: 10010, feeKrw: 5 };
+      },
+    });
+    const r = await executeArb({
+      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
+      fallbackMode: 'market_flatten', protect: PROTECT,
+    });
+    expect(r.kind).toBe('filled');
+    if (r.kind === 'filled') expect(r.netKrw).toBeCloseTo(10080 - 10010 - 9, 6);
+    expect(calls.buyLimit).toEqual([{ sym: 'XRP', q: QTY, p: 1003 }]);
+    expect(calls.sellLimit).toEqual([{ sym: 'XRP', q: QTY, p: 1006.97 }]);
+    expect(calls.buyMkt).toHaveLength(0);
+    expect(calls.sellMkt).toHaveLength(0);
+  });
+
+  it('protect 지정했지만 leg가 지정가 IOC 미구현 → 기존 시장가 폴백 (KRW권 무회귀)', async () => {
+    const mkt: string[] = [];
+    const sellLeg = mockLeg({
+      sellIoc: async () => { mkt.push('sell'); return { filledQty: 10, grossKrw: 10100, feeKrw: 4 }; },
+    });
+    const buyLeg = mockLeg({
+      buyIoc: async () => { mkt.push('buy'); return { filledQty: 10, grossKrw: 10000, feeKrw: 5 }; },
+    });
+    const r = await executeArb({
+      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
+      fallbackMode: 'market_flatten', protect: PROTECT,
+    });
+    expect(r.kind).toBe('filled');
+    expect(mkt.sort()).toEqual(['buy', 'sell']);
+  });
+
+  it('가격 이탈로 양쪽 지정가 IOC 미체결(null) → failed (돈 안 나감, 무손실 스킵)', async () => {
+    const sellLeg = mockLeg({ sellLimitIoc: async () => null });
+    const buyLeg = mockLeg({ buyLimitIoc: async () => null });
+    const r = await executeArb({
+      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
+      fallbackMode: 'market_flatten', protect: PROTECT,
+    });
+    expect(r.kind).toBe('failed');
+  });
+
+  it('protect여도 flatten은 시장가 유지 — net long flatten은 buyLeg.sellIoc(시장가)로 발주', async () => {
+    const flattenCalls: any[] = [];
+    const sellLimitCalls: any[] = [];
+    const sellLeg = mockLeg({
+      sellLimitIoc: async () => ({ filledQty: 4, grossKrw: 4040, feeKrw: 2 }),
+    });
+    const buyLeg = mockLeg({
+      buyLimitIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }),
+      // flatten 경로 — 시장가 sellIoc여야 함
+      sellIoc: async (sym: string, q: number) => { flattenCalls.push({ sym, q }); return { filledQty: 6, grossKrw: 6000, feeKrw: 2 }; },
+      sellLimitIoc: async (...a: any[]) => { sellLimitCalls.push(a); return null; },
+    });
+    const r = await executeArb({
+      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
+      fallbackMode: 'market_flatten', protect: PROTECT,
+    });
+    expect(r.kind).toBe('partial_flattened');
+    expect(flattenCalls).toHaveLength(1);
+    expect(flattenCalls[0].q).toBeCloseTo(6, 6);
+    expect(sellLimitCalls).toHaveLength(0); // flatten에 지정가 IOC 사용 금지
+  });
+
+  it('protect + 한쪽만 체결(다른쪽 가격 이탈 미체결) → 시장가 flatten으로 정리', async () => {
+    // 매도만 체결(10), 매수 0 → net short 10 → sellLeg에서 시장가 되사기
+    const buyBackCalls: any[] = [];
+    const sellLeg = mockLeg({
+      sellLimitIoc: async () => ({ filledQty: 10, grossKrw: 10100, feeKrw: 4 }),
+      buyIoc: async (sym: string, q: number, hint: number) => {
+        buyBackCalls.push({ sym, q, hint });
+        return { filledQty: 10, grossKrw: 10120, feeKrw: 4 };
+      },
+    });
+    const buyLeg = mockLeg({ buyLimitIoc: async () => null });
+    const r = await executeArb({
+      buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010,
+      fallbackMode: 'market_flatten', flattenBuyRefPrice: 1011, protect: PROTECT,
+    });
+    expect(r.kind).toBe('partial_flattened');
+    expect(buyBackCalls).toHaveLength(1);
+    expect(buyBackCalls[0].hint).toBeCloseTo(1011 * 1.05, 6); // flatten 예산 = top-of-book ask + 5% 헤드룸
   });
 });
