@@ -895,8 +895,9 @@ model UsdtInventoryArbBot {
   id               Int      @id @default(autoincrement())
   userId           Int
   symbol           String   @default("ALEO")   // base 심볼
-  buyExchange      String   @default("gateio")  // 싼 쪽에서 매수
-  sellExchange     String   @default("mexc")    // 비싼 쪽에서 매도
+  exchangePair     String   @default("gateio_mexc") // 거래소 쌍: gateio_mexc | binance_mexc
+  buyExchange      String   @default("gateio")  // (레거시, 미사용 — 방향은 실행 시 자동)
+  sellExchange     String   @default("mexc")    // (레거시, 미사용)
   enabled          Boolean  @default(false)     // canary OFF 기본
   autoExecute      Boolean  @default(false)     // true=완전자동 즉시 실행
   thresholdPct     Float    @default(2)         // 순차익 % 임계(조정 가능)

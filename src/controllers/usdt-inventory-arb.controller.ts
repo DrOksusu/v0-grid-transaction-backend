@@ -70,11 +70,15 @@ export async function createBot(req: AuthRequest, res: Response, next: NextFunct
   try {
     const userId = req.userId!;
     // buyExchange/sellExchange는 더 이상 받지 않음 — 방향은 실행 시 양방향으로 자동 선택(스키마 기본값만 유지)
-    const { symbol, thresholdPct, orderUsdt, dailyMaxCount, dailyMaxLossUsdt } = req.body;
+    const { symbol, exchangePair, thresholdPct, orderUsdt, dailyMaxCount, dailyMaxLossUsdt } = req.body;
+    if (exchangePair != null && !['gateio_mexc', 'binance_mexc'].includes(exchangePair)) {
+      return errorResponse(res, 'VALIDATION_ERROR', 'exchangePair는 gateio_mexc | binance_mexc', 400);
+    }
     const bot = await mainPrisma.usdtInventoryArbBot.create({
       data: {
         userId,
         symbol: symbol ? String(symbol).toUpperCase() : undefined,
+        exchangePair: exchangePair ?? undefined,
         thresholdPct: thresholdPct ?? undefined,
         orderUsdt: orderUsdt ?? undefined,
         dailyMaxCount: dailyMaxCount ?? undefined,
