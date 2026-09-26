@@ -57,8 +57,9 @@ export class BinanceLeg implements ExchangeLeg {
     for (const b of balances) {
       const free = parseFloat(b.free ?? '0');
       const asset = b.asset.toUpperCase();
-      // LD 접두사는 Binance Simple Earn 락업 표기 — 현물 거래 불가라 제외
-      if (free > 0 && !asset.startsWith('LD')) out[asset] = free;
+      // 주의: Binance Simple Earn 자산은 LD 접두사(LDMMT 등)로 오지만 LDO(리도) 같은 실코인도 LD로 시작.
+      // 여기선 필터하지 않는다 — Earn 심볼은 USDT 페어가 없어 depth 조회에서 자연히 걸러짐.
+      if (free > 0) out[asset] = free;
     }
     return out;
   }
