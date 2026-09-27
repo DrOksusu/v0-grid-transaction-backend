@@ -41,6 +41,18 @@ export async function getCandidates(req: AuthRequest, res: Response, next: NextF
   } catch (e) { next(e); }
 }
 
+/** 기회 빈도 통계 (30일 KRW feasible, 심볼별 빈도/갭/보유/로밍가능) */
+export async function getOpportunityStats(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const days = req.query.days != null ? Number(req.query.days) : 30;
+    const stats = await inventoryArbService.getOpportunityStats(
+      req.userId!,
+      Number.isFinite(days) && days > 0 && days <= 90 ? days : 30,
+    );
+    return successResponse(res, stats);
+  } catch (e) { next(e); }
+}
+
 /** 로밍 자동실행 상태 조회 (설정 + 오늘 실적 + 최근 체결) */
 export async function getRoamStatus(req: AuthRequest, res: Response, next: NextFunction) {
   try {

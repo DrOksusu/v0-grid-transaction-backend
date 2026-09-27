@@ -252,3 +252,32 @@ describe('buildAlertMessage', () => {
     expect(msg).not.toContain('참고 김프');
   });
 });
+
+describe('buildAlertMessage extra 라인 (보유/빈도)', () => {
+  const { buildAlertMessage } = require('../../src/services/multi-arb-notifier.service');
+  const cand: any = {
+    symbol: 'META2', currencyZone: 'KRW', buyExchange: 'bithumb', sellExchange: 'upbit',
+    buyPrice: 8770, sellPrice: 9000, spreadPct: 2.6,
+  };
+  const feas: any = { feasibility: 'feasible', note: '네트워크 일치(SOL) · 양쪽 입출금 정상', networkMatch: true, matchedNetwork: 'SOL' };
+  const net: any = {
+    netSpreadPct: 1.37, depthOk: true, withdrawFeeKnown: true, withdrawFeePct: 1,
+    maxExecBuyNotional: 208826, maxExecSellNotional: 213211, maxExecDepthLimited: false,
+  };
+
+  it('extra 제공 시 보유/빈도 라인 포함', () => {
+    const msg = buildAlertMessage(cand, feas, null, net, {
+      holdingLine: '👛 미보유 — 재고형(로밍) 실행 불가, 전송 차익만 가능',
+      freqLine: '📊 최근 30일 5회 감지 (평균 +1.4%)',
+    });
+    expect(msg).toContain('👛 미보유');
+    expect(msg).toContain('📊 최근 30일 5회');
+  });
+
+  it('extra 없으면 기존 메시지 그대로 (하위호환)', () => {
+    const msg = buildAlertMessage(cand, feas, null, net);
+    expect(msg).not.toContain('👛');
+    expect(msg).not.toContain('📊 최근 30일');
+    expect(msg).toContain('차익 후보 (KRW권) · META2');
+  });
+});

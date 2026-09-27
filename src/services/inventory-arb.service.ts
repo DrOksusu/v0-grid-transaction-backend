@@ -395,6 +395,66 @@ class InventoryArbService {
     } catch { /* 알림 실패 무시 */ }
   }
 
+  // KRW 보유 잔고 캐시 (알림 사이클마다 재조회 방지, 60초)
+  private krwHoldingsCache: { at: number; data: { upbit: Record<string, number>; bithumb: Record<string, number> } } | null = null;
+
+  /** 업비트/빗썸 available 잔고 맵 (60초 캐시). 알림 보유표시·기회통계에 사용. */
+  async getKrwHoldings(userId: number): Promise<{ upbit: Record<string, number>; bithumb: Record<string, number> }> {
+    if (this.krwHoldingsCache && Date.now() - this.krwHoldingsCache.at < 60_000) return this.krwHoldingsCache.data;
+    const upbit = await this.getUpbit(userId);
+    const bithumbClient = await this.getBithumb(userId);
+    const [upbitAccounts, bithumbBalances] = await Promise.all([
+      upbit.service.getAccounts(),
+      bithumbClient.getBalances(),
+    ]);
+    const u: Record<string, number> = {};
+    for (const a of upbitAccounts as any[]) u[a.currency] = Number(a.balance ?? 0);
+    const b: Record<string, number> = {};
+    for (const [k, v] of Object.entries(bithumbBalances)) b[k] = (v as any).available ?? 0;
+    const data = { upbit: u, bithumb: b };
+    this.krwHoldingsCache = { at: Date.now(), data };
+    return data;
+  }
+
+  /** 기회 빈도 통계 (기본 30일, KRW feasible) — 심볼별 건수/평균/최대 갭/주방향 + 보유 여부 */
+  async getOpportunityStats(userId: number, days: number = 30): Promise<Array<{
+    symbol: string; count: number; avgSpreadPct: number; maxSpreadPct: number;
+    mainDirection: string; lastDetectedAt: Date;
+    upbitBalance: number; bithumbBalance: number; roamable: boolean;
+  }>> {
+    const since = new Date(Date.now() - days * 24 * 3600 * 1000);
+    const rows = await mainPrisma.multiArbOpportunity.findMany({
+      where: { currencyZone: 'KRW', feasibility: 'feasible', detectedAt: { gte: since } },
+      select: { symbol: true, spreadPct: true, buyExchange: true, sellExchange: true, detectedAt: true },
+    });
+    const holdings = await this.getKrwHoldings(userId).catch(() => ({ upbit: {}, bithumb: {} } as { upbit: Record<string, number>; bithumb: Record<string, number> }));
+    const by = new Map<string, { count: number; sum: number; max: number; dirs: Map<string, number>; last: Date }>();
+    for (const r of rows) {
+      let e = by.get(r.symbol);
+      if (!e) { e = { count: 0, sum: 0, max: 0, dirs: new Map(), last: r.detectedAt }; by.set(r.symbol, e); }
+      e.count++; e.sum += r.spreadPct; e.max = Math.max(e.max, r.spreadPct);
+      if (r.detectedAt > e.last) e.last = r.detectedAt;
+      const d = `${r.buyExchange}→${r.sellExchange}`;
+      e.dirs.set(d, (e.dirs.get(d) ?? 0) + 1);
+    }
+    const out = [...by.entries()].map(([symbol, e]) => {
+      const mainDirection = [...e.dirs.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      const upbitBalance = holdings.upbit[symbol] ?? 0;
+      const bithumbBalance = holdings.bithumb[symbol] ?? 0;
+      // 주방향 매도측에 재고가 있으면 로밍이 잡을 수 있음
+      const sellEx = mainDirection.split('→')[1];
+      const sellBal = sellEx === 'upbit' ? upbitBalance : bithumbBalance;
+      return {
+        symbol, count: e.count,
+        avgSpreadPct: e.sum / e.count, maxSpreadPct: e.max,
+        mainDirection, lastDetectedAt: e.last,
+        upbitBalance, bithumbBalance, roamable: sellBal > 0,
+      };
+    });
+    out.sort((a, b) => b.count - a.count);
+    return out.slice(0, 30);
+  }
+
   /** 로밍 상태 조회 (관리자 UI) - 설정 + 오늘 실적 + 최근 체결 */
   async getRoamStatus(userId: number): Promise<{
     config: any | null;

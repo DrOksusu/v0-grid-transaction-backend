@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middlewares/auth';
 import { requireAdmin } from '../middlewares/requireAdmin';
-import { createBot, getBots, getStatus, getTrades, updateBot, deleteBot, getCandidates, postExecute, getForeignSpreads, getRoamStatus, putRoamConfig } from '../controllers/inventory-arb.controller';
+import { createBot, getBots, getStatus, getTrades, updateBot, deleteBot, getCandidates, postExecute, getForeignSpreads, getRoamStatus, putRoamConfig, getOpportunityStats } from '../controllers/inventory-arb.controller';
 
 const router = Router();
 // 재고형 아비 봇은 실거래 자동 주문 — 관리자(ADMIN_EMAIL) 전용. 인증 + 관리자 가드 순서.
@@ -12,6 +12,7 @@ router.get('/candidates', getCandidates); // 온디맨드 후보 스캔 (/:id �
 router.get('/foreign-spreads', getForeignSpreads); // 해외(바이낸스↔MEXC) 스프레드 스캔 (재고 무관)
 router.post('/execute', postExecute); // 수동 1회 실거래 실행
 router.get('/roam', getRoamStatus);   // 로밍 자동실행 상태
+router.get('/opportunity-stats', getOpportunityStats); // 기회 빈도 통계 (30일)
 router.put('/roam', putRoamConfig);   // 로밍 자동실행 설정
 router.post('/', createBot);
 router.get('/', getBots);

@@ -6,6 +6,7 @@
 // (기록 dedup과 발송 게이팅은 별개 — dedup은 "어느 행에 쓸지"만 정하고, 발송 여부/쿨다운 판단은 그대로)
 import prisma from '../config/database';
 import { kakaoNotifyService } from './kakao-notify.service';
+import { config } from '../config/env';
 import { EXCHANGE_LABELS, FeasibilityResult, MIN_NOTIONAL_BY_ZONE, NetResult, SpreadCandidate } from './multi-arb-types';
 
 const COOLDOWN_MS = 30 * 60 * 1000; // 30분 (spec §2)
@@ -64,11 +65,17 @@ function buildNetSummaryLines(candidate: SpreadCandidate, feasibility: Feasibili
 const SNAPSHOT_DISCLAIMER = '⏱️ 전송에 수분~수시간 소요 — 실현차익은 현재 호가 스냅샷 기준';
 
 // 카카오톡 메시지 포맷 (spec §7, 2026-09-22 개편: 순차익/깊이/출금료/스냅샷 주의 추가) — 순수함수, 단위테스트 대상
+export interface AlertExtraLines {
+  holdingLine?: string; // 보유 여부/로밍 실행 가능 표시
+  freqLine?: string;    // 최근 30일 감지 빈도
+}
+
 export function buildAlertMessage(
   candidate: SpreadCandidate,
   feasibility: FeasibilityResult,
   kimchiPct: number | null,
   net: NetResult,
+  extra?: AlertExtraLines,
 ): string {
   const buyLabel = EXCHANGE_LABELS[candidate.buyExchange];
   const sellLabel = EXCHANGE_LABELS[candidate.sellExchange];
@@ -82,6 +89,8 @@ export function buildAlertMessage(
       `✅ ${feasibility.note}`,
       ...buildNetSummaryLines(candidate, feasibility, net),
     ];
+    if (extra?.holdingLine) lines.push(extra.holdingLine);
+    if (extra?.freqLine) lines.push(extra.freqLine);
     if (kimchiPct !== null) {
       const sign = kimchiPct >= 0 ? '+' : '';
       lines.push(`참고 김프: 해외 대비 ${sign}${kimchiPct.toFixed(1)}%`);
@@ -169,7 +178,8 @@ class MultiArbNotifierService {
     // I-1: 발송 게이트/상한/필터에 걸린 후보는 여기서 종료 — notifiedAt=null 유지 (쿨다운 미발동)
     if (!send) return false;
 
-    const message = buildAlertMessage(candidate, feasibility, kimchiPct, net);
+    const extra = await this.buildExtraLines(candidate).catch(() => undefined);
+    const message = buildAlertMessage(candidate, feasibility, kimchiPct, net, extra);
     try {
       await kakaoNotifyService.sendToMe(message);
     } catch (err: any) {
@@ -183,6 +193,53 @@ class MultiArbNotifierService {
       data: { notifiedAt: new Date() },
     });
     return true;
+  }
+
+  // 보유 여부 + 30일 빈도 라인 생성 (실패 시 라인 생략 — 알림 발송은 계속)
+  private async buildExtraLines(candidate: SpreadCandidate): Promise<AlertExtraLines> {
+    const extra: AlertExtraLines = {};
+    // 빈도: 최근 30일 같은 심볼/통화권 feasible 감지 횟수 (이번 건 포함)
+    try {
+      const since30 = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+      const agg = await (prisma as any).multiArbOpportunity.aggregate({
+        where: { symbol: candidate.symbol, currencyZone: candidate.currencyZone, feasibility: 'feasible', detectedAt: { gte: since30 } },
+        _count: { id: true }, _avg: { spreadPct: true },
+      });
+      const cnt = agg._count?.id ?? 0;
+      if (cnt > 0) {
+        extra.freqLine = `📊 최근 30일 ${cnt}회 감지 (평균 +${(agg._avg?.spreadPct ?? 0).toFixed(1)}%)`;
+      }
+    } catch { /* 생략 */ }
+
+    // 보유: 매도측(비싼 거래소) 재고가 있어야 재고형(로밍) 실행 가능
+    try {
+      let sellHeld = 0; let buyHeld = 0;
+      if (candidate.currencyZone === 'KRW') {
+        const admin = await (prisma as any).user.findFirst({ where: { email: config.adminEmail }, select: { id: true } });
+        if (!admin) return extra;
+        const { inventoryArbService } = await import('./inventory-arb.service');
+        const h = await inventoryArbService.getKrwHoldings(admin.id);
+        const pick = (ex: string) => (ex === 'upbit' ? h.upbit : h.bithumb);
+        sellHeld = pick(candidate.sellExchange)[candidate.symbol] ?? 0;
+        buyHeld = pick(candidate.buyExchange)[candidate.symbol] ?? 0;
+      } else {
+        const { usdtInventoryService } = await import('./inventory-arb/usdt-inventory.service');
+        const b = await usdtInventoryService.getBalancesByExchange();
+        sellHeld = b.get(candidate.sellExchange as any)?.[candidate.symbol] ?? 0;
+        buyHeld = b.get(candidate.buyExchange as any)?.[candidate.symbol] ?? 0;
+      }
+      const sellLabel = EXCHANGE_LABELS[candidate.sellExchange];
+      const buyLabel = EXCHANGE_LABELS[candidate.buyExchange];
+      const fmt = (n: number) => n.toLocaleString('ko-KR', { maximumFractionDigits: 2 });
+      if (sellHeld > 0) {
+        extra.holdingLine = `👛 보유: ${sellLabel} ${fmt(sellHeld)} — 재고형(로밍) 실행 가능`;
+      } else if (buyHeld > 0) {
+        extra.holdingLine = `👛 보유: ${buyLabel}에만 ${fmt(buyHeld)} — 매도측(${sellLabel}) 재고 없어 재고형 불가`;
+      } else {
+        extra.holdingLine = `👛 미보유 — 재고형(로밍) 실행 불가, 전송 차익만 가능`;
+      }
+    } catch { /* 생략 */ }
+    return extra;
   }
 
   // I-2: price sanity 제외 건 기록 — 분석/티커충돌 수집용 (카톡 발송 없음, notifiedAt=null)
