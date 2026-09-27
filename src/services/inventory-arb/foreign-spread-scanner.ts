@@ -2,6 +2,22 @@
 // 공개 전체 티커(인증 불필요) 3콜 → 3쌍(바이낸스↔MEXC, Gate↔MEXC, Gate↔바이낸스)의
 // USDT 페어 교집합 크로스 스프레드 계산. 정보 표시 전용(실행/잔고 무관). 관리자가 minSpreadBps로 필터·정렬.
 import { summarizeCoinWallet, type WalletInfo } from './wallet-info';
+import type { NetworkStatus } from '../multi-arb-types';
+
+/**
+ * 순수: 전송 가능 네트워크 탐색 — 매수측(싼 곳) 출금 가능 ∩ 매도측(비싼 곳) 입금 가능.
+ * 코인 단위 OR 집계(summarizeCoinWallet)로는 못 잡는 "네트워크 불일치/부분 동결"을 판정
+ * (예: ZIL — MEXC는 ZILEVM만 출금, 바이낸스는 BSC만 입금(네이티브 suspended) → 교집합 없음).
+ */
+export function findTransferNetwork(
+  buyNets: NetworkStatus[] | undefined,
+  sellNets: NetworkStatus[] | undefined,
+): string | null {
+  if (!buyNets?.length || !sellNets?.length) return null;
+  const sellMap = new Map(sellNets.map((n) => [n.network, n]));
+  const matched = buyNets.find((n) => n.withdrawEnabled && sellMap.get(n.network)?.depositEnabled);
+  return matched?.network ?? null;
+}
 import { multiArbWalletStatusService } from '../multi-arb-wallet-status.service';
 
 /** 거래소 최우선 호가 (USDT 페어) — 수량은 해당 호가에 걸린 물량(top-of-book). Gate 티커는 수량 미제공(0). */
@@ -40,6 +56,7 @@ export interface ForeignSpread {
   sellWallet?: WalletInfo; // 매도 거래소 입출금 상태
   buyHeld?: number; // 매수 거래소 보유량 (heldOnly 조회 시 첨부)
   sellHeld?: number; // 매도 거래소 보유량 — 재고형 실행의 매도측 재고
+  transferNetwork?: string | null; // 전송 가능 네트워크 (매수측 출금 ∩ 매도측 입금). null=전송 불가(갭 지속 원인)
   // (레거시 호환) 바이낸스↔MEXC 쌍에서만 채움 — 구 프론트 대비
   binancePrice?: number;
   mexcPrice?: number;
@@ -183,12 +200,15 @@ export async function scanForeignSpreads(minSpreadBps: number, limit = 150): Pro
   try {
     const wallets = await multiArbWalletStatusService.getAll();
     for (const s of top) {
-      s.buyWallet = summarizeCoinWallet(wallets[s.buyExchange]?.get(s.symbol));
-      s.sellWallet = summarizeCoinWallet(wallets[s.sellExchange]?.get(s.symbol));
-      // 전송 차익(싼 곳 매수→출금→비싼 곳 입금→매도)에 필요: 매수측 출금 + 매도측 입금.
-      // 하나라도 막혔으면 갭이 지속되는 원인 + 실현 불가.
-      if (s.buyWallet.known && s.sellWallet.known && (!s.buyWallet.withdraw || !s.sellWallet.deposit)) {
-        s.realizabilityReason = '입출금 동결 — 전송 차익 불가 (갭 지속 원인)';
+      const buyNets = wallets[s.buyExchange]?.get(s.symbol);
+      const sellNets = wallets[s.sellExchange]?.get(s.symbol);
+      s.buyWallet = summarizeCoinWallet(buyNets);
+      s.sellWallet = summarizeCoinWallet(sellNets);
+      // 전송 차익/리밸런싱에 필요한 건 코인 단위 입출금이 아니라 **네트워크 교집합**:
+      // 매수측이 출금 가능한 네트워크를 매도측이 입금받아야 함 (ZIL 사례: 코인 단위론 둘 다 ✓인데 교집합 없음)
+      s.transferNetwork = findTransferNetwork(buyNets, sellNets);
+      if (s.buyWallet.known && s.sellWallet.known && !s.transferNetwork) {
+        s.realizabilityReason = '입출금 동결/네트워크 불일치 — 전송·리밸런싱 불가 (갭 지속 원인, 재고형 실행은 가능하나 단방향 소진)';
       }
     }
   } catch {
