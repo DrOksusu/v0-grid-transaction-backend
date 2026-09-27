@@ -2,7 +2,7 @@ import { Response, NextFunction } from 'express';
 import mainPrisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
-import { inventoryArbService, MANUAL_BOT_SYMBOL } from '../services/inventory-arb.service';
+import { inventoryArbService, MANUAL_BOT_SYMBOL, ROAM_BOT_SYMBOL } from '../services/inventory-arb.service';
 import { scanForeignSpreads } from '../services/inventory-arb/foreign-spread-scanner';
 import { usdtInventoryService } from '../services/inventory-arb/usdt-inventory.service';
 
@@ -38,6 +38,36 @@ export async function getCandidates(req: AuthRequest, res: Response, next: NextF
       Number.isFinite(minSpreadBps) && minSpreadBps >= 0 ? minSpreadBps : 30,
     );
     return successResponse(res, candidates);
+  } catch (e) { next(e); }
+}
+
+/** 로밍 자동실행 상태 조회 (설정 + 오늘 실적 + 최근 체결) */
+export async function getRoamStatus(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const status = await inventoryArbService.getRoamStatus(req.userId!);
+    return successResponse(res, status);
+  } catch (e) { next(e); }
+}
+
+/** 로밍 자동실행 설정 upsert (enabled/autoExecute/minNetPct/orderKrw/cooldownSec/일일한도/killSwitch) */
+export async function putRoamConfig(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const userId = req.userId!;
+    const allowed = ['enabled', 'autoExecute', 'minNetPct', 'orderKrw', 'cooldownSec', 'dailyMaxCount', 'dailyMaxLossKrw', 'killSwitch'] as const;
+    const data: Record<string, any> = {};
+    for (const k of allowed) if (k in req.body) data[k] = req.body[k];
+    if (data.orderKrw != null && (typeof data.orderKrw !== 'number' || data.orderKrw <= 0 || data.orderKrw > 1_000_000)) {
+      return errorResponse(res, 'VALIDATION_ERROR', 'orderKrw는 0~100만원', 400);
+    }
+    if (data.minNetPct != null && (typeof data.minNetPct !== 'number' || data.minNetPct < 0)) {
+      return errorResponse(res, 'VALIDATION_ERROR', 'minNetPct는 0 이상', 400);
+    }
+    const cfg = await mainPrisma.arbRoamConfig.upsert({
+      where: { userId },
+      update: data,
+      create: { userId, ...data },
+    });
+    return successResponse(res, cfg);
   } catch (e) { next(e); }
 }
 
@@ -84,7 +114,7 @@ export async function createBot(req: AuthRequest, res: Response, next: NextFunct
 export async function getBots(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const userId = req.userId!;
-    const bots = await mainPrisma.inventoryArbBot.findMany({ where: { userId, symbol: { not: MANUAL_BOT_SYMBOL } }, orderBy: { id: 'desc' } });
+    const bots = await mainPrisma.inventoryArbBot.findMany({ where: { userId, symbol: { notIn: [MANUAL_BOT_SYMBOL, ROAM_BOT_SYMBOL] } }, orderBy: { id: 'desc' } });
     // 각 봇 거래 요약(건수·순이익 총/오늘) 첨부 — 프론트에서 수익을 한눈에
     const KST = 9 * 60 * 60 * 1000;
     const kst = new Date(Date.now() + KST); kst.setUTCHours(0, 0, 0, 0);

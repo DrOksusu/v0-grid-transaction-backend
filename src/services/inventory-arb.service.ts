@@ -39,6 +39,15 @@ const MANUAL_MAX_KRW = 1_000_000;
 const MANUAL_MIN_ORDER_KRW = 5000;
 // 수동 실행 기록용 sentinel 봇 심볼 (봇 목록에서 숨김)
 export const MANUAL_BOT_SYMBOL = '__MANUAL__';
+export const ROAM_BOT_SYMBOL = '__ROAM__'; // 로밍 자동실행 기록용 sentinel 봇 (봇 목록에서 숨김)
+
+// 로밍 자동실행 모듈 상태
+const ROAM_INTERVAL_MS = 30_000; // 로밍 스캔 주기 (전 종목 depth 조회라 봇 스캔(5s)보다 김)
+const ROAM_NOTIFY_THROTTLE_MS = 30 * 60 * 1000; // 반자동 감지 카톡: 심볼당 30분 1회
+let lastRoamAt = 0;
+let roamInFlight = false;
+const roamCooldownUntil = new Map<string, number>(); // symbol -> 재실행 가능 시각(ms)
+const roamNotifyAt = new Map<string, number>(); // symbol -> 마지막 감지 카톡 시각(ms)
 
 // USDT 봇과 파라미터 통일(2026-09-24): 봇 임계값은 순차익(net) % 기준.
 // 업비트+빗썸 왕복 taker 수수료 근사(각 ~5bps). net ≥ thresholdPct% 를 gross 게이트로 환산할 때 더함.
@@ -46,6 +55,28 @@ const KRW_ROUNDTRIP_FEE_BPS = 10;
 // thresholdPct(net %) → detectOpportunity/feasibility에 넘길 gross bps 임계
 function netThresholdToGrossBps(thresholdPct: number): number {
   return Math.round(thresholdPct * 100 + KRW_ROUNDTRIP_FEE_BPS);
+}
+
+/**
+ * 로밍 실행 대상 선택 (순수). 후보 중 순차익% >= 임계 && 실행가능 && 쿨다운 아닌 것을
+ * 순차익 큰 순으로 정렬해 반환. 실행은 호출자가 1건/사이클로 제한.
+ */
+export function pickRoamCandidates(
+  candidates: Array<{ symbol: string; executableKrw: number; estimatedNetKrw: number; realizable: boolean; netProfitable: boolean }>,
+  cfg: { minNetPct: number },
+  cooldownUntil: Map<string, number>,
+  now: number,
+): Array<{ symbol: string; netPct: number; executableKrw: number; estimatedNetKrw: number }> {
+  const out: Array<{ symbol: string; netPct: number; executableKrw: number; estimatedNetKrw: number }> = [];
+  for (const c of candidates) {
+    if (!c.realizable || !c.netProfitable || c.executableKrw <= 0) continue;
+    const netPct = (c.estimatedNetKrw / c.executableKrw) * 100;
+    if (netPct < cfg.minNetPct) continue;
+    if ((cooldownUntil.get(c.symbol) ?? 0) > now) continue;
+    out.push({ symbol: c.symbol, netPct, executableKrw: c.executableKrw, estimatedNetKrw: c.estimatedNetKrw });
+  }
+  out.sort((a, b) => b.netPct - a.netPct);
+  return out;
 }
 
 /** 수동 1회 실행 결과 */
@@ -80,6 +111,9 @@ class InventoryArbService {
 
   /** 에이전트가 사이클마다 호출 */
   async scanOnce(): Promise<void> {
+    // 로밍 자동실행 (30초 게이트, 비동기 - 봇 스캔을 막지 않음)
+    this.maybeRoam().catch((e: any) => console.error('[InventoryArb] roam 오류:', e.message));
+
     const bots = await mainPrisma.inventoryArbBot.findMany({ where: { enabled: true, killSwitch: false } });
     for (const bot of bots) {
       if (inFlightBots.has(bot.id)) continue;
@@ -215,7 +249,7 @@ class InventoryArbService {
    * 클릭 시점 실시간 호가+잔고로 재검증 → 여전히 임계 이상일 때만 executeArb 1회.
    * @param maxKrw 이번 주문 상한 (서버 하드캡 MANUAL_MAX_KRW로 재차 제한)
    */
-  async executeManual(userId: number, symbol: string, maxKrw: number, minSpreadBps: number = 30): Promise<ManualExecuteResult> {
+  async executeManual(userId: number, symbol: string, maxKrw: number, minSpreadBps: number = 30, sentinelSymbol: string = MANUAL_BOT_SYMBOL): Promise<ManualExecuteResult> {
     const key = `${userId}:${symbol}`;
     if (manualInFlight.has(key)) return { executed: false, reason: '이미 실행 중입니다' };
     manualInFlight.add(key);
@@ -248,7 +282,7 @@ class InventoryArbService {
       if (!feas.ok) return { executed: false, reason: feas.reason };
 
       // record-before-fire (수동 sentinel 봇에 기록)
-      const manualBot = await this.getOrCreateManualBot(userId);
+      const manualBot = await this.getOrCreateManualBot(userId, sentinelSymbol);
       const trade = await mainPrisma.inventoryArbTrade.create({
         data: {
           botId: manualBot.id, symbol, direction: opp.direction, qty: feas.qty,
@@ -283,12 +317,101 @@ class InventoryArbService {
   }
 
   /** 수동 실행 기록용 sentinel 봇 (userId당 1개, enabled=false, 봇 목록에서 숨김) */
-  private async getOrCreateManualBot(userId: number): Promise<{ id: number }> {
-    const existing = await mainPrisma.inventoryArbBot.findFirst({ where: { userId, symbol: MANUAL_BOT_SYMBOL } });
+  private async getOrCreateManualBot(userId: number, sentinelSymbol: string = MANUAL_BOT_SYMBOL): Promise<{ id: number }> {
+    const existing = await mainPrisma.inventoryArbBot.findFirst({ where: { userId, symbol: sentinelSymbol } });
     if (existing) return existing;
     return mainPrisma.inventoryArbBot.create({
-      data: { userId, symbol: MANUAL_BOT_SYMBOL, maxOrderKrw: MANUAL_MAX_KRW, enabled: false, autoExecute: false },
+      data: { userId, symbol: sentinelSymbol, maxOrderKrw: MANUAL_MAX_KRW, enabled: false, autoExecute: false },
     });
+  }
+
+  // ── 로밍 자동실행 (전 종목 후보 스캔 -> 자동 실행, 카톡 알림->실행 지연 제거) ──
+  /** 30초 게이트 + 동시실행 가드. inventory-arb 에이전트의 scanOnce에서 호출됨. */
+  async maybeRoam(): Promise<void> {
+    const now = Date.now();
+    if (roamInFlight || now - lastRoamAt < ROAM_INTERVAL_MS) return;
+    roamInFlight = true;
+    lastRoamAt = now;
+    try {
+      await this.roamOnce();
+    } finally {
+      roamInFlight = false;
+    }
+  }
+
+  private async roamOnce(): Promise<void> {
+    const cfg = await mainPrisma.arbRoamConfig.findFirst({ where: { enabled: true, killSwitch: false } });
+    if (!cfg) return;
+
+    // 일일 한도 (KST) - __ROAM__ sentinel 봇 거래 기준
+    const roamBot = await this.getOrCreateManualBot(cfg.userId, ROAM_BOT_SYMBOL);
+    const { todayCount, todayNetKrw } = await this.fetchTodayUsage(roamBot.id);
+    if (cfg.dailyMaxCount != null && todayCount >= cfg.dailyMaxCount) return;
+    if (cfg.dailyMaxLossKrw != null && todayNetKrw <= -cfg.dailyMaxLossKrw) {
+      // 손실 한도 도달 - 로밍 자동 정지 + 카톡
+      await mainPrisma.arbRoamConfig.update({ where: { id: cfg.id }, data: { enabled: false } });
+      try {
+        await kakaoNotifyService.sendToMe('⏸️ 로밍 아비 자동정지\n일일 손실 한도(₩' + cfg.dailyMaxLossKrw.toLocaleString() + ') 도달 (오늘 ' + Math.round(todayNetKrw).toLocaleString() + '원)');
+      } catch { /* 무시 */ }
+      return;
+    }
+
+    // 전 종목 후보 스캔 (보유 코인 기반) - 임계는 net% -> gross bps 환산
+    const grossBps = netThresholdToGrossBps(cfg.minNetPct);
+    const candidates = await this.scanCandidates(cfg.userId, grossBps);
+    const picks = pickRoamCandidates(candidates, cfg, roamCooldownUntil, Date.now());
+    if (picks.length === 0) return;
+
+    const top = picks[0];
+    if (!cfg.autoExecute) {
+      // 반자동: 감지 카톡만 (심볼당 30분 스로틀)
+      const last = roamNotifyAt.get(top.symbol) ?? 0;
+      if (Date.now() - last > ROAM_NOTIFY_THROTTLE_MS) {
+        roamNotifyAt.set(top.symbol, Date.now());
+        try {
+          await kakaoNotifyService.sendToMe(
+            '🔎 로밍 아비 감지 (반자동) · ' + top.symbol + '\n순차익 ' + top.netPct.toFixed(2) + '% · 체결가능 ₩' + Math.round(top.executableKrw).toLocaleString() + '\n재고형 아비 페이지에서 즉시 실행 가능',
+          );
+        } catch { /* 무시 */ }
+      }
+      return;
+    }
+
+    // 완전자동: 1사이클 1건, 쿨다운 설정 후 실행 (record-before-fire는 executeManual 내부)
+    roamCooldownUntil.set(top.symbol, Date.now() + cfg.cooldownSec * 1000);
+    const result = await this.executeManual(cfg.userId, top.symbol, cfg.orderKrw, grossBps, ROAM_BOT_SYMBOL);
+    try {
+      if (result.executed && (result.kind === 'filled' || result.kind === 'partial_flattened')) {
+        const sign = (result.netKrw ?? 0) >= 0 ? '+' : '';
+        await kakaoNotifyService.sendToMe(
+          '⚡ 로밍 아비 체결 · ' + top.symbol + '\n순손익 ' + sign + '₩' + Math.round(result.netKrw ?? 0).toLocaleString() + ' (규모 ₩' + Math.round(result.notionalKrw ?? 0).toLocaleString() + ')\n오늘 ' + (todayCount + 1) + '건째',
+        );
+      } else if (result.executed && result.kind === 'flatten_failed') {
+        // flatten_failed 긴급 알림은 persistResult 경로에서 발송됨 - 로밍은 안전하게 자동 정지
+        await mainPrisma.arbRoamConfig.update({ where: { id: cfg.id }, data: { enabled: false, killSwitch: true } });
+      } else if (!result.executed) {
+        console.log('[InventoryArb] roam ' + top.symbol + ' 미실행: ' + result.reason);
+      }
+    } catch { /* 알림 실패 무시 */ }
+  }
+
+  /** 로밍 상태 조회 (관리자 UI) - 설정 + 오늘 실적 + 최근 체결 */
+  async getRoamStatus(userId: number): Promise<{
+    config: any | null;
+    todayCount: number;
+    todayNetKrw: number;
+    recentTrades: any[];
+  }> {
+    const cfg = await mainPrisma.arbRoamConfig.findUnique({ where: { userId } });
+    const roamBot = await mainPrisma.inventoryArbBot.findFirst({ where: { userId, symbol: ROAM_BOT_SYMBOL } });
+    if (!roamBot) return { config: cfg, todayCount: 0, todayNetKrw: 0, recentTrades: [] };
+    const { todayCount, todayNetKrw } = await this.fetchTodayUsage(roamBot.id);
+    const recentTrades = await mainPrisma.inventoryArbTrade.findMany({
+      where: { botId: roamBot.id },
+      orderBy: { id: 'desc' },
+      take: 10,
+    });
+    return { config: cfg, todayCount, todayNetKrw, recentTrades };
   }
 
   private async processBot(bot: any): Promise<void> {
