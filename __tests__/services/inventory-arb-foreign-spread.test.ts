@@ -60,3 +60,32 @@ describe('computeForeignSpread (쌍 일반화: binance/mexc/gateio)', () => {
     expect(computeForeignSpread('X', 'binance', { bid: 0, ask: 0, bidQty: 0, askQty: 0 }, 'mexc', { bid: 100, ask: 100.1, bidQty: 1, askQty: 1 })).toBeNull();
   });
 });
+
+describe('findTransferNetwork (네트워크 교집합 — ZIL 사례)', () => {
+  const { findTransferNetwork } = require('../../src/services/inventory-arb/foreign-spread-scanner');
+
+  it('ZIL 사례: 코인 단위론 양쪽 정상이지만 교집합 없음 → null', () => {
+    const mexc = [{ network: 'ZILEVM', depositEnabled: true, withdrawEnabled: true, withdrawFee: 50 }];
+    const binance = [
+      { network: 'BSC', depositEnabled: true, withdrawEnabled: true, withdrawFee: 6.19 },
+      { network: 'ZIL', depositEnabled: false, withdrawEnabled: false, withdrawFee: 1 },
+    ];
+    expect(findTransferNetwork(mexc, binance)).toBeNull();
+  });
+
+  it('같은 네트워크 양쪽 정상 → 그 네트워크 반환', () => {
+    const a = [{ network: 'SOL', depositEnabled: true, withdrawEnabled: true }];
+    const b = [{ network: 'SOL', depositEnabled: true, withdrawEnabled: true }];
+    expect(findTransferNetwork(a as any, b as any)).toBe('SOL');
+  });
+
+  it('매수측 출금 동결이면 같은 네트워크라도 null', () => {
+    const a = [{ network: 'SOL', depositEnabled: true, withdrawEnabled: false }];
+    const b = [{ network: 'SOL', depositEnabled: true, withdrawEnabled: true }];
+    expect(findTransferNetwork(a as any, b as any)).toBeNull();
+  });
+
+  it('정보 없으면 null', () => {
+    expect(findTransferNetwork(undefined, undefined)).toBeNull();
+  });
+});
