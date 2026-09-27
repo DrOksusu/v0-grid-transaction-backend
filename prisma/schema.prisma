@@ -838,6 +838,24 @@ model MultiArbOpportunity {
   @@map("multi_arb_opportunities")
 }
 
+// KRW 로밍 자동실행 설정 (전 종목 후보 스캔→자동 실행, 사용자당 1행) — 2026-09-26
+model ArbRoamConfig {
+  id              Int      @id @default(autoincrement())
+  userId          Int      @unique
+  enabled         Boolean  @default(false)   // 로밍 스캔 on/off
+  autoExecute     Boolean  @default(false)   // false=감지 카톡만, true=자동 실행
+  minNetPct       Float    @default(1)       // 순차익 임계(%)
+  orderKrw        Float    @default(100000)  // 1회 실행 캡(KRW)
+  cooldownSec     Int      @default(300)     // 심볼별 재실행 쿨다운(초)
+  dailyMaxCount   Int?     @default(50)      // 일일 실행 건수 한도
+  dailyMaxLossKrw Float?   @default(50000)   // 일일 손실 한도(KRW)
+  killSwitch      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("arb_roam_configs")
+}
+
 // 재고형(inventory) 아비트리지 봇 (업비트↔빗썸 크로스 스프레드) — spec/plan 2026-09-19
 model InventoryArbBot {
   id            Int      @id @default(autoincrement())

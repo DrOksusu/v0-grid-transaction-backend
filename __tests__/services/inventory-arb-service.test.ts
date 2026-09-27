@@ -24,3 +24,34 @@ describe('buildEmergencyMessage', () => {
     expect(msg).toContain('killSwitch');
   });
 });
+
+describe('pickRoamCandidates (로밍 실행 대상 선택)', () => {
+  const { pickRoamCandidates } = require('../../src/services/inventory-arb.service');
+  const cand = (symbol: string, over: any = {}) => ({
+    symbol, executableKrw: 100000, estimatedNetKrw: 1500, realizable: true, netProfitable: true, ...over,
+  });
+
+  it('순차익% ≥ 임계인 후보만, 큰 순 정렬', () => {
+    const picks = pickRoamCandidates(
+      [cand('A', { estimatedNetKrw: 1200 }), cand('B', { estimatedNetKrw: 3000 }), cand('C', { estimatedNetKrw: 500 })],
+      { minNetPct: 1 }, new Map(), Date.now(),
+    );
+    expect(picks.map((p: any) => p.symbol)).toEqual(['B', 'A']); // C=0.5% 미달
+    expect(picks[0].netPct).toBeCloseTo(3, 5);
+  });
+
+  it('쿨다운 중인 심볼 제외', () => {
+    const now = Date.now();
+    const cd = new Map([['A', now + 60000]]);
+    const picks = pickRoamCandidates([cand('A'), cand('B')], { minNetPct: 1 }, cd, now);
+    expect(picks.map((p: any) => p.symbol)).toEqual(['B']);
+  });
+
+  it('실행불가/순이익 아님/규모 0 제외', () => {
+    const picks = pickRoamCandidates(
+      [cand('A', { realizable: false }), cand('B', { netProfitable: false }), cand('C', { executableKrw: 0 })],
+      { minNetPct: 0 }, new Map(), Date.now(),
+    );
+    expect(picks).toEqual([]);
+  });
+});
