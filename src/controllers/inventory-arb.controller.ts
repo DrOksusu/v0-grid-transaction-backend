@@ -74,6 +74,10 @@ export async function putRoamConfig(req: AuthRequest, res: Response, next: NextF
     if (data.minNetPct != null && (typeof data.minNetPct !== 'number' || data.minNetPct < 0)) {
       return errorResponse(res, 'VALIDATION_ERROR', 'minNetPct는 0 이상', 400);
     }
+    // 일일 최대 건수: null(무제한) 허용, 값이 있으면 0~100000 정수만
+    if (data.dailyMaxCount != null && (typeof data.dailyMaxCount !== 'number' || !Number.isInteger(data.dailyMaxCount) || data.dailyMaxCount < 0 || data.dailyMaxCount > 100_000)) {
+      return errorResponse(res, 'VALIDATION_ERROR', 'dailyMaxCount는 0~100000 정수(비우면 무제한)', 400);
+    }
     const cfg = await mainPrisma.arbRoamConfig.upsert({
       where: { userId },
       update: data,
