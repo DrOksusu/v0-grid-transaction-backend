@@ -1,6 +1,6 @@
 // 쿨다운(30분) + 발송 성공 시에만 notifiedAt 갱신 검증 (spec §5 step 6, §8, §9, §11)
 import prisma from '../../__mocks__/database';
-import { multiArbNotifierService, buildAlertMessage } from '../../src/services/multi-arb-notifier.service';
+import { multiArbNotifierService, buildAlertMessage, evaluateInventoryGate } from '../../src/services/multi-arb-notifier.service';
 import { kakaoNotifyService } from '../../src/services/kakao-notify.service';
 import { SpreadCandidate, FeasibilityResult, NetResult } from '../../src/services/multi-arb-types';
 
@@ -154,6 +154,76 @@ describe('multiArbNotifierService.notify', () => {
     const sent = await multiArbNotifierService.notify(cand, feasible, null, net, { send: false });
     expect(sent).toBe(false);
     expect(db.multiArbOpportunity.create).not.toHaveBeenCalled();
+  });
+});
+
+// 재고 미보유 배제 게이트 판정 (순수함수)
+describe('evaluateInventoryGate', () => {
+  it('토글 OFF면 재고와 무관하게 발송(exclude=false)', () => {
+    expect(evaluateInventoryGate({ sellHeld: 0 }, false)).toEqual({ exclude: false, reason: 'toggle-off' });
+    expect(evaluateInventoryGate(null, false)).toEqual({ exclude: false, reason: 'toggle-off' });
+  });
+
+  it('조회 실패(null)면 fail-open으로 발송 유지(exclude=false)', () => {
+    expect(evaluateInventoryGate(null, true)).toEqual({ exclude: false, reason: 'query-failed' });
+  });
+
+  it('매도측 재고 보유(sellHeld>0)면 발송(exclude=false)', () => {
+    expect(evaluateInventoryGate({ sellHeld: 12.5 }, true)).toEqual({ exclude: false, reason: 'has-sell-inventory' });
+  });
+
+  it('매도측 재고 없음(sellHeld=0)이고 토글 ON이면 제외(exclude=true)', () => {
+    expect(evaluateInventoryGate({ sellHeld: 0 }, true)).toEqual({ exclude: true, reason: 'no-sell-inventory' });
+  });
+});
+
+// 재고 게이트가 notify() 발송 여부에 반영되는지 (기본 ON) — resolveHolding을 spy로 주입
+describe('multiArbNotifierService.notify 재고 게이트', () => {
+  let holdingSpy: jest.SpyInstance;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    db.multiArbOpportunity.findFirst.mockResolvedValue(null);
+    db.multiArbOpportunity.create.mockResolvedValue({ id: 1 });
+    db.multiArbOpportunity.update.mockResolvedValue({ id: 1 });
+    mockedSend.mockResolvedValue(undefined);
+    delete process.env.MULTI_ARB_EXCLUDE_NO_INVENTORY; // 기본 ON
+    holdingSpy = jest.spyOn(multiArbNotifierService as any, 'resolveHolding');
+  });
+  afterEach(() => {
+    holdingSpy.mockRestore();
+    delete process.env.MULTI_ARB_EXCLUDE_NO_INVENTORY;
+  });
+
+  it('매도측 재고 없음 → 카톡 스킵 + DB 기록은 유지 + notifiedAt 미갱신', async () => {
+    holdingSpy.mockResolvedValue({ sellHeld: 0, buyHeld: 0 });
+    const sent = await multiArbNotifierService.notify(cand, feasible, null, net);
+    expect(sent).toBe(false);
+    expect(db.multiArbOpportunity.create).toHaveBeenCalled();      // 기회 이력은 남김
+    expect(mockedSend).not.toHaveBeenCalled();                     // 카톡만 스킵
+    expect(db.multiArbOpportunity.update).not.toHaveBeenCalled();  // notifiedAt=null 유지 → 재고 생기면 재시도
+  });
+
+  it('매도측 재고 보유 → 카톡 발송 + notifiedAt 갱신', async () => {
+    holdingSpy.mockResolvedValue({ sellHeld: 10, buyHeld: 0 });
+    const sent = await multiArbNotifierService.notify(cand, feasible, null, net);
+    expect(sent).toBe(true);
+    expect(mockedSend).toHaveBeenCalledTimes(1);
+    expect(db.multiArbOpportunity.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { notifiedAt: expect.any(Date) } });
+  });
+
+  it('재고 조회 실패(throw) → fail-open으로 발송 유지', async () => {
+    holdingSpy.mockRejectedValue(new Error('잔고 API 다운'));
+    const sent = await multiArbNotifierService.notify(cand, feasible, null, net);
+    expect(sent).toBe(true);
+    expect(mockedSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('토글 OFF(MULTI_ARB_EXCLUDE_NO_INVENTORY=false) → 재고 없어도 발송', async () => {
+    process.env.MULTI_ARB_EXCLUDE_NO_INVENTORY = 'false';
+    holdingSpy.mockResolvedValue({ sellHeld: 0, buyHeld: 0 });
+    const sent = await multiArbNotifierService.notify(cand, feasible, null, net);
+    expect(sent).toBe(true);
+    expect(mockedSend).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -70,6 +70,22 @@ export interface AlertExtraLines {
   freqLine?: string;    // 최근 30일 감지 빈도
 }
 
+// 재고 미보유(매도측 재고 없음) 배제 게이트 판정 (2026-09-28) — 순수함수, 단위테스트 대상
+// 매도측 재고가 있어야 재고형(즉시 매도) 실행이 가능하다. 재고 없는 기회는 전송(로밍) 차익뿐이라
+// 스프레드가 표시된 그 순간 실현이 불가능(전송에 수분~수시간 + 가격변동 리스크)하므로 발송에서 제외한다.
+//   holding=null 은 "재고 조회 실패"(관리자 미존재/잔고 API 오류)를 뜻함 → fail-open(발송 유지).
+//   영구 장애 시 전체 발송 블랙아웃(=무기회와 구분 불가)을 피하기 위함. genuine 0(재고 없음)만 제외한다.
+export type InventoryGateReason = 'toggle-off' | 'query-failed' | 'has-sell-inventory' | 'no-sell-inventory';
+export function evaluateInventoryGate(
+  holding: { sellHeld: number } | null,
+  excludeEnabled: boolean,
+): { exclude: boolean; reason: InventoryGateReason } {
+  if (!excludeEnabled) return { exclude: false, reason: 'toggle-off' };
+  if (!holding) return { exclude: false, reason: 'query-failed' }; // fail-open: 조회 실패 시 발송 유지
+  if (holding.sellHeld > 0) return { exclude: false, reason: 'has-sell-inventory' };
+  return { exclude: true, reason: 'no-sell-inventory' };
+}
+
 export function buildAlertMessage(
   candidate: SpreadCandidate,
   feasibility: FeasibilityResult,
@@ -178,7 +194,26 @@ class MultiArbNotifierService {
     // I-1: 발송 게이트/상한/필터에 걸린 후보는 여기서 종료 — notifiedAt=null 유지 (쿨다운 미발동)
     if (!send) return false;
 
-    const extra = await this.buildExtraLines(candidate).catch(() => undefined);
+    // 재고 미보유 배제 게이트 (2026-09-28): 매도측 재고가 있어야 재고형(즉시 매도) 실행이 가능하다.
+    // 재고 없는 기회는 전송(로밍) 차익뿐이라 표시 순간 실현이 불가능 → 카톡 발송에서 제외 (기본 ON).
+    // MULTI_ARB_EXCLUDE_NO_INVENTORY=false 로 명시해야 해제된다. 조회 실패는 fail-open(발송 유지).
+    const excludeNoInventory = process.env.MULTI_ARB_EXCLUDE_NO_INVENTORY !== 'false';
+    let holding: { sellHeld: number; buyHeld: number } | null = null;
+    try {
+      holding = await this.resolveHolding(candidate);
+    } catch (err: any) {
+      // 재고 조회 실패(관리자 미존재/잔고 API 오류) → 발송 유지. 영구 장애 시 전체 블랙아웃 방지.
+      console.log(`[MultiArbNotifier] ${candidate.symbol}(${candidate.currencyZone}) 재고 조회 실패 — 발송 유지(fail-open):`, err?.message ?? err);
+    }
+    const gate = evaluateInventoryGate(holding, excludeNoInventory);
+    if (gate.exclude) {
+      // notifiedAt 미갱신 → 쿨다운 미발동 → 재고가 생기면 다음 사이클에서 다시 후보로 뜬다.
+      console.log(`[MultiArbNotifier] ${candidate.symbol}(${candidate.currencyZone}) 발송 제외 — 매도측(${EXCHANGE_LABELS[candidate.sellExchange]}) 재고 없음(sellHeld=${holding?.sellHeld ?? 0})`);
+      return false;
+    }
+
+    // 위에서 조회한 재고 스냅샷을 재사용(중복 API 호출 방지)
+    const extra = await this.buildExtraLines(candidate, holding).catch(() => undefined);
     const message = buildAlertMessage(candidate, feasibility, kimchiPct, net, extra);
     try {
       await kakaoNotifyService.sendToMe(message);
@@ -196,7 +231,12 @@ class MultiArbNotifierService {
   }
 
   // 보유 여부 + 30일 빈도 라인 생성 (실패 시 라인 생략 — 알림 발송은 계속)
-  private async buildExtraLines(candidate: SpreadCandidate): Promise<AlertExtraLines> {
+  // holding: notify()에서 이미 조회한 재고 스냅샷을 넘겨 중복 조회를 피한다.
+  //   undefined(미전달)면 여기서 직접 조회, null이면 조회 실패 → 보유 라인 생략.
+  private async buildExtraLines(
+    candidate: SpreadCandidate,
+    holding?: { sellHeld: number; buyHeld: number } | null,
+  ): Promise<AlertExtraLines> {
     const extra: AlertExtraLines = {};
     // 빈도: 최근 30일 같은 심볼/통화권 feasible 감지 횟수 (이번 건 포함)
     try {
@@ -213,33 +253,48 @@ class MultiArbNotifierService {
 
     // 보유: 매도측(비싼 거래소) 재고가 있어야 재고형(로밍) 실행 가능
     try {
-      let sellHeld = 0; let buyHeld = 0;
-      if (candidate.currencyZone === 'KRW') {
-        const admin = await (prisma as any).user.findFirst({ where: { email: config.adminEmail }, select: { id: true } });
-        if (!admin) return extra;
-        const { inventoryArbService } = await import('./inventory-arb.service');
-        const h = await inventoryArbService.getKrwHoldings(admin.id);
-        const pick = (ex: string) => (ex === 'upbit' ? h.upbit : h.bithumb);
-        sellHeld = pick(candidate.sellExchange)[candidate.symbol] ?? 0;
-        buyHeld = pick(candidate.buyExchange)[candidate.symbol] ?? 0;
-      } else {
-        const { usdtInventoryService } = await import('./inventory-arb/usdt-inventory.service');
-        const b = await usdtInventoryService.getBalancesByExchange();
-        sellHeld = b.get(candidate.sellExchange as any)?.[candidate.symbol] ?? 0;
-        buyHeld = b.get(candidate.buyExchange as any)?.[candidate.symbol] ?? 0;
-      }
-      const sellLabel = EXCHANGE_LABELS[candidate.sellExchange];
-      const buyLabel = EXCHANGE_LABELS[candidate.buyExchange];
-      const fmt = (n: number) => n.toLocaleString('ko-KR', { maximumFractionDigits: 2 });
-      if (sellHeld > 0) {
-        extra.holdingLine = `👛 보유: ${sellLabel} ${fmt(sellHeld)} — 재고형(로밍) 실행 가능`;
-      } else if (buyHeld > 0) {
-        extra.holdingLine = `👛 보유: ${buyLabel}에만 ${fmt(buyHeld)} — 매도측(${sellLabel}) 재고 없어 재고형 불가`;
-      } else {
-        extra.holdingLine = `👛 미보유 — 재고형(로밍) 실행 불가, 전송 차익만 가능`;
+      const h = holding === undefined ? await this.resolveHolding(candidate).catch(() => null) : holding;
+      if (h) {
+        const sellLabel = EXCHANGE_LABELS[candidate.sellExchange];
+        const buyLabel = EXCHANGE_LABELS[candidate.buyExchange];
+        const fmt = (n: number) => n.toLocaleString('ko-KR', { maximumFractionDigits: 2 });
+        if (h.sellHeld > 0) {
+          extra.holdingLine = `👛 보유: ${sellLabel} ${fmt(h.sellHeld)} — 재고형(로밍) 실행 가능`;
+        } else if (h.buyHeld > 0) {
+          extra.holdingLine = `👛 보유: ${buyLabel}에만 ${fmt(h.buyHeld)} — 매도측(${sellLabel}) 재고 없어 재고형 불가`;
+        } else {
+          extra.holdingLine = `👛 미보유 — 재고형(로밍) 실행 불가, 전송 차익만 가능`;
+        }
       }
     } catch { /* 생략 */ }
     return extra;
+  }
+
+  // 재고 스냅샷 조회 — 매도측/매수측 보유 수량. 조회 불가(관리자 미존재/잔고 API 오류)면 throw.
+  // KRW권: 관리자 계정의 업비트/빗썸 잔고. USDT권: Gate/MEXC/Binance 잔고.
+  // 심볼 키는 KRW·USDT 모두 base 심볼 대문자로 통일되어 candidate.symbol과 직접 매칭된다.
+  private async resolveHolding(candidate: SpreadCandidate): Promise<{ sellHeld: number; buyHeld: number }> {
+    if (candidate.currencyZone === 'KRW') {
+      const admin = await (prisma as any).user.findFirst({ where: { email: config.adminEmail }, select: { id: true } });
+      if (!admin) throw new Error('관리자 계정 없음 — 재고 조회 불가');
+      const { inventoryArbService } = await import('./inventory-arb.service');
+      const h = await inventoryArbService.getKrwHoldings(admin.id);
+      const pick = (ex: string) => (ex === 'upbit' ? h.upbit : h.bithumb);
+      return {
+        sellHeld: pick(candidate.sellExchange)[candidate.symbol] ?? 0,
+        buyHeld: pick(candidate.buyExchange)[candidate.symbol] ?? 0,
+      };
+    }
+    // ⚠️ fail-open은 KRW권에서만 보장된다. getBalancesByExchange()는 거래소별 조회 실패를 내부에서
+    //   삼키고 빈 Map을 반환하므로 여기서 throw가 발생하지 않는다 → 잔고 API 장애 시 sellHeld=0으로
+    //   조용히 제외(fail-closed). 현재 USDT권은 재고 미배치라 무해하지만, 향후 Gate↔MEXC 재고를
+    //   배치하면 이 지점을 fail-open으로 보완해야 한다(조회 실패와 genuine 0을 구분).
+    const { usdtInventoryService } = await import('./inventory-arb/usdt-inventory.service');
+    const b = await usdtInventoryService.getBalancesByExchange();
+    return {
+      sellHeld: b.get(candidate.sellExchange as any)?.[candidate.symbol] ?? 0,
+      buyHeld: b.get(candidate.buyExchange as any)?.[candidate.symbol] ?? 0,
+    };
   }
 
   // I-2: price sanity 제외 건 기록 — 분석/티커충돌 수집용 (카톡 발송 없음, notifiedAt=null)
