@@ -13,7 +13,7 @@ export async function getReclaimStatus(req: AuthRequest, res: Response, next: Ne
 
 export async function putReclaimConfig(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const allowed = ['enabled', 'minNetPct', 'maxOrderKrw', 'dailyMaxCount', 'dailyMaxKrw', 'withdrawFeePctThreshold', 'imbalanceCapKrw', 'killSwitch'] as const;
+    const allowed = ['enabled', 'minNetPct', 'maxOrderKrw', 'dailyMaxCount', 'dailyMaxKrw', 'withdrawFeePctThreshold', 'imbalanceCapKrw', 'excludeMajors', 'killSwitch'] as const;
     const data: Record<string, any> = {};
     for (const k of allowed) if (k in req.body) data[k] = req.body[k];
     if (data.maxOrderKrw != null && (typeof data.maxOrderKrw !== 'number' || data.maxOrderKrw <= 0 || data.maxOrderKrw > 1_000_000))
