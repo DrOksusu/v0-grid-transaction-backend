@@ -250,6 +250,41 @@ export class BithumbLeg implements ExchangeLeg {
     return null;
   }
 
+  /**
+   * 지정가 IOC 매도 (가격 보호). 빗썸은 IOC time_in_force 미보장이라
+   * 최우선 매수호가에 지정가 매도(즉시 크로스=marketable) → 짧게 폴링 → 잔량 취소로 IOC를 합성.
+   * limitPrice보다 싸게 체결되지 않으므로 시장가 매도의 호가창 walk 슬리피지를 차단한다.
+   */
+  async sellLimitIoc(
+    symbol: string,
+    quantity: number,
+    limitPrice: number,
+  ): Promise<{ filledQty: number; grossKrw: number; feeKrw: number } | null> {
+    const BITHUMB_MIN_ORDER_KRW = 5000;
+    if (quantity * limitPrice < BITHUMB_MIN_ORDER_KRW) return null;
+    const resp = await this.client.sellLimit(`KRW-${symbol}`, limitPrice, quantity);
+    const orderId = resp?.uuid;
+    if (!orderId) return null;
+
+    let last: any = null;
+    for (let i = 0; i < 4; i++) {
+      await new Promise((r) => setTimeout(r, 400));
+      last = await this.client.getOrder(orderId);
+      if (last.status === 'filled' || last.status === 'cancelled' || last.status === 'failed') break;
+    }
+    // 미체결 잔량은 취소(IOC 합성) 후 최종 체결량 재확인
+    if (last && last.status !== 'filled' && last.status !== 'cancelled' && last.status !== 'failed') {
+      try { await this.client.cancelOrder(orderId); } catch { /* 취소 실패 무시 */ }
+      try { last = await this.client.getOrder(orderId); } catch { /* 직전 값 유지 */ }
+    }
+    if (!last || !(last.filledQty > 0)) return null;
+    return {
+      filledQty: last.filledQty,
+      grossKrw: last.avgFillPrice * last.filledQty,
+      feeKrw: last.totalFeeKrw,
+    };
+  }
+
   async buyIoc(
     symbol: string,
     quantity: number,
