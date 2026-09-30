@@ -16,3 +16,4 @@ export { VolatilityBreakoutAgent } from './volatility-breakout-agent';
 export { MultiExchangeArbAgent, multiExchangeArbAgent } from './multi-exchange-arb-agent';
 export { InventoryArbAgent, inventoryArbAgent } from './inventory-arb-agent';
 export { UsdtInventoryArbAgent, usdtInventoryArbAgent } from './usdt-inventory-arb-agent';
+export { ReclaimAgent, reclaimAgent } from './reclaim-agent';
