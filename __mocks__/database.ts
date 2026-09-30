@@ -122,6 +122,15 @@ const stablecoinPrisma = {
     count: jest.fn().mockResolvedValue(0),
     aggregate: jest.fn().mockResolvedValue({ _sum: { profitKrw: 0 } }),
   },
+  arbReclaimConfig: {
+    findUnique: jest.fn().mockResolvedValue(null),
+    upsert: jest.fn().mockResolvedValue({}),
+  },
+  arbReclaimTrade: {
+    create: jest.fn().mockResolvedValue({}),
+    findMany: jest.fn().mockResolvedValue([]),
+    aggregate: jest.fn().mockResolvedValue({ _sum: {} }),
+  },
 };
 
 // withRetry: 전달된 함수를 그냥 실행 (재시도 없이)
