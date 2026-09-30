@@ -856,6 +856,45 @@ model ArbRoamConfig {
   @@map("arb_roam_configs")
 }
 
+// 재고 되돌림 리컨실러 설정 (빗썸에 묶인 재고를 업비트로 되돌려 재장전, 사용자당 1행) — 2026-10-01
+model ArbReclaimConfig {
+  id                      Int      @id @default(autoincrement())
+  userId                  Int      @unique
+  enabled                 Boolean  @default(false)
+  minNetPct               Float    @default(0)      // 순차익 임계(%), 0=본전
+  maxOrderKrw             Float    @default(50000)  // 1회 한도(canary 소액)
+  dailyMaxCount           Int?     @default(50)
+  dailyMaxKrw             Float?   @default(1000000)
+  withdrawFeePctThreshold Float    @default(0.3)    // 대상 선별: 출금수수료율(%) 이상만
+  imbalanceCapKrw         Float    @default(100000) // 누적 부분체결 불균형 한도
+  killSwitch              Boolean  @default(false)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@map("arb_reclaim_configs")
+}
+
+// 재고 되돌림 리컨실러 체결 이력
+model ArbReclaimTrade {
+  id               Int      @id @default(autoincrement())
+  userId           Int
+  symbol           String
+  qty              Float
+  bithumbSellPrice Float
+  upbitBuyPrice    Float
+  sellFilled       Float    @default(0)
+  buyFilled        Float    @default(0)
+  grossKrw         Float    @default(0)
+  feeKrw           Float    @default(0)
+  netKrw           Float    @default(0)
+  status           String   // filled | partial | failed
+  note             String?  @db.Text
+  createdAt        DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("arb_reclaim_trades")
+}
+
 // 재고형(inventory) 아비트리지 봇 (업비트↔빗썸 크로스 스프레드) — spec/plan 2026-09-19
 model InventoryArbBot {
   id            Int      @id @default(autoincrement())
