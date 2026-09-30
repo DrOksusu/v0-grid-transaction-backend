@@ -87,6 +87,41 @@ export async function putRoamConfig(req: AuthRequest, res: Response, next: NextF
   } catch (e) { next(e); }
 }
 
+/**
+ * 재고형 아비 누적 순손익 요약 (대시보드 총수익 합산용).
+ * KRW권(InventoryArbTrade.netKrw)과 USDT권(UsdtInventoryArbTrade.netUsdt)을 단위별로 각각 합산해 반환.
+ * 환산은 프론트에서 대시보드 환율로 처리(단위가 다르므로 백엔드는 원 단위 그대로 노출).
+ * 집계 대상: 해당 유저의 모든 재고형 봇, status='filled'|'partial_flattened'만.
+ */
+export async function getArbProfitSummary(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const userId = req.userId!;
+    const DONE = ['filled', 'partial_flattened'];
+    const [krwBots, usdtBots] = await Promise.all([
+      mainPrisma.inventoryArbBot.findMany({ where: { userId }, select: { id: true } }),
+      mainPrisma.usdtInventoryArbBot.findMany({ where: { userId }, select: { id: true } }),
+    ]);
+    const krwIds = krwBots.map((b) => b.id);
+    const usdtIds = usdtBots.map((b) => b.id);
+    const [krwAgg, usdtAgg] = await Promise.all([
+      mainPrisma.inventoryArbTrade.aggregate({
+        where: { botId: { in: krwIds }, status: { in: DONE } },
+        _sum: { netKrw: true }, _count: true,
+      }),
+      mainPrisma.usdtInventoryArbTrade.aggregate({
+        where: { botId: { in: usdtIds }, status: { in: DONE } },
+        _sum: { netUsdt: true }, _count: true,
+      }),
+    ]);
+    return successResponse(res, {
+      netKrwTotal: krwAgg._sum.netKrw ?? 0,
+      krwTradeCount: krwAgg._count,
+      netUsdtTotal: usdtAgg._sum.netUsdt ?? 0,
+      usdtTradeCount: usdtAgg._count,
+    });
+  } catch (e) { next(e); }
+}
+
 /** 수동 1회 실거래 실행 (후보 화면 "즉시 실행"). 클릭 시점 재검증 후 executeArb 1회. */
 export async function postExecute(req: AuthRequest, res: Response, next: NextFunction) {
   try {
