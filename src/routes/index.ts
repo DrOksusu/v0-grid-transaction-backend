@@ -27,6 +27,7 @@ import costBasisRoutes from './cost-basis';
 import marketRegimeRoutes from './market-regime';
 import inventoryArbRoutes from './inventory-arb';
 import usdtInventoryArbRoutes from './usdt-inventory-arb';
+import reclaimRoutes from './reclaim';
 
 const router = Router();
 
@@ -67,5 +68,6 @@ router.use('/cost-basis', costBasisRoutes);
 router.use('/market-regime', marketRegimeRoutes);
 router.use('/inventory-arb', inventoryArbRoutes);
 router.use('/usdt-inventory-arb', usdtInventoryArbRoutes);
+router.use('/reclaim', reclaimRoutes);
 
 export default router;
