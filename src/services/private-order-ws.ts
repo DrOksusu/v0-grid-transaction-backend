@@ -149,8 +149,9 @@ export class PrivateOrderWsConnection {
   private handleMessage(data: Buffer): void {
     try {
       const msg = JSON.parse(data.toString());
-      // [임시/V2검증] 빗썸 원시 메시지 1회성 관찰 — Task 5에서 제거. 과다로그 방지 위해 myOrder/ty만.
-      if (this.options.exchange === 'bithumb' && (msg?.type === 'myOrder' || msg?.ty === 'myOrder')) {
+      // [임시/V2검증] 빗썸 '모든' 수신 메시지 관찰 — 체결이 myOrder가 아닌 다른 타입/구조로 올 가능성까지 포착하기 위함.
+      // shadow 창에서 실제 체결 메시지 형태를 확인한 뒤 Task 5에서 제거한다. (private 스트림이라 저빈도)
+      if (this.options.exchange === 'bithumb') {
         console.log('[PrivateOrderWs][bithumb][V2-RAW]', JSON.stringify(msg).slice(0, 500));
       }
       // type: V2 DEFAULT 'type' / SIMPLE 'ty'
