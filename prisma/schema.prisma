@@ -867,6 +867,7 @@ model ArbReclaimConfig {
   dailyMaxKrw             Float?   @default(1000000)
   withdrawFeePctThreshold Float    @default(0.3)    // 대상 선별: 출금수수료율(%) 이상만
   imbalanceCapKrw         Float    @default(100000) // 누적 부분체결 불균형 한도
+  excludeMajors           Boolean  @default(true)   // 대형코인(BTC/ETH 등) 제외. 기본 제외
   killSwitch              Boolean  @default(false)
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt

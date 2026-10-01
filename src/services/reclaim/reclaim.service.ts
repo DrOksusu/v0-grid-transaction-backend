@@ -97,7 +97,8 @@ class ReclaimService {
     const markets = await this.upbitMarkets();
     // 대상 선별 (출금수수료율은 별도 캐시 로직 — 초기엔 빈 객체로 두어 미확인=포함, 후속 캐시 채움)
     const targets = selectReclaimTargets({
-      holdings: holdings.bithumb, upbitMarkets: markets, withdrawFeePct: {}, thresholdPct: cfg.withdrawFeePctThreshold,
+      holdings: holdings.bithumb, upbitMarkets: markets, withdrawFeePct: {},
+      thresholdPct: cfg.withdrawFeePctThreshold, excludeMajors: cfg.excludeMajors,
     });
     if (targets.length === 0) return;
 
