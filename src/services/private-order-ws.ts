@@ -248,17 +248,18 @@ interface PoolEntry {
 const DEFAULT_IDLE_CLOSE_MS = 30_000;
 
 const UPBIT_ENDPOINT = 'wss://api.upbit.com/websocket/v1/private';
-const BITHUMB_ENDPOINT = 'wss://ws-api.bithumb.com/websocket/v1/private';
+const BITHUMB_ENDPOINT = 'wss://ws-api.bithumb.com/websocket/v2/private';
 
-function defaultEndpoint(exchange: string): string {
+export function defaultEndpoint(exchange: string): string {
   return exchange === 'bithumb' ? BITHUMB_ENDPOINT : UPBIT_ENDPOINT;
 }
 
-function defaultBuildSubscribePayload(exchange: string) {
+export function defaultBuildSubscribePayload(exchange: string) {
   return (markets: string[]) => {
     const ticket = `private-fill-${Date.now()}`;
     if (exchange === 'bithumb') {
-      return [{ ticket }, { type: 'myOrder', codes: markets }];
+      // V2: DEFAULT 포맷 명시(응답 필드 전체명 보장, SIMPLE 축약 방지). codes 생략/빈배열이면 전체 구독.
+      return [{ ticket }, { type: 'myOrder', codes: markets }, { format: 'DEFAULT' }];
     }
     return [{ ticket }, { type: 'myOrder' }];
   };

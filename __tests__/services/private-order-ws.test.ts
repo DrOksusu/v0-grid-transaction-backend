@@ -46,6 +46,26 @@ function getMockWsClass() {
 }
 
 describe('private-order-ws', () => {
+  describe('V2 기본 엔드포인트/구독', () => {
+    it('빗썸 기본 엔드포인트는 v2 private', async () => {
+      const { defaultEndpoint } = await import('../../src/services/private-order-ws');
+      expect(defaultEndpoint('bithumb')).toBe('wss://ws-api.bithumb.com/websocket/v2/private');
+    });
+    it('업비트 기본 엔드포인트는 변경 없음', async () => {
+      const { defaultEndpoint } = await import('../../src/services/private-order-ws');
+      expect(defaultEndpoint('upbit')).toBe('wss://api.upbit.com/websocket/v1/private');
+    });
+    it('빗썸 구독 페이로드에 type:myOrder + codes + format:DEFAULT 포함', async () => {
+      const { defaultBuildSubscribePayload } = await import('../../src/services/private-order-ws');
+      const payload = defaultBuildSubscribePayload('bithumb')(['KRW-BTC', 'KRW-ETH']) as any[];
+      expect(payload).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'myOrder', codes: ['KRW-BTC', 'KRW-ETH'] }),
+        expect.objectContaining({ format: 'DEFAULT' }),
+      ]));
+      expect(payload[0]).toHaveProperty('ticket');
+    });
+  });
+
   describe('메시지 파싱 — 체결/비체결 판정', () => {
     it('myOrder 체결(state=done) 메시지 → onFill 1회 emit (uuid/market/state 파싱)', async () => {
       const { PrivateOrderWsConnection } = await import('../../src/services/private-order-ws');
