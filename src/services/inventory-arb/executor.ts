@@ -34,6 +34,16 @@ function fillQty(r: { filledQty: number } | null): number {
   return r?.filledQty ?? 0;
 }
 
+/** leg Promise rejection에서 사람이 읽을 수 있는 예외 메시지 추출(진단용). 과도한 길이 방지 300자 제한. */
+function legErrMsg(reason: any): string {
+  const raw =
+    reason?.response?.data?.error?.message ?? // 거래소 API 에러 본문(업비트/빗썸 공통 형태)
+    reason?.response?.data?.message ??
+    reason?.message ??
+    String(reason);
+  return String(raw).slice(0, 300);
+}
+
 export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult> {
   const { buyLeg, sellLeg, symbol, qty, buyPrice, sellPrice, fallbackMode } = input;
   const minOrder = input.minOrderQuote ?? MIN_ORDER_KRW; // quote 통화 dust 임계 (KRW 기본 5000)
@@ -53,6 +63,13 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
   const sellRes = sellSettled.status === 'fulfilled' ? sellSettled.value : null;
   const buyRes = buySettled.status === 'fulfilled' ? buySettled.value : null;
 
+  // leg가 throw했을 때 원본 예외 메시지 추출(진단용). 사후 원인 파악이 가능하도록 note/log에 보존.
+  const sellErr = sellRejected ? legErrMsg(sellSettled.reason) : null;
+  const buyErr = buyRejected ? legErrMsg(buySettled.reason) : null;
+  if (sellErr || buyErr) {
+    console.error(`[arb executor] ${symbol} leg 예외 — sell: ${sellErr ?? 'ok'} | buy: ${buyErr ?? 'ok'}`);
+  }
+
   const sellQty = fillQty(sellRes);
   const buyQty = fillQty(buyRes);
 
@@ -63,13 +80,13 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
     return {
       kind: 'flatten_failed',
       imbalanceQty: buyQty - sellQty,
-      note: `leg 예외(sellRejected=${sellRejected} buyRejected=${buyRejected}) + 반대편 체결 — 체결상태 불명, 수동 확인 필요`,
+      note: `leg 예외(sellRejected=${sellRejected} buyRejected=${buyRejected}) + 반대편 체결 — 체결상태 불명, 수동 확인 필요. sellErr=${sellErr ?? '-'} | buyErr=${buyErr ?? '-'}`,
     };
   }
 
   // 3. 양쪽 미체결
   if (sellQty === 0 && buyQty === 0) {
-    return { kind: 'failed', reason: `both legs unfilled (sellRejected=${sellRejected} buyRejected=${buyRejected})` };
+    return { kind: 'failed', reason: `both legs unfilled (sellRejected=${sellRejected} buyRejected=${buyRejected}) sellErr=${sellErr ?? '-'} buyErr=${buyErr ?? '-'}` };
   }
 
   const buyGrossKrw = buyRes?.grossKrw ?? 0;
