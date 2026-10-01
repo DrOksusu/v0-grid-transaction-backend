@@ -149,15 +149,22 @@ export class PrivateOrderWsConnection {
   private handleMessage(data: Buffer): void {
     try {
       const msg = JSON.parse(data.toString());
-      if (msg?.type !== 'myOrder') return;
+      // [임시/V2검증] 빗썸 '모든' 수신 메시지 관찰 — 체결이 myOrder가 아닌 다른 타입/구조로 올 가능성까지 포착하기 위함.
+      // shadow 창에서 실제 체결 메시지 형태를 확인한 뒤 Task 5에서 제거한다. (private 스트림이라 저빈도)
+      if (this.options.exchange === 'bithumb') {
+        console.log('[PrivateOrderWs][bithumb][V2-RAW]', JSON.stringify(msg).slice(0, 500));
+      }
+      // type: V2 DEFAULT 'type' / SIMPLE 'ty'
+      const type = msg?.type ?? msg?.ty;
+      if (type !== 'myOrder') return;
 
-      // 필드명 방어적 파싱: 후보 여러 개 허용 (거래소별 표기 차이 대비)
-      const uuid: string | undefined = msg.uuid ?? msg.orderId ?? msg.order_id;
-      const market: string | undefined = msg.market ?? msg.code ?? msg.symbol;
-      const state: string | undefined = msg.state ?? msg.status;
+      // 필드명 방어적 파싱: V2 DEFAULT + SIMPLE + 레거시 후보 모두 허용
+      const uuid: string | undefined = msg.uuid ?? msg.order_id ?? msg.orderId ?? msg.oid;
+      const market: string | undefined = msg.market ?? msg.code ?? msg.cd ?? msg.symbol;
+      const state: string | undefined = msg.state ?? msg.s ?? msg.status;
 
       if (!uuid || !market || !state) return;
-      if (!FILLED_STATES.has(state)) return; // wait/watch 등 비체결 무시
+      if (!FILLED_STATES.has(state)) return; // wait/cancel 등 비체결 무시 (V2: wait/trade/done/cancel)
 
       const info: FillInfo = { exchange: this.options.exchange, market, uuid, state };
       for (const listener of this.listeners) {
@@ -248,17 +255,18 @@ interface PoolEntry {
 const DEFAULT_IDLE_CLOSE_MS = 30_000;
 
 const UPBIT_ENDPOINT = 'wss://api.upbit.com/websocket/v1/private';
-const BITHUMB_ENDPOINT = 'wss://ws-api.bithumb.com/websocket/v1/private';
+const BITHUMB_ENDPOINT = 'wss://ws-api.bithumb.com/websocket/v2/private';
 
-function defaultEndpoint(exchange: string): string {
+export function defaultEndpoint(exchange: string): string {
   return exchange === 'bithumb' ? BITHUMB_ENDPOINT : UPBIT_ENDPOINT;
 }
 
-function defaultBuildSubscribePayload(exchange: string) {
+export function defaultBuildSubscribePayload(exchange: string) {
   return (markets: string[]) => {
     const ticket = `private-fill-${Date.now()}`;
     if (exchange === 'bithumb') {
-      return [{ ticket }, { type: 'myOrder', codes: markets }];
+      // V2: DEFAULT 포맷 명시(응답 필드 전체명 보장, SIMPLE 축약 방지). codes 생략/빈배열이면 전체 구독.
+      return [{ ticket }, { type: 'myOrder', codes: markets }, { format: 'DEFAULT' }];
     }
     return [{ ticket }, { type: 'myOrder' }];
   };
