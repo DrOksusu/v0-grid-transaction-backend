@@ -149,6 +149,10 @@ export class PrivateOrderWsConnection {
   private handleMessage(data: Buffer): void {
     try {
       const msg = JSON.parse(data.toString());
+      // [임시/V2검증] 빗썸 원시 메시지 1회성 관찰 — Task 5에서 제거. 과다로그 방지 위해 myOrder/ty만.
+      if (this.options.exchange === 'bithumb' && (msg?.type === 'myOrder' || msg?.ty === 'myOrder')) {
+        console.log('[PrivateOrderWs][bithumb][V2-RAW]', JSON.stringify(msg).slice(0, 500));
+      }
       // type: V2 DEFAULT 'type' / SIMPLE 'ty'
       const type = msg?.type ?? msg?.ty;
       if (type !== 'myOrder') return;
