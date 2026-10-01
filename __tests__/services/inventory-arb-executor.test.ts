@@ -143,6 +143,22 @@ describe('executeArb', () => {
     expect(r.kind).toBe('flatten_failed');
   });
 
+  it('ONDO 사례: 매수 발주가 throw + 매도 체결 → flatten_failed, note에 원본 예외 보존', async () => {
+    const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 95.58, grossKrw: 65000, feeKrw: 30 }) });
+    const buyLeg = mockLeg({
+      buyIoc: async () => {
+        throw new Error('bithumb 400 under_min_total_bid');
+      },
+    });
+    const r = await executeArb({ buyLeg, sellLeg, symbol: 'ONDO', qty: QTY, buyPrice: 669, sellPrice: 681, fallbackMode: 'market_flatten' });
+    expect(r.kind).toBe('flatten_failed');
+    // 원본 예외가 note에 들어가 사후 진단 가능해야 함
+    if (r.kind === 'flatten_failed') {
+      expect(r.note).toContain('buyErr=');
+      expect(r.note).toContain('under_min_total_bid');
+    }
+  });
+
   it('flatten이 목표 미달 체결(6 중 3)하면 → flatten_failed (터미널)', async () => {
     const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 4, grossKrw: 4040, feeKrw: 2 }) });
     const buyLeg = mockLeg({
