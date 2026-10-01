@@ -116,7 +116,7 @@ class ReclaimService {
           upbitAsk: up.ask, maxOrderKrw: cfg.maxOrderKrw, feeBps: UPBIT_BUY_FEE_BPS,
         });
         if (qty * up.ask < MIN_ORDER_KRW) continue;
-        const r = await executeReclaim({ bithumbLeg: legs.bithumb, upbitLeg: legs.upbit, symbol: sym, qty, bithumbBid: bt.bid, upbitAsk: up.ask });
+        const r = await executeReclaim({ bithumbLeg: legs.bithumb, upbitLeg: legs.upbit, symbol: sym, qty, bithumbBid: bt.bid, upbitAsk: up.ask, buyFeeBps: UPBIT_BUY_FEE_BPS });
         await mainPrisma.arbReclaimTrade.create({
           data: {
             userId, symbol: sym, qty, bithumbSellPrice: bt.bid, upbitBuyPrice: up.ask,
