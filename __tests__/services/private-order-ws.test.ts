@@ -165,6 +165,99 @@ describe('private-order-ws', () => {
     });
   });
 
+  describe('V2 myOrder 파싱 (DEFAULT/SIMPLE)', () => {
+    it('V2 DEFAULT 체결(state=trade, order_id, code) → onFill emit', async () => {
+      const { PrivateOrderWsConnection, defaultBuildSubscribePayload } = await import('../../src/services/private-order-ws');
+      const MockWs = getMockWsClass();
+
+      const onFill = jest.fn();
+      const conn = new PrivateOrderWsConnection({
+        exchange: 'bithumb',
+        endpoint: 'wss://ws-api.bithumb.com/websocket/v2/private',
+        generateJwt: () => 'fake.jwt.token',
+        buildSubscribePayload: defaultBuildSubscribePayload('bithumb'),
+        markets: ['KRW-EGLD'],
+      });
+      conn.onFill(onFill);
+      conn.connect();
+
+      const wsInstance = MockWs.instances[MockWs.instances.length - 1];
+      wsInstance.emit('open');
+      wsInstance.emit(
+        'message',
+        Buffer.from(JSON.stringify({ type: 'myOrder', state: 'trade', order_id: 'oid-v2-1', code: 'KRW-EGLD' })),
+      );
+
+      expect(onFill).toHaveBeenCalledTimes(1);
+      expect(onFill).toHaveBeenCalledWith(
+        expect.objectContaining({ exchange: 'bithumb', market: 'KRW-EGLD', uuid: 'oid-v2-1', state: 'trade' }),
+      );
+
+      conn.close();
+    });
+
+    it('V2 SIMPLE 체결(ty=myOrder, s=trade, oid, cd) → onFill emit', async () => {
+      const { PrivateOrderWsConnection, defaultBuildSubscribePayload } = await import('../../src/services/private-order-ws');
+      const MockWs = getMockWsClass();
+
+      const onFill = jest.fn();
+      const conn = new PrivateOrderWsConnection({
+        exchange: 'bithumb',
+        endpoint: 'wss://ws-api.bithumb.com/websocket/v2/private',
+        generateJwt: () => 'fake.jwt.token',
+        buildSubscribePayload: defaultBuildSubscribePayload('bithumb'),
+        markets: ['KRW-BTC'],
+      });
+      conn.onFill(onFill);
+      conn.connect();
+
+      const wsInstance = MockWs.instances[MockWs.instances.length - 1];
+      wsInstance.emit('open');
+      wsInstance.emit(
+        'message',
+        Buffer.from(JSON.stringify({ ty: 'myOrder', s: 'trade', oid: 'oid-v2-2', cd: 'KRW-BTC' })),
+      );
+
+      expect(onFill).toHaveBeenCalledTimes(1);
+      expect(onFill).toHaveBeenCalledWith(
+        expect.objectContaining({ exchange: 'bithumb', market: 'KRW-BTC', uuid: 'oid-v2-2', state: 'trade' }),
+      );
+
+      conn.close();
+    });
+
+    it('state=cancel/wait → onFill 미발생', async () => {
+      const { PrivateOrderWsConnection, defaultBuildSubscribePayload } = await import('../../src/services/private-order-ws');
+      const MockWs = getMockWsClass();
+
+      const onFill = jest.fn();
+      const conn = new PrivateOrderWsConnection({
+        exchange: 'bithumb',
+        endpoint: 'wss://ws-api.bithumb.com/websocket/v2/private',
+        generateJwt: () => 'fake.jwt.token',
+        buildSubscribePayload: defaultBuildSubscribePayload('bithumb'),
+        markets: ['KRW-BTC'],
+      });
+      conn.onFill(onFill);
+      conn.connect();
+
+      const wsInstance = MockWs.instances[MockWs.instances.length - 1];
+      wsInstance.emit('open');
+      wsInstance.emit(
+        'message',
+        Buffer.from(JSON.stringify({ type: 'myOrder', state: 'cancel', order_id: 'x', code: 'KRW-BTC' })),
+      );
+      wsInstance.emit(
+        'message',
+        Buffer.from(JSON.stringify({ type: 'myOrder', state: 'wait', order_id: 'y', code: 'KRW-BTC' })),
+      );
+
+      expect(onFill).not.toHaveBeenCalled();
+
+      conn.close();
+    });
+  });
+
   describe('PrivateOrderWsPool — ref-count', () => {
     it('같은 credential로 2봇 등록 → 연결 1개, 1개 해제해도 유지, 0되면 close', async () => {
       const { PrivateOrderWsPool } = await import('../../src/services/private-order-ws');

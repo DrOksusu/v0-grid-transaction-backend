@@ -149,15 +149,17 @@ export class PrivateOrderWsConnection {
   private handleMessage(data: Buffer): void {
     try {
       const msg = JSON.parse(data.toString());
-      if (msg?.type !== 'myOrder') return;
+      // type: V2 DEFAULT 'type' / SIMPLE 'ty'
+      const type = msg?.type ?? msg?.ty;
+      if (type !== 'myOrder') return;
 
-      // 필드명 방어적 파싱: 후보 여러 개 허용 (거래소별 표기 차이 대비)
-      const uuid: string | undefined = msg.uuid ?? msg.orderId ?? msg.order_id;
-      const market: string | undefined = msg.market ?? msg.code ?? msg.symbol;
-      const state: string | undefined = msg.state ?? msg.status;
+      // 필드명 방어적 파싱: V2 DEFAULT + SIMPLE + 레거시 후보 모두 허용
+      const uuid: string | undefined = msg.uuid ?? msg.order_id ?? msg.orderId ?? msg.oid;
+      const market: string | undefined = msg.market ?? msg.code ?? msg.cd ?? msg.symbol;
+      const state: string | undefined = msg.state ?? msg.s ?? msg.status;
 
       if (!uuid || !market || !state) return;
-      if (!FILLED_STATES.has(state)) return; // wait/watch 등 비체결 무시
+      if (!FILLED_STATES.has(state)) return; // wait/cancel 등 비체결 무시 (V2: wait/trade/done/cancel)
 
       const info: FillInfo = { exchange: this.options.exchange, market, uuid, state };
       for (const listener of this.listeners) {
