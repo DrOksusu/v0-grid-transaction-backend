@@ -1,4 +1,4 @@
-# 재고 되돌림 리컴실러 (백엔드) Implementation Plan
+# 재고 되돌림 리컨실러 (백엔드) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -829,7 +829,7 @@ export class ReclaimAgent extends BaseAgent {
     super({
       id: 'reclaim',
       name: 'ReclaimAgent',
-      description: '재고 되돌림 리컴실러 (빗썸→업비트 재장전)',
+      description: '재고 되돌림 리컨실러 (빗썸→업비트 재장전)',
       cycleIntervalMs: 30000, // 30초
     });
   }
