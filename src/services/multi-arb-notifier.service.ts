@@ -11,6 +11,11 @@ import { EXCHANGE_LABELS, FeasibilityResult, MIN_NOTIONAL_BY_ZONE, NetResult, Sp
 
 const COOLDOWN_MS = 30 * 60 * 1000; // 30분 (spec §2)
 
+// 재고형(로밍) 실행 가능 최소 매도측 재고 가치 — 거래소 최소주문 기준(KRW 5000, USDT 5).
+// 매도측 재고가 이 값 미만이면 dust라 실제 실행 불가 → 카톡 발송 제외.
+// (2026-10-02: 업비트 ARK 0.00000001 dust가 sellHeld>0을 통과해 "실행 가능" 알림이 왔으나 로밍은 최소주문 미달로 스킵 → 노이즈 제거)
+const MIN_SELL_VALUE_BY_ZONE: Record<SpreadCandidate['currencyZone'], number> = { KRW: 5000, USDT: 5 };
+
 // 가격 표기: KRW권은 천단위 콤마, USDT권 소수점 코인도 유효자리 유지
 function formatPrice(price: number): string {
   return price.toLocaleString('ko-KR', { maximumFractionDigits: 8 });
@@ -70,19 +75,20 @@ export interface AlertExtraLines {
   freqLine?: string;    // 최근 30일 감지 빈도
 }
 
-// 재고 미보유(매도측 재고 없음) 배제 게이트 판정 (2026-09-28) — 순수함수, 단위테스트 대상
-// 매도측 재고가 있어야 재고형(즉시 매도) 실행이 가능하다. 재고 없는 기회는 전송(로밍) 차익뿐이라
-// 스프레드가 표시된 그 순간 실현이 불가능(전송에 수분~수시간 + 가격변동 리스크)하므로 발송에서 제외한다.
-//   holding=null 은 "재고 조회 실패"(관리자 미존재/잔고 API 오류)를 뜻함 → fail-open(발송 유지).
-//   영구 장애 시 전체 발송 블랙아웃(=무기회와 구분 불가)을 피하기 위함. genuine 0(재고 없음)만 제외한다.
+// 재고 미보유(매도측 재고 부족) 배제 게이트 판정 (2026-09-28, 2026-10-02 가치기준으로 강화) — 순수함수, 단위테스트 대상
+// 매도측 재고가 "실행 가능한 규모"(최소주문 이상)여야 재고형(즉시 매도) 실행이 가능하다.
+// 재고 없음/dust는 전송(로밍) 차익뿐이라 표시 순간 실현 불가(전송 수분~수시간+가격변동) → 발송 제외.
+//   sellHeldValue = 매도측 보유수량 × 매도가(quote 통화). dust(예: 0.00000001코인)는 value가 0에 수렴해 제외된다.
+//   holding=null 은 "재고 조회 실패" → fail-open(발송 유지). 영구 장애 시 전체 블랙아웃 방지.
 export type InventoryGateReason = 'toggle-off' | 'query-failed' | 'has-sell-inventory' | 'no-sell-inventory';
 export function evaluateInventoryGate(
-  holding: { sellHeld: number } | null,
+  holding: { sellHeldValue: number } | null,
   excludeEnabled: boolean,
+  minSellValue: number,
 ): { exclude: boolean; reason: InventoryGateReason } {
   if (!excludeEnabled) return { exclude: false, reason: 'toggle-off' };
   if (!holding) return { exclude: false, reason: 'query-failed' }; // fail-open: 조회 실패 시 발송 유지
-  if (holding.sellHeld > 0) return { exclude: false, reason: 'has-sell-inventory' };
+  if (holding.sellHeldValue >= minSellValue) return { exclude: false, reason: 'has-sell-inventory' };
   return { exclude: true, reason: 'no-sell-inventory' };
 }
 
@@ -205,10 +211,15 @@ class MultiArbNotifierService {
       // 재고 조회 실패(관리자 미존재/잔고 API 오류) → 발송 유지. 영구 장애 시 전체 블랙아웃 방지.
       console.log(`[MultiArbNotifier] ${candidate.symbol}(${candidate.currencyZone}) 재고 조회 실패 — 발송 유지(fail-open):`, err?.message ?? err);
     }
-    const gate = evaluateInventoryGate(holding, excludeNoInventory);
+    const sellHeldValue = holding ? holding.sellHeld * candidate.sellPrice : 0; // 매도측 재고 가치(quote 통화)
+    const gate = evaluateInventoryGate(
+      holding ? { sellHeldValue } : null,
+      excludeNoInventory,
+      MIN_SELL_VALUE_BY_ZONE[candidate.currencyZone],
+    );
     if (gate.exclude) {
       // notifiedAt 미갱신 → 쿨다운 미발동 → 재고가 생기면 다음 사이클에서 다시 후보로 뜬다.
-      console.log(`[MultiArbNotifier] ${candidate.symbol}(${candidate.currencyZone}) 발송 제외 — 매도측(${EXCHANGE_LABELS[candidate.sellExchange]}) 재고 없음(sellHeld=${holding?.sellHeld ?? 0})`);
+      console.log(`[MultiArbNotifier] ${candidate.symbol}(${candidate.currencyZone}) 발송 제외 — 매도측(${EXCHANGE_LABELS[candidate.sellExchange]}) 실행가능 재고 부족(sellHeld=${holding?.sellHeld ?? 0}, 가치≈${Math.round(sellHeldValue)})`);
       return false;
     }
 
@@ -258,7 +269,8 @@ class MultiArbNotifierService {
         const sellLabel = EXCHANGE_LABELS[candidate.sellExchange];
         const buyLabel = EXCHANGE_LABELS[candidate.buyExchange];
         const fmt = (n: number) => n.toLocaleString('ko-KR', { maximumFractionDigits: 2 });
-        if (h.sellHeld > 0) {
+        const sellHeldValue = h.sellHeld * candidate.sellPrice;
+        if (sellHeldValue >= MIN_SELL_VALUE_BY_ZONE[candidate.currencyZone]) {
           extra.holdingLine = `👛 보유: ${sellLabel} ${fmt(h.sellHeld)} — 재고형(로밍) 실행 가능`;
         } else if (h.buyHeld > 0) {
           extra.holdingLine = `👛 보유: ${buyLabel}에만 ${fmt(h.buyHeld)} — 매도측(${sellLabel}) 재고 없어 재고형 불가`;

@@ -159,21 +159,29 @@ describe('multiArbNotifierService.notify', () => {
 
 // 재고 미보유 배제 게이트 판정 (순수함수)
 describe('evaluateInventoryGate', () => {
+  const MIN = 5000; // KRW권 최소주문
+
   it('토글 OFF면 재고와 무관하게 발송(exclude=false)', () => {
-    expect(evaluateInventoryGate({ sellHeld: 0 }, false)).toEqual({ exclude: false, reason: 'toggle-off' });
-    expect(evaluateInventoryGate(null, false)).toEqual({ exclude: false, reason: 'toggle-off' });
+    expect(evaluateInventoryGate({ sellHeldValue: 0 }, false, MIN)).toEqual({ exclude: false, reason: 'toggle-off' });
+    expect(evaluateInventoryGate(null, false, MIN)).toEqual({ exclude: false, reason: 'toggle-off' });
   });
 
   it('조회 실패(null)면 fail-open으로 발송 유지(exclude=false)', () => {
-    expect(evaluateInventoryGate(null, true)).toEqual({ exclude: false, reason: 'query-failed' });
+    expect(evaluateInventoryGate(null, true, MIN)).toEqual({ exclude: false, reason: 'query-failed' });
   });
 
-  it('매도측 재고 보유(sellHeld>0)면 발송(exclude=false)', () => {
-    expect(evaluateInventoryGate({ sellHeld: 12.5 }, true)).toEqual({ exclude: false, reason: 'has-sell-inventory' });
+  it('매도측 재고 가치가 최소주문 이상이면 발송(exclude=false)', () => {
+    expect(evaluateInventoryGate({ sellHeldValue: 54250 }, true, MIN)).toEqual({ exclude: false, reason: 'has-sell-inventory' });
+    expect(evaluateInventoryGate({ sellHeldValue: MIN }, true, MIN)).toEqual({ exclude: false, reason: 'has-sell-inventory' }); // 경계 포함
   });
 
-  it('매도측 재고 없음(sellHeld=0)이고 토글 ON이면 제외(exclude=true)', () => {
-    expect(evaluateInventoryGate({ sellHeld: 0 }, true)).toEqual({ exclude: true, reason: 'no-sell-inventory' });
+  it('매도측 재고 없음(0)이고 토글 ON이면 제외(exclude=true)', () => {
+    expect(evaluateInventoryGate({ sellHeldValue: 0 }, true, MIN)).toEqual({ exclude: true, reason: 'no-sell-inventory' });
+  });
+
+  it('dust 재고(가치 < 최소주문)는 제외 — 실행 불가라 카톡 노이즈 제거 (예: ARK 0.00000001×326≈0원)', () => {
+    expect(evaluateInventoryGate({ sellHeldValue: 0.0000033 }, true, MIN)).toEqual({ exclude: true, reason: 'no-sell-inventory' });
+    expect(evaluateInventoryGate({ sellHeldValue: 4999 }, true, MIN)).toEqual({ exclude: true, reason: 'no-sell-inventory' });
   });
 });
 
@@ -201,6 +209,14 @@ describe('multiArbNotifierService.notify 재고 게이트', () => {
     expect(db.multiArbOpportunity.create).toHaveBeenCalled();      // 기회 이력은 남김
     expect(mockedSend).not.toHaveBeenCalled();                     // 카톡만 스킵
     expect(db.multiArbOpportunity.update).not.toHaveBeenCalled();  // notifiedAt=null 유지 → 재고 생기면 재시도
+  });
+
+  it('ARK 시나리오: 매도측 dust(0.00000001) + 반대쪽(매수측) 보유 → 카톡 스킵 (실행 불가)', async () => {
+    // 업비트(sell) ARK dust + 빗썸(buy) 다량 보유 → 매도측 가치 ≈ 0.00000001×4340 ≈ 0원 < 5000 → 제외
+    holdingSpy.mockResolvedValue({ sellHeld: 0.00000001, buyHeld: 375.9 });
+    const sent = await multiArbNotifierService.notify(cand, feasible, null, net);
+    expect(sent).toBe(false);
+    expect(mockedSend).not.toHaveBeenCalled();
   });
 
   it('매도측 재고 보유 → 카톡 발송 + notifiedAt 갱신', async () => {
