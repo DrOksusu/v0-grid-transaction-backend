@@ -1,4 +1,4 @@
-# 재고 되돌림 리컴실러 (Inventory Reclaim) 설계
+# 재고 되돌림 리컨실러 (Inventory Reclaim) 설계
 
 - 작성일: 2026-10-01
 - 상태: 설계 승인됨 (구현 대기)
