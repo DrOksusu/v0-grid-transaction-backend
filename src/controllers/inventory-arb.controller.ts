@@ -61,6 +61,16 @@ export async function getRoamStatus(req: AuthRequest, res: Response, next: NextF
   } catch (e) { next(e); }
 }
 
+/** 로밍 전체 체결 이력 페이지네이션 (?page=1&limit=50) */
+export async function getRoamTrades(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page ?? '1'), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? '50'), 10) || 50));
+    const data = await inventoryArbService.getRoamTradesPage(req.userId!, page, limit);
+    return successResponse(res, data);
+  } catch (e) { next(e); }
+}
+
 /** 로밍 자동실행 설정 upsert (enabled/autoExecute/minNetPct/orderKrw/cooldownSec/일일한도/killSwitch) */
 export async function putRoamConfig(req: AuthRequest, res: Response, next: NextFunction) {
   try {

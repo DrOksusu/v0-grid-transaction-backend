@@ -474,6 +474,24 @@ class InventoryArbService {
     return { config: cfg, todayCount, todayNetKrw, recentTrades };
   }
 
+  /** 로밍(__ROAM__) 전체 체결 이력 페이지네이션 (최근순). page 1-base, limit 1~100. */
+  async getRoamTradesPage(userId: number, page: number, limit: number): Promise<{
+    trades: any[]; total: number; page: number; limit: number;
+  }> {
+    const roamBot = await mainPrisma.inventoryArbBot.findFirst({ where: { userId, symbol: ROAM_BOT_SYMBOL } });
+    if (!roamBot) return { trades: [], total: 0, page, limit };
+    const [trades, total] = await Promise.all([
+      mainPrisma.inventoryArbTrade.findMany({
+        where: { botId: roamBot.id },
+        orderBy: { id: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      mainPrisma.inventoryArbTrade.count({ where: { botId: roamBot.id } }),
+    ]);
+    return { trades, total, page, limit };
+  }
+
   private async processBot(bot: any): Promise<void> {
     // 1. 인증 클라이언트(주문·잔고용) 확보 + 다단계 호가(공개 REST, depth-aware 사이징용) 조회
     const upbit = await this.getUpbit(bot.userId);
