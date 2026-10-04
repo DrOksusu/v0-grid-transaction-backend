@@ -193,13 +193,13 @@ describe('executeArb', () => {
     expect(r.kind).toBe('flatten_failed');
   });
 
-  it('imbalance가 dust(< 5000 KRW)면 flatten 없이 filled + dust 로그', async () => {
+  it('imbalance가 dust(< 5000 KRW)면 flatten 없이 filled (성공건 비고 공란)', async () => {
     const sellLeg = mockLeg({ sellIoc: async () => ({ filledQty: 9, grossKrw: 9090, feeKrw: 4 }) });
     const buyLeg = mockLeg({ buyIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 5 }) });
-    // imbalance 1 × 1000 = 1000 KRW < 5000 → dust
+    // imbalance 1 × 1000 = 1000 KRW < 5000 → dust 수용
     const r = await executeArb({ buyLeg, sellLeg, symbol: 'XRP', qty: QTY, buyPrice: PRICE, sellPrice: 1010, fallbackMode: 'market_flatten' });
     expect(r.kind).toBe('filled');
-    if (r.kind === 'filled') expect(r.note).toContain('dust');
+    if (r.kind === 'filled') expect(r.note).toBe(''); // 성공(개수보존)은 비고 노이즈 제거
   });
 
   it('fallback=hold + imbalance면 partial_hold', async () => {

@@ -110,9 +110,8 @@ export async function executeArb(input: ExecuteArbInput): Promise<ExecutorResult
       sellGrossKrw,
       feeKrw: legFeeKrw,
       netKrw: +netKrw.toFixed(6),
-      note: absImbalance === 0
-        ? 'exact match'
-        : `dust imbalance ${absImbalance} accepted (< ${minOrder} quote)`,
+      // 성공(개수보존) 건은 비고 불필요 — 미세 불균형/완전일치 모두 buyQty·sellQty 컬럼에 드러남(노이즈 제거)
+      note: '',
     };
   }
 
