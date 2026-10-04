@@ -73,6 +73,22 @@ describe('executeReclaim (sell-first + 예산캡)', () => {
     expect(r.status).toBe('filled');            // 전량 매수 → balanced
   });
 
+  it('반올림/수수료로 매수량이 미세하게 적어도(0.5% 이내) filled로 표시', async () => {
+    // 거래소 정밀도·수수료 코인차감으로 buy(9.99)가 sell(10)보다 0.1% 적음 → 전량 되돌림으로 간주
+    const bithumbLeg = mockLeg({ sellIoc: async () => ({ filledQty: 10, grossKrw: 10100, feeKrw: 4 }) });
+    const upbitLeg = mockLeg({ buyIoc: async () => ({ filledQty: 9.99, grossKrw: 10000, feeKrw: 5 }) });
+    const r = await executeReclaim({ bithumbLeg, upbitLeg, symbol: 'XRP', qty: 10, bithumbBid: 1010, upbitAsk: 1000 });
+    expect(r.status).toBe('filled'); // 0.1% < 0.5% 허용오차
+  });
+
+  it('진짜 부분체결(0.5% 초과 차이)은 partial 유지', async () => {
+    // buy(9.9)가 sell(10)보다 1% 적음 → 호가 얇아 덜 체결된 진짜 부분 → partial
+    const bithumbLeg = mockLeg({ sellIoc: async () => ({ filledQty: 10, grossKrw: 10100, feeKrw: 4 }) });
+    const upbitLeg = mockLeg({ buyIoc: async () => ({ filledQty: 9.9, grossKrw: 9900, feeKrw: 5 }) });
+    const r = await executeReclaim({ bithumbLeg, upbitLeg, symbol: 'XRP', qty: 10, bithumbBid: 1010, upbitAsk: 1000 });
+    expect(r.status).toBe('partial'); // 1% > 0.5% 허용오차
+  });
+
   it('maxLossBps=0(기본): 기존대로 net≥0 (손실 허용 안 함)', async () => {
     const bithumbLeg = mockLeg({ sellIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 4 }) });
     const buyIoc = jest.fn(async () => ({ filledQty: 10, grossKrw: 9990, feeKrw: 5 }));
