@@ -60,4 +60,26 @@ describe('executeReclaim (sell-first + 예산캡)', () => {
     expect(r.buyFilled).toBe(0);
     expect(r.netKrw).toBeGreaterThanOrEqual(0); // 매도 대금만 받고 안 씀 → 손실 아님
   });
+
+  it('maxLossBps>0: 손실 허용 → 예산 확대(매도 순대금 초과) + net 음수 가능 + 전량 매수', async () => {
+    // 0 스프레드: 빗썸 매도 10000(fee4), 업비트 전량 매수 10005(fee5) → net = 10000-10005-9 = -14
+    const bithumbLeg = mockLeg({ sellIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 4 }) });
+    const buyIoc = jest.fn(async () => ({ filledQty: 10, grossKrw: 10005, feeKrw: 5 }));
+    const upbitLeg = mockLeg({ buyIoc });
+    const r = await executeReclaim({ bithumbLeg, upbitLeg, symbol: 'XRP', qty: 10, bithumbBid: 1000, upbitAsk: 1000, buyFeeBps: 5, maxLossBps: 10 });
+    const [, , , budget] = buyIoc.mock.calls[0] as unknown as [string, number, number, number];
+    expect(budget).toBeGreaterThan(10000 - 4); // 손실 허용분만큼 예산이 매도 순대금보다 큼
+    expect(r.netKrw).toBeLessThan(0);           // 수수료만큼 net 음수
+    expect(r.status).toBe('filled');            // 전량 매수 → balanced
+  });
+
+  it('maxLossBps=0(기본): 기존대로 net≥0 (손실 허용 안 함)', async () => {
+    const bithumbLeg = mockLeg({ sellIoc: async () => ({ filledQty: 10, grossKrw: 10000, feeKrw: 4 }) });
+    const buyIoc = jest.fn(async () => ({ filledQty: 10, grossKrw: 9990, feeKrw: 5 }));
+    const upbitLeg = mockLeg({ buyIoc });
+    const r = await executeReclaim({ bithumbLeg, upbitLeg, symbol: 'XRP', qty: 10, bithumbBid: 1000, upbitAsk: 1000, buyFeeBps: 5 });
+    const [, , , budget] = buyIoc.mock.calls[0] as unknown as [string, number, number, number];
+    expect(budget).toBeLessThanOrEqual(10000 - 4); // 매도 순대금 이내(손실 불가)
+    expect(r.netKrw).toBeGreaterThanOrEqual(0);
+  });
 });

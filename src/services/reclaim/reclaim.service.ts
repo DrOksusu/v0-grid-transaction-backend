@@ -139,7 +139,9 @@ class ReclaimService {
           upbitAsk: up.ask, maxOrderKrw: cfg.maxOrderKrw, feeBps: UPBIT_BUY_FEE_BPS,
         });
         if (qty * up.ask < MIN_ORDER_KRW) continue;
-        const r = await executeReclaim({ bithumbLeg: legs.bithumb, upbitLeg: legs.upbit, symbol: sym, qty, bithumbBid: bt.bid, upbitAsk: up.ask, buyFeeBps: UPBIT_BUY_FEE_BPS });
+        // minNetPct<0이면 그 절댓값만큼(bps) 손실을 허용해 전량 되돌림(net 음수 가능). ≥0이면 0=net≥0.
+        const maxLossBps = Math.max(0, -cfg.minNetPct * 100);
+        const r = await executeReclaim({ bithumbLeg: legs.bithumb, upbitLeg: legs.upbit, symbol: sym, qty, bithumbBid: bt.bid, upbitAsk: up.ask, buyFeeBps: UPBIT_BUY_FEE_BPS, maxLossBps });
         await mainPrisma.arbReclaimTrade.create({
           data: {
             userId, symbol: sym, qty, bithumbSellPrice: bt.bid, upbitBuyPrice: up.ask,

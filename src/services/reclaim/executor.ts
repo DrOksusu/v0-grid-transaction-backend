@@ -7,7 +7,8 @@ export interface ReclaimExecInput {
   qty: number;
   bithumbBid: number;   // 빗썸 매도 기준가(최우선 매수호가) — 시장가라 min-order 체크용
   upbitAsk: number;     // 업비트 매수 기준가(최우선 매도호가)
-  buyFeeBps?: number;   // 업비트 매수 수수료(bps). 예산 캡으로 순손익≥0 보장. 기본 5
+  buyFeeBps?: number;   // 업비트 매수 수수료(bps). 예산 캡 계산용. 기본 5
+  maxLossBps?: number;  // 허용 손실 상한(bps, 거래규모 대비). 0=순손익≥0(기본). >0이면 그만큼 손실 허용해 전량 되돌림(net 음수 가능)
 }
 
 export interface ReclaimExecResult {
@@ -28,11 +29,11 @@ const EPS = 1e-8;
  *
  * 1) 빗썸 매도를 먼저 실행(불확실한 leg). 미체결이면 업비트 매수를 아예 하지 않는다
  *    → "매수만 되고 매도 안 됨"으로 원치 않는 코인 재고가 쌓이던 문제 제거.
- * 2) 실제 팔린 수량만큼만 업비트 매수. 지출 상한 = 매도 순대금 ÷ (1+매수수수료)
- *    → 받은 돈보다 더 쓰지 않으므로 **순손익 ≥ 0 보장**(가격이 불리하게 움직여도 손실 없음).
+ * 2) 실제 팔린 수량만큼만 업비트 매수. 지출 상한 = (매도 순대금 + 허용손실) ÷ (1+매수수수료).
+ *    - maxLossBps=0(기본): 지출 ≤ 매도 순대금 → **순손익 ≥ 0 보장**(불리하게 움직여도 손실 없음, 수수료는 코인 감소로).
+ *    - maxLossBps>0(임계 음수 설정): 그만큼 손실을 허용해 **전량 되돌림** → 수수료만큼 net이 음수로 찍힘(손실은 상한으로 bounded).
  *
- * 최악의 경우도 "빗썸만 팔고 업비트는 덜 삼 = 현금 보유, 손실 0"으로 끝난다.
- * 사이징이 최우선호가 물량 이내라 시장가 매도의 호가창 walk도 최소.
+ * 사이징이 최우선호가 물량 이내 + 업비트 최유리 IOC 가격보호라 호가창 walk 슬리피지 최소.
  */
 export async function executeReclaim(i: ReclaimExecInput): Promise<ReclaimExecResult> {
   // 1) 빗썸 매도 먼저
@@ -48,9 +49,12 @@ export async function executeReclaim(i: ReclaimExecInput): Promise<ReclaimExecRe
     };
   }
 
-  // 2) 팔린 수량만큼만 업비트 매수, 지출 상한으로 순손익≥0 보장
+  // 2) 팔린 수량만큼만 업비트 매수. 지출 상한 = (매도 순대금 + 허용손실) ÷ (1+매수수수료).
+  //    maxLossBps=0이면 매도 순대금 이내(net≥0). >0이면 그만큼 손실 허용해 전량 매수(net 음수 가능, 손실 bounded).
   const buyFeeBps = i.buyFeeBps ?? 5;
-  const budget = Math.floor((sell.grossKrw - sell.feeKrw) / (1 + buyFeeBps / 10000));
+  const maxLossBps = Math.max(0, i.maxLossBps ?? 0);
+  const spendableKrw = (sell.grossKrw - sell.feeKrw) + (sell.grossKrw * maxLossBps) / 10000;
+  const budget = Math.floor(spendableKrw / (1 + buyFeeBps / 10000));
   const buyRes = await i.upbitLeg.buyIoc(i.symbol, sell.filledQty, i.upbitAsk, budget);
   const buy = buyRes ?? { filledQty: 0, grossKrw: 0, feeKrw: 0 };
 
