@@ -76,6 +76,27 @@ class ReclaimService {
     return { count, notionalKrw, imbalanceKrw };
   }
 
+  /**
+   * 되돌림 대상 자격: 재고형 아비(로밍/수동/봇)로 '빗썸 매수 + 업비트 매도'(buy_bithumb_sell_upbit)가
+   * 체결된 적 있는 코인 심볼만. 이 방향이 빗썸에 코인을 쌓으므로, 그렇게 쌓인 재고만 업비트로 되돌린다.
+   * (다른 이유로 빗썸에 보유한 코인은 되돌림 대상에서 제외)
+   */
+  private async arbAcquiredSymbols(userId: number): Promise<Set<string>> {
+    const bots = await mainPrisma.inventoryArbBot.findMany({ where: { userId }, select: { id: true } });
+    const botIds = bots.map((b) => b.id);
+    if (botIds.length === 0) return new Set();
+    const rows = await mainPrisma.inventoryArbTrade.findMany({
+      where: {
+        botId: { in: botIds },
+        direction: 'buy_bithumb_sell_upbit',
+        status: { in: ['filled', 'partial_flattened', 'partial_hold'] },
+      },
+      select: { symbol: true },
+      distinct: ['symbol'],
+    });
+    return new Set(rows.map((r) => r.symbol));
+  }
+
   /** 에이전트가 주기 호출. 게이트 통과 시 대상 스캔 → 순차익≥임계 → 사이징 → 집행 → 기록. */
   async scanOnce(): Promise<void> {
     const userId = await this.adminUserId();
@@ -95,10 +116,12 @@ class ReclaimService {
 
     const holdings = await inventoryArbService.getKrwHoldings(userId);
     const markets = await this.upbitMarkets();
+    const eligibleSymbols = await this.arbAcquiredSymbols(userId); // 재고형 아비로 빗썸 매수된 코인만
     // 대상 선별 (출금수수료율은 별도 캐시 로직 — 초기엔 빈 객체로 두어 미확인=포함, 후속 캐시 채움)
     const targets = selectReclaimTargets({
       holdings: holdings.bithumb, upbitMarkets: markets, withdrawFeePct: {},
       thresholdPct: cfg.withdrawFeePctThreshold, excludeMajors: cfg.excludeMajors,
+      eligibleSymbols,
     });
     if (targets.length === 0) return;
 

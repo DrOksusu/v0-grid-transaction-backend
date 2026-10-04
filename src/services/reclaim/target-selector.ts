@@ -10,16 +10,19 @@ export interface SelectTargetsInput {
   withdrawFeePct: Record<string, number>; // 출금수수료율(%) {symbol: pct}. 미확인은 키 없음
   thresholdPct: number;                   // 이 값 초과(전송 비쌈)만 대상
   excludeMajors: boolean;                 // true면 대형코인(MAJOR_SYMBOLS) 제외
+  eligibleSymbols: Set<string>;           // 재고형 아비로 '빗썸 매수+업비트 매도'(buy_bithumb_sell_upbit) 체결된 코인만
 }
 
 /**
- * 되돌림 대상 = 빗썸 보유량>0 × 업비트 공통상장 × (출금수수료율 > 임계 또는 미확인) × (excludeMajors면 비대형).
+ * 되돌림 대상 = 빗썸 보유량>0 × 업비트 공통상장 × 재고형 아비 매수 이력 × (출금수수료율 > 임계 또는 미확인) × (excludeMajors면 비대형).
+ * 핵심: 재고형 아비(로밍 등)로 빗썸에 쌓인 코인만 되돌림 — 다른 이유로 보유한 빗썸 코인은 건드리지 않는다(eligibleSymbols).
  * 전송이 싼(임계 이하) 코인은 전송이 답이므로 제외. 대형코인은 스프레드가 얇아 기본 제외.
  */
 export function selectReclaimTargets(i: SelectTargetsInput): string[] {
   const out: string[] = [];
   for (const [sym, qty] of Object.entries(i.holdings)) {
     if (!(qty > 0)) continue;
+    if (!i.eligibleSymbols.has(sym)) continue; // 재고형 아비 매수 이력 없는 코인 제외
     if (!i.upbitMarkets.has(sym)) continue;
     if (i.excludeMajors && MAJOR_SYMBOLS.has(sym)) continue; // 대형코인 제외
     const fee = i.withdrawFeePct[sym];
