@@ -23,6 +23,7 @@ export interface ReclaimExecResult {
 }
 
 const EPS = 1e-8;
+const BALANCED_REL_TOL = 0.005; // 매도 대비 매수량 상대차 0.5% 이내면 전량 되돌림('체결')으로 간주
 
 /**
  * 매도-먼저(sell-first) 순차 집행 — 한쪽만 체결되는 재고 누적을 원천 차단.
@@ -60,7 +61,11 @@ export async function executeReclaim(i: ReclaimExecInput): Promise<ReclaimExecRe
 
   const feeKrw = sell.feeKrw + buy.feeKrw;
   const netKrw = sell.grossKrw - buy.grossKrw - feeKrw;
-  const balanced = Math.abs(sell.filledQty - buy.filledQty) < EPS;
+  // 거래소 수량 정밀도(코인별 소수자릿수 반올림)와 수수료 코인차감 때문에 매수량이 매도량과
+  // 비트 단위로 똑같을 일은 거의 없다. 절대 일치(EPS)로 보면 사실상 전량 되돌린 건도 전부 '부분'이 됨.
+  // → 상대 허용오차 0.5% 이내면 '체결'(전량 되돌림)로 간주. 진짜 부분체결(gap 큰 경우)만 '부분'.
+  const relGap = sell.filledQty > EPS ? Math.abs(sell.filledQty - buy.filledQty) / sell.filledQty : 1;
+  const balanced = relGap < BALANCED_REL_TOL;
   const status: ReclaimExecResult['status'] =
     buy.filledQty > EPS && balanced ? 'filled' : 'partial'; // 매도는 됐으므로 failed 아님(현금 보유)
 
