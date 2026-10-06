@@ -81,6 +81,9 @@ export interface FeasibilityInput {
   sellCoinBalance: number; // 매도 거래소의 해당 코인 가용 잔고
   buyKrwBalance: number; // 매수 거래소의 KRW 가용 잔고
   buyFeeBps: number;
+  // 매수측 KRW 안전마진(배수). 가용 KRW가 (주문액×수수료×이 값)보다 적으면 사이징 대신 스킵.
+  // 체크~체결 사이 타봇 KRW 소진으로 한쪽만 체결(flatten_failed)되는 레이스 방어. 미지정 시 1(무버퍼=기존 동작).
+  krwSafetyFactor?: number;
 }
 
 /** FeasibilityGate 결과 */

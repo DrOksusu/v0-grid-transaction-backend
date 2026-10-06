@@ -80,4 +80,24 @@ describe('evaluateFeasibility', () => {
     expect(r.ok).toBe(false);
     expect(r.reason).toContain('daily count');
   });
+
+  it('krwSafetyFactor: 가용 KRW가 주문비용×마진 미만이면 사이징 대신 스킵(한쪽체결 방지)', () => {
+    // 주문 notional 20000 × feeFactor(1.0005) × 1.15 = 23011.5 필요. 가용 21000 → 커버는 되지만 마진 부족 → 스킵
+    const r = evaluateFeasibility({ ...base, buyKrwBalance: 21000, krwSafetyFactor: 1.15 });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain('한쪽체결 방지');
+  });
+
+  it('krwSafetyFactor: 가용 KRW가 넉넉하면 마진 적용해도 정상 통과', () => {
+    const r = evaluateFeasibility({ ...base, buyKrwBalance: 1_000_000, krwSafetyFactor: 1.15 });
+    expect(r.ok).toBe(true);
+    expect(r.qty).toBe(20);
+  });
+
+  it('krwSafetyFactor 미지정(기본 1): 기존 무버퍼 사이징 동작 유지', () => {
+    // 기존 테스트와 동일 — 마진 없이 가용 KRW에 맞춰 사이징
+    const r = evaluateFeasibility({ ...base, buyKrwBalance: 5025 });
+    expect(r.ok).toBe(true);
+    expect(r.qty).toBeCloseTo(5.02248875, 8);
+  });
 });

@@ -43,6 +43,9 @@ export const ROAM_BOT_SYMBOL = '__ROAM__'; // 로밍 자동실행 기록용 sent
 
 // 로밍 자동실행 모듈 상태
 const ROAM_INTERVAL_MS = 30_000; // 로밍 스캔 주기 (전 종목 depth 조회라 봇 스캔(5s)보다 김)
+// 자동실행(로밍·전용봇) 매수측 KRW 안전마진. 가용 KRW가 주문비용의 이 배수 미만이면 스킵 →
+// 체크~체결 사이 타봇 KRW 소진으로 한쪽만 체결(flatten_failed)되는 레이스 방어. 수동 UI는 미적용(1).
+const AUTO_KRW_SAFETY_FACTOR = 1.15;
 const ROAM_NOTIFY_THROTTLE_MS = 30 * 60 * 1000; // 반자동 감지 카톡: 심볼당 30분 1회
 let lastRoamAt = 0;
 let roamInFlight = false;
@@ -278,6 +281,8 @@ class InventoryArbService {
         opp, minSpreadBps, anomalyMaxBps: 2000, maxOrderKrw: cappedMaxKrw,
         dailyMaxKrw: null, dailyMaxCount: null, todayNotionalKrw: 0, todayCount: 0,
         sellCoinBalance, buyKrwBalance, buyFeeBps: 5,
+        // 로밍(자동)은 KRW 안전마진 적용, 수동 UI는 전액 사용 허용(1)
+        krwSafetyFactor: sentinelSymbol === ROAM_BOT_SYMBOL ? AUTO_KRW_SAFETY_FACTOR : 1,
       });
       if (!feas.ok) return { executed: false, reason: feas.reason };
 
@@ -532,6 +537,7 @@ class InventoryArbService {
       opp, minSpreadBps: grossThresholdBps, anomalyMaxBps: bot.anomalyMaxBps,
       maxOrderKrw: bot.orderKrw, dailyMaxKrw: null, dailyMaxCount: bot.dailyMaxCount,
       todayNotionalKrw: 0, todayCount, sellCoinBalance: stableSellCoin, buyKrwBalance, buyFeeBps: bot.buyFeeBps,
+      krwSafetyFactor: AUTO_KRW_SAFETY_FACTOR, // 매수측 KRW 안전마진 — 한쪽체결 방지
     });
     if (!feas.ok) {
       console.log(`[InventoryArb] bot ${bot.id} gate: ${feas.reason}`);
@@ -641,6 +647,7 @@ class InventoryArbService {
             opp, minSpreadBps: grossThresholdBps, anomalyMaxBps: bot.anomalyMaxBps,
             maxOrderKrw: bot.orderKrw, dailyMaxKrw: null, dailyMaxCount: bot.dailyMaxCount,
             todayNotionalKrw: 0, todayCount, sellCoinBalance: stableSellCoin, buyKrwBalance, buyFeeBps: bot.buyFeeBps,
+            krwSafetyFactor: AUTO_KRW_SAFETY_FACTOR, // 매수측 KRW 안전마진 — 한쪽체결 방지
           });
           if (!feas.ok) decision = feas.reason ?? 'gate_blocked';
           else {
