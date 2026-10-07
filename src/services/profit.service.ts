@@ -8,6 +8,7 @@
 
 import prisma from '../config/database';
 import { Exchange } from '@prisma/client';
+import { isUsdtQuote, splitByQuote } from '../utils/quote-currency';
 
 /**
  * 현재 월 문자열 반환 (YYYY-MM) - 한국 시간 기준
@@ -171,17 +172,19 @@ export class ProfitService {
       where: { userId, deletedAt: null, ...(exchange && { exchange }) },
       select: {
         id: true,
+        exchange: true,
         currentProfit: true,
         totalTrades: true,
       },
     });
 
     // 모든 봇 ID (Soft delete 포함 - 월별 수익 계산용)
+    // MEXC(USDT) 봇은 KRW 월별/총합에서 제외 (usdtProfit으로 별도 노출)
     const allBots = await prisma.bot.findMany({
       where: { userId, ...(exchange && { exchange }) },
-      select: { id: true },
+      select: { id: true, exchange: true },
     });
-    const allBotIds = allBots.map(b => b.id);
+    const allBotIds = allBots.filter(b => !isUsdtQuote(b.exchange)).map(b => b.id);
 
     // Trade 테이블에서 직접 월별 수익 계산 (모든 봇의 매도 거래, profit이 있는 것만)
     const trades = await prisma.trade.findMany({
@@ -230,12 +233,16 @@ export class ProfitService {
     const totalTradesFromMonthly = monthlyProfits.reduce((sum, mp) => sum + mp.trades, 0);
 
     // 활성 봇 수익 합계 (참고용 - Bot 테이블 기준)
-    const activeProfit = activeBots.reduce((sum, bot) => sum + bot.currentProfit, 0);
-    const activeTrades = activeBots.reduce((sum, bot) => sum + bot.totalTrades, 0);
+    // KRW 합계는 MEXC(USDT) 제외, USDT 합계는 별도 필드로 노출
+    const krwActiveBots = activeBots.filter(bot => !isUsdtQuote(bot.exchange));
+    const { usdtProfit } = splitByQuote(activeBots);
+    const activeProfit = krwActiveBots.reduce((sum, bot) => sum + bot.currentProfit, 0);
+    const activeTrades = krwActiveBots.reduce((sum, bot) => sum + bot.totalTrades, 0);
 
-    // 삭제된 봇 수익 합계
-    const deletedProfit = snapshots.reduce((sum, s) => sum + s.finalProfit, 0);
-    const deletedTrades = snapshots.reduce((sum, s) => sum + s.totalTrades, 0);
+    // 삭제된 봇 수익 합계 (KRW 기준, MEXC 제외)
+    const krwSnapshots = snapshots.filter(s => !isUsdtQuote(s.exchange));
+    const deletedProfit = krwSnapshots.reduce((sum, s) => sum + s.finalProfit, 0);
+    const deletedTrades = krwSnapshots.reduce((sum, s) => sum + s.totalTrades, 0);
 
     return {
       // 총 수익 = 월별 수익의 합계 (Trade 테이블 기준으로 일관성 유지)
@@ -260,8 +267,10 @@ export class ProfitService {
       activeBots: {
         profit: activeProfit,
         trades: activeTrades,
-        count: activeBots.length,
+        count: krwActiveBots.length,
       },
+      // MEXC(USDT) 봇 활성 손익 합계 (KRW와 분리)
+      usdtProfit,
     };
   }
 
