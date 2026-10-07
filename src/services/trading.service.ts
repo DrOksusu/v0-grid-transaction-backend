@@ -7,18 +7,33 @@ import { socketService } from './socket.service';
 import { priceManager } from './upbit-price-manager';
 import { bithumbPriceManager } from './bithumb-grid-price-manager';
 import { ProfitService } from './profit.service';
+import { MexcGridClient } from './exchange/mexc-grid-client';
+import { mexcGridPriceManager } from './mexc-grid-price-manager';
 
 // 그리드 거래에 필요한 최소 거래소 클라이언트 인터페이스
 interface GridTradeClient {
   buyLimit(market: string, price: number, volume: number): Promise<any>;
   sellLimit(market: string, price: number, volume: number): Promise<any>;
-  cancelOrder(uuid: string): Promise<any>;
+  cancelOrder(uuid: string, symbol?: string): Promise<any>;
   getFilledOrders(market?: string, limit?: number): Promise<any[]>;
 }
 
-function getFeeRate(exchange: string): number {
-  return exchange === 'bithumb' ? 0.0004 : 0.0005;
+// 거래소별 클라이언트 생성 (upbit 기본, bithumb/mexc 분기)
+export function resolveGridClient(
+  exchange: string,
+  cred: { apiKey: string; secretKey: string },
+): GridTradeClient {
+  if (exchange === 'bithumb') return new BithumbClient({ accessKey: cred.apiKey, secretKey: cred.secretKey });
+  if (exchange === 'mexc') return new MexcGridClient({ apiKey: cred.apiKey, secretKey: cred.secretKey });
+  return new UpbitService({ accessKey: cred.apiKey, secretKey: cred.secretKey });
 }
+
+function getFeeRate(exchange: string): number {
+  if (exchange === 'bithumb') return 0.0004;
+  if (exchange === 'mexc') return (Number(process.env.MEXC_SPOT_FEE_BPS) || 5) / 10000;
+  return 0.0005;
+}
+export { getFeeRate };
 
 // 자격증명 캐시 (5분 TTL)
 interface CachedCredential {
@@ -317,14 +332,14 @@ export class TradingService {
       const { apiKey, secretKey, exchange: botExchange } = cachedCred;
 
       // 거래소별 클라이언트 초기화
-      const upbit: GridTradeClient = botExchange === 'bithumb'
-        ? new BithumbClient({ accessKey: apiKey, secretKey })
-        : new UpbitService({ accessKey: apiKey, secretKey });
+      const upbit: GridTradeClient = resolveGridClient(botExchange, { apiKey, secretKey });
 
       // 현재가 조회 (거래소별 PriceManager 사용)
-      const currentPrice = botExchange === 'bithumb'
-        ? await bithumbPriceManager.getPriceWithFallback(bot.ticker)
-        : await priceManager.getPriceWithFallback(bot.ticker);
+      const currentPrice = botExchange === 'mexc'
+        ? await mexcGridPriceManager.getPriceWithFallback(bot.ticker)
+        : botExchange === 'bithumb'
+          ? await bithumbPriceManager.getPriceWithFallback(bot.ticker)
+          : await priceManager.getPriceWithFallback(bot.ticker);
 
       // 이전 가격 조회 (가격 크로싱 감지용)
       const previousPrice = lastCheckedPriceMap.get(botId);
@@ -662,9 +677,11 @@ export class TradingService {
       // 현재가 조회 (executeTrade와 동일 경로)
       let currentPrice: number;
       try {
-        currentPrice = bot.exchange === 'bithumb'
-          ? await bithumbPriceManager.getPriceWithFallback(bot.ticker)
-          : await priceManager.getPriceWithFallback(bot.ticker);
+        currentPrice = bot.exchange === 'mexc'
+          ? await mexcGridPriceManager.getPriceWithFallback(bot.ticker)
+          : bot.exchange === 'bithumb'
+            ? await bithumbPriceManager.getPriceWithFallback(bot.ticker)
+            : await priceManager.getPriceWithFallback(bot.ticker);
       } catch {
         return { healed: 0, skippedReason: 'price-fetch-failed' };
       }
@@ -759,9 +776,7 @@ export class TradingService {
             continue;
           }
 
-          const upbit: GridTradeClient = exchange === 'bithumb'
-            ? new BithumbClient({ accessKey: credential.apiKey, secretKey: credential.secretKey })
-            : new UpbitService({ accessKey: credential.apiKey, secretKey: credential.secretKey });
+          const upbit: GridTradeClient = resolveGridClient(exchange, { apiKey: credential.apiKey, secretKey: credential.secretKey });
 
           // 마켓별로 그리드 그룹화
           const gridsByMarket = new Map<string, typeof grids>();
@@ -811,7 +826,7 @@ export class TradingService {
 
           // 빗썸: 순차 개별 API 호출(300-500ms/건)이라 10건 상한 → 이벤트 루프 블로킹 방지
           // 업비트: 배치 API, 50건 상한 (이전 300건에서 축소)
-          const MAX_STALE_CHECK_PER_USER = exchange === 'bithumb' ? 10 : 50;
+          const MAX_STALE_CHECK_PER_USER = (exchange === 'bithumb' || exchange === 'mexc') ? 10 : 50;
 
           const staleGrids = staleCheckSkipped ? [] : grids
             .filter(g =>
@@ -827,11 +842,13 @@ export class TradingService {
             console.log(`[Trading] User ${userId}(${exchange}): ${staleGrids.length}개 오래된 pending 주문 직접 확인 (10분+, max=${MAX_STALE_CHECK_PER_USER})`);
 
             try {
-              if (exchange === 'bithumb') {
-                // 빗썸: getOrdersByUuids 미지원 → 개별 getOrder 조회
+              if (exchange === 'bithumb' || exchange === 'mexc') {
+                // 빗썸/MEXC: getOrdersByUuids 미지원 → 개별 getOrder 조회 (MEXC는 symbol 필수)
                 for (const grid of staleGrids) {
                   try {
-                    const order = await (upbit as any).getOrder(grid.orderId!);
+                    const order = exchange === 'mexc'
+                      ? await (upbit as any).getOrder(grid.orderId!, grid.bot.ticker)
+                      : await (upbit as any).getOrder(grid.orderId!);
                     if (order.status === 'filled') {
                       console.log(`[Trading] User ${userId}: 오래된 체결 감지 (빗썸) - ${grid.bot.ticker} ${grid.type} ${grid.price}원`);
                       await this.processFilledOrder(grid, order, upbit, userId, exchange);
@@ -950,12 +967,12 @@ export class TradingService {
         return false;
       }
 
-      const upbit: GridTradeClient = botExchange === 'bithumb'
-        ? new BithumbClient({ accessKey: credential.apiKey, secretKey: credential.secretKey })
-        : new UpbitService({ accessKey: credential.apiKey, secretKey: credential.secretKey });
+      const upbit: GridTradeClient = resolveGridClient(botExchange, { apiKey: credential.apiKey, secretKey: credential.secretKey });
 
       // 4. 단건 주문 조회 (API 1회)
-      const order = await (upbit as any).getOrder(grid.orderId);
+      const order = botExchange === 'mexc'
+        ? await (upbit as any).getOrder(grid.orderId, grid.bot.ticker)
+        : await (upbit as any).getOrder(grid.orderId);
 
       // upbit: raw API → order.state ('done'/'cancel'), bithumb: 매핑된 PlacedOrder → order.status ('filled'/'cancelled')
       const isFilled = order.state === 'done' || order.status === 'filled';
@@ -1246,9 +1263,7 @@ export class TradingService {
 
       const { apiKey, secretKey, userId, exchange: botExchange } = cachedCred;
 
-      const upbit: GridTradeClient = botExchange === 'bithumb'
-        ? new BithumbClient({ accessKey: apiKey, secretKey })
-        : new UpbitService({ accessKey: apiKey, secretKey });
+      const upbit: GridTradeClient = resolveGridClient(botExchange, { apiKey, secretKey });
 
       // orderId가 있는 그리드들만 필터링
       const gridsWithOrderId = pendingGrids.filter(g => g.orderId);
@@ -1464,7 +1479,7 @@ export class TradingService {
       for (const grid of toCancel) {
         try {
           if (grid.orderId) {
-            await upbit.cancelOrder(grid.orderId);
+            await upbit.cancelOrder(grid.orderId, ticker);
 
             // 그리드 상태를 available로 변경 (가격이 내려오면 다시 주문 가능)
             await prisma.gridLevel.update({
