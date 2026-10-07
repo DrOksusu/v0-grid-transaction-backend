@@ -18,7 +18,10 @@ export function roundToStep(qty: number, step: number): number {
   const r = Math.round(ratio);
   // 부동소수 노이즈 거리(상대 16*EPSILON)일 때만 정수 스냅, 아니면 내림(올림 절대 금지)
   const n = Math.abs(ratio - r) <= Math.abs(ratio) * 16 * Number.EPSILON ? r : Math.floor(ratio);
-  return Number((n * step).toFixed(decimalsOf(step)));
+  const d = decimalsOf(step);
+  let out = Number((n * step).toFixed(d));
+  if (out > qty) out = Number(((n - 1) * step).toFixed(d)); // floor 보장: 한 단계 하향
+  return out;
 }
 
 /** 가격을 tickSize 배수로 내림(floor). 보정 방식은 roundToStep과 동일. */
@@ -27,7 +30,10 @@ export function roundToTick(price: number, tick: number): number {
   const ratio = price / tick;
   const r = Math.round(ratio);
   const n = Math.abs(ratio - r) <= Math.abs(ratio) * 16 * Number.EPSILON ? r : Math.floor(ratio);
-  return Number((n * tick).toFixed(decimalsOf(tick)));
+  const d = decimalsOf(tick);
+  let out = Number((n * tick).toFixed(d));
+  if (out > price) out = Number(((n - 1) * tick).toFixed(d)); // floor 보장: 한 단계 하향
+  return out;
 }
 
 /** qty*price 가 minNotional 이상인지. */

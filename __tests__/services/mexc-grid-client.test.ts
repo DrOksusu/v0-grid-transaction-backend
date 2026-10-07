@@ -42,6 +42,10 @@ describe('round 회귀 방지(올림 금지)', () => {
     expect(roundToStep(0.75, 0.25)).toBeCloseTo(0.75, 9);
     expect(String(roundToStep(0.75, 0.25))).toBe('0.75');
   });
+  it('극단적 대비율에서도 올림되지 않음(floor 보장)', () => {
+    expect(roundToStep(2000000.000000006, 1e-8)).toBeLessThanOrEqual(2000000.000000006);
+    expect(roundToTick(2000000.000000006, 1e-8)).toBeLessThanOrEqual(2000000.000000006);
+  });
 });
 
 describe('getFilters: MEXC 실제 응답 shape 파싱', () => {
