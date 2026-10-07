@@ -3,20 +3,21 @@
 import axios from 'axios';
 import { MEXC } from './exchange-signer';
 
-/** unit의 소수 자릿수. (0.000001→6, 0.1→1, 1→0) */
+/** unit의 소수 자릿수. (0.000001→6, 0.1→1, 0.25→2, 1→0) */
 function decimalsOf(unit: number): number {
   if (!(unit > 0) || !isFinite(unit)) return 0;
-  const m = unit.toExponential().match(/e-(\d+)/);
-  if (m) return parseInt(m[1], 10);
-  const s = String(unit);
-  return s.includes('.') ? s.split('.')[1].length : 0;
+  const [mant, exp] = unit.toExponential().split('e'); // "2.5e-1" → ["2.5","-1"]
+  const frac = mant.split('.')[1] ?? '';
+  return Math.max(0, frac.length - Number(exp));
 }
 
-/** 수량을 stepSize 배수로 내림(floor). 정확한 배수는 상대 eps로 보정하고 부동소수 잔여값을 제거. */
+/** 수량을 stepSize 배수로 내림(floor). 부동소수 노이즈 거리일 때만 정수 스냅(올림 절대 금지). */
 export function roundToStep(qty: number, step: number): number {
   if (!(step > 0)) return qty;
   const ratio = qty / step;
-  const n = Math.floor(ratio + 1e-9 * Math.max(1, Math.abs(ratio)));
+  const r = Math.round(ratio);
+  // 부동소수 노이즈 거리(상대 16*EPSILON)일 때만 정수 스냅, 아니면 내림(올림 절대 금지)
+  const n = Math.abs(ratio - r) <= Math.abs(ratio) * 16 * Number.EPSILON ? r : Math.floor(ratio);
   return Number((n * step).toFixed(decimalsOf(step)));
 }
 
@@ -24,7 +25,8 @@ export function roundToStep(qty: number, step: number): number {
 export function roundToTick(price: number, tick: number): number {
   if (!(tick > 0)) return price;
   const ratio = price / tick;
-  const n = Math.floor(ratio + 1e-9 * Math.max(1, Math.abs(ratio)));
+  const r = Math.round(ratio);
+  const n = Math.abs(ratio - r) <= Math.abs(ratio) * 16 * Number.EPSILON ? r : Math.floor(ratio);
   return Number((n * tick).toFixed(decimalsOf(tick)));
 }
 
@@ -61,16 +63,23 @@ export class MexcGridClient {
         return { ...DEFAULT_FILTERS };
       }
       const qp = Number(info.quotePrecision);
-      const tickSize = Number.isInteger(qp) && qp >= 0 && qp <= 18 ? 10 ** -qp : DEFAULT_FILTERS.tickSize;
+      const okTick = info.quotePrecision != null && Number.isInteger(qp) && qp >= 0 && qp <= 18;
+      const tickSize = okTick ? 10 ** -qp : DEFAULT_FILTERS.tickSize;
       const bsp = Number(info.baseSizePrecision);
       const bap = Number(info.baseAssetPrecision);
       let stepSize: number;
+      let okStep = true;
       if (bsp > 0) stepSize = bsp;
       else if (Number.isInteger(bap) && bap > 0 && bap <= 18) stepSize = 10 ** -bap;
-      else stepSize = 1;
+      else { stepSize = 1; okStep = false; }
       const qap = Number(info.quoteAmountPrecision);
-      const minNotional = qap > 0 ? qap : DEFAULT_FILTERS.minNotional;
+      const okNotional = qap > 0;
+      const minNotional = okNotional ? qap : DEFAULT_FILTERS.minNotional;
       const f: SymbolFilters = { tickSize, stepSize, minNotional };
+      if (!(okTick || okStep || okNotional)) {
+        console.warn(`[MexcGridClient] ${symbol} 정밀도 필드 파싱 불가 — 기본 필터 사용(캐시 안 함)`);
+        return f;
+      }
       this.filtersCache.set(symbol, { at: Date.now(), f });
       return f;
     } catch (e) {

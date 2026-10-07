@@ -28,6 +28,22 @@ describe('round 경계값(정확한 배수 유지 + 잔여값 없음)', () => {
   });
 });
 
+describe('round 회귀 방지(올림 금지)', () => {
+  it('대수치 정확 배수는 올림되지 않고 제자리', () => {
+    expect(roundToStep(1e7, 0.01)).toBeCloseTo(1e7, 3);
+    expect(roundToStep(1e9, 0.01)).toBeCloseTo(1e9, 0);
+    expect(roundToStep(1e7, 0.01)).toBeLessThanOrEqual(1e7);
+  });
+  it('서브스텝 값은 내림(올림 금지)', () => {
+    expect(roundToStep(0.29999999999, 0.1)).toBeCloseTo(0.2, 9);
+    expect(roundToStep(0.29999999999, 0.1)).toBeLessThanOrEqual(0.29999999999);
+  });
+  it('비10진 step(0.25) 정확 배수 유지', () => {
+    expect(roundToStep(0.75, 0.25)).toBeCloseTo(0.75, 9);
+    expect(String(roundToStep(0.75, 0.25))).toBe('0.75');
+  });
+});
+
 describe('getFilters: MEXC 실제 응답 shape 파싱', () => {
   afterEach(() => jest.restoreAllMocks());
 
@@ -65,6 +81,17 @@ describe('getFilters: MEXC 실제 응답 shape 파싱', () => {
     await c.getFilters('XLMUSDT');
     await c.getFilters('XLMUSDT');
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('정밀도 필드가 전부 누락이면 warn + 기본값, 캐시하지 않음', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spy = jest.spyOn(axios, 'get').mockResolvedValue({ data: { symbols: [{ symbol: 'EMPTYUSDT' }] } });
+    const c = new MexcGridClient({ apiKey: 'k', secretKey: 's' });
+    const f = await c.getFilters('EMPTYUSDT');
+    expect(f).toEqual({ tickSize: 0.01, stepSize: 1, minNotional: 1 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('EMPTYUSDT'));
+    await c.getFilters('EMPTYUSDT');
+    expect(spy).toHaveBeenCalledTimes(2);
   });
 
   it('symbols[0] 없으면 warn + 기본값, 캐시하지 않음', async () => {
