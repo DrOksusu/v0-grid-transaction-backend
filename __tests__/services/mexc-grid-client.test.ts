@@ -232,9 +232,14 @@ describe('MexcGridClient getOrder/cancelOrder', () => {
     expect(o.status).toBe('pending');
   });
 
-  it('cancelOrder: 실패해도 throw 안 함(이미 종료 가능)', async () => {
-    jest.spyOn(axios, 'delete').mockRejectedValue(new Error('order not found'));
+  it('cancelOrder: 이미 종료/미존재(-2011)는 throw 안 함', async () => {
+    jest.spyOn(axios, 'delete').mockRejectedValue({ response: { data: { code: -2011, msg: 'Unknown order sent.' } } });
     await expect(client.cancelOrder('10', 'BTCUSDT')).resolves.toBeUndefined();
+  });
+
+  it('cancelOrder: 네트워크/인증 등 실제 에러는 rethrow (고아주문 방지)', async () => {
+    jest.spyOn(axios, 'delete').mockRejectedValue(new Error('network error'));
+    await expect(client.cancelOrder('10', 'BTCUSDT')).rejects.toThrow(/network/);
   });
 
   it('cancelOrder: symbol 없으면 아무것도 안 함', async () => {

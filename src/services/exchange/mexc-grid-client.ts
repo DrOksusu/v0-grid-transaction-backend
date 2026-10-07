@@ -177,7 +177,7 @@ export class MexcGridClient {
     return b ? parseFloat(b.free ?? '0') : 0;
   }
 
-  /** 미체결 취소(DELETE /api/v3/order). 이미 종료된 주문일 수 있어 실패는 무시. */
+  /** 미체결 취소(DELETE /api/v3/order). 이미 종료/미존재(-2011)만 무시, 그 외 실패는 throw. */
   async cancelOrder(orderId: string, symbol?: string): Promise<void> {
     if (!symbol) return; // MEXC는 symbol 필수
     try {
@@ -189,8 +189,15 @@ export class MexcGridClient {
         headers: { [MEXC.apiKeyHeader]: this.creds.apiKey },
         timeout: 8000,
       });
-    } catch {
-      // 이미 종료된 주문일 수 있음 — 무시
+    } catch (err: any) {
+      // 이미 종료/미존재 주문(-2011 Unknown order)만 무시. 나머지(네트워크·인증·서명)는 rethrow
+      // → 호출부가 "취소 성공"으로 오인해 거래소에 GTC 주문이 고아로 남는 것 방지.
+      const code = err?.response?.data?.code;
+      const msg = String(err?.response?.data?.msg ?? err?.message ?? '');
+      if (code === -2011 || /unknown order|order does not exist|not exist/i.test(msg)) {
+        return; // 이미 없음 — 성공 취급
+      }
+      throw err;
     }
   }
 }
