@@ -1,7 +1,7 @@
 // MEXC 현물 그리드 어댑터 — GridTradeClient 규격 구현.
 // 재고형 아비용 MexcLeg(IOC)와 별개: 그리드는 GTC 지정가 + 체결 폴링이 필요하다.
 import axios from 'axios';
-import { MEXC, mexcPost, signedGet } from './exchange-signer';
+import { MEXC, mexcPost, signedGet, hmacSign } from './exchange-signer';
 
 /** unit의 소수 자릿수. (0.000001→6, 0.1→1, 0.25→2, 1→0) */
 function decimalsOf(unit: number): number {
@@ -150,5 +150,38 @@ export class MexcGridClient {
         const ts = Number(o.updateTime ?? o.time ?? Date.now());
         return { uuid: String(o.orderId), state: 'done', avgFillPrice: avg, filledQty: qty, trades: [{ created_at: new Date(ts).toISOString() }] };
       });
+  }
+
+  /** 단건 주문 조회 → bithumb식 {status:'filled'|'cancelled'|'pending', avgFillPrice, filledQty}. */
+  async getOrder(orderId: string, symbol: string): Promise<{ status: string; avgFillPrice: number; filledQty: number }> {
+    const data = await signedGet(
+      MEXC.baseUrl, MEXC.apiKeyHeader, this.creds.apiKey, this.creds.secretKey,
+      '/api/v3/order', { symbol, orderId },
+    );
+    const qty = parseFloat(data.executedQty ?? '0');
+    const quote = parseFloat(data.cummulativeQuoteQty ?? '0');
+    const raw = String(data.status ?? '');
+    const status = raw === 'FILLED' ? 'filled'
+      : ['CANCELED', 'PARTIALLY_CANCELED', 'EXPIRED', 'REJECTED'].includes(raw) ? 'cancelled'
+      : 'pending';
+    const avgRaw = qty > 0 ? quote / qty : parseFloat(data.price ?? '0');
+    return { status, avgFillPrice: Number.isFinite(avgRaw) ? avgRaw : 0, filledQty: qty };
+  }
+
+  /** 미체결 취소(DELETE /api/v3/order). 이미 종료된 주문일 수 있어 실패는 무시. */
+  async cancelOrder(orderId: string, symbol?: string): Promise<void> {
+    if (!symbol) return; // MEXC는 symbol 필수
+    try {
+      const timestamp = Date.now().toString();
+      const allParams = { symbol, orderId, timestamp };
+      const signature = hmacSign(this.creds.secretKey, allParams);
+      const qs = new URLSearchParams({ ...allParams, signature }).toString();
+      await axios.delete(`${MEXC.baseUrl}/api/v3/order?${qs}`, {
+        headers: { [MEXC.apiKeyHeader]: this.creds.apiKey },
+        timeout: 8000,
+      });
+    } catch {
+      // 이미 종료된 주문일 수 있음 — 무시
+    }
   }
 }

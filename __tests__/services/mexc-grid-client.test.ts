@@ -207,3 +207,39 @@ describe('MexcGridClient getFilledOrders 정규화', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 });
+
+describe('MexcGridClient getOrder/cancelOrder', () => {
+  const client = new MexcGridClient({ apiKey: 'k', secretKey: 's' });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('getOrder: FILLED→status filled + avgFillPrice/filledQty', async () => {
+    jest.spyOn(signer, 'signedGet').mockResolvedValue({ orderId: 7, status: 'FILLED', executedQty: '0.001', cummulativeQuoteQty: '63.0', price: '63000' });
+    const o = await client.getOrder('7', 'BTCUSDT');
+    expect(o.status).toBe('filled');
+    expect(o.filledQty).toBeCloseTo(0.001, 9);
+    expect(o.avgFillPrice).toBeCloseTo(63000, 6);
+  });
+
+  it('getOrder: CANCELED→status cancelled', async () => {
+    jest.spyOn(signer, 'signedGet').mockResolvedValue({ orderId: 8, status: 'CANCELED', executedQty: '0', cummulativeQuoteQty: '0' });
+    const o = await client.getOrder('8', 'BTCUSDT');
+    expect(o.status).toBe('cancelled');
+  });
+
+  it('getOrder: NEW→status pending', async () => {
+    jest.spyOn(signer, 'signedGet').mockResolvedValue({ orderId: 9, status: 'NEW', executedQty: '0', cummulativeQuoteQty: '0', price: '62000' });
+    const o = await client.getOrder('9', 'BTCUSDT');
+    expect(o.status).toBe('pending');
+  });
+
+  it('cancelOrder: 실패해도 throw 안 함(이미 종료 가능)', async () => {
+    jest.spyOn(axios, 'delete').mockRejectedValue(new Error('order not found'));
+    await expect(client.cancelOrder('10', 'BTCUSDT')).resolves.toBeUndefined();
+  });
+
+  it('cancelOrder: symbol 없으면 아무것도 안 함', async () => {
+    const spy = jest.spyOn(axios, 'delete');
+    await client.cancelOrder('11');
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
