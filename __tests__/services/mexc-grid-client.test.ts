@@ -172,6 +172,34 @@ describe('MexcGridClient getFilledOrders 정규화', () => {
     expect(r[0].trades[0].created_at).toBeTruthy();
   });
 
+  it('executedQty 0인 FILLED는 avg를 price로 폴백', async () => {
+    jest.spyOn(signer, 'signedGet').mockResolvedValue([
+      { orderId: 3, status: 'FILLED', executedQty: '0', cummulativeQuoteQty: '0', price: '61000', updateTime: 1730000000000 },
+    ]);
+    const r = await client.getFilledOrders('BTCUSDT', 100);
+    expect(r[0].avgFillPrice).toBeCloseTo(61000, 6);
+    expect(r[0].filledQty).toBe(0);
+  });
+  it('비배열 응답은 빈 배열로 방어', async () => {
+    jest.spyOn(signer, 'signedGet').mockResolvedValue({ code: 700002, msg: 'signature invalid' } as any);
+    const r = await client.getFilledOrders('BTCUSDT', 100);
+    expect(r).toEqual([]);
+  });
+  it('PARTIALLY_FILLED는 제외', async () => {
+    jest.spyOn(signer, 'signedGet').mockResolvedValue([
+      { orderId: 4, status: 'PARTIALLY_FILLED', executedQty: '0.001', cummulativeQuoteQty: '63', price: '63000' },
+    ]);
+    const r = await client.getFilledOrders('BTCUSDT', 100);
+    expect(r).toEqual([]);
+  });
+  it('가비지 cummulativeQuoteQty면 avg는 NaN 대신 0', async () => {
+    jest.spyOn(signer, 'signedGet').mockResolvedValue([
+      { orderId: 5, status: 'FILLED', executedQty: '0.001', cummulativeQuoteQty: 'garbage', price: '63000' },
+    ]);
+    const r = await client.getFilledOrders('BTCUSDT', 100);
+    expect(r[0].avgFillPrice).toBe(0);
+  });
+
   it('market 없으면 빈 배열(MEXC allOrders는 symbol 필수)', async () => {
     const spy = jest.spyOn(signer, 'signedGet');
     const r = await client.getFilledOrders(undefined, 100);

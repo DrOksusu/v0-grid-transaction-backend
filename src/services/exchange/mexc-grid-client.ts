@@ -139,11 +139,14 @@ export class MexcGridClient {
     );
     const rows: any[] = Array.isArray(data) ? data : [];
     return rows
+      // PARTIALLY_FILLED는 제외(업비트 state:'done'=완전체결과 동일 의미론). 장기 미체결/부분체결 그리드 감지는
+      // Task 6의 getOrder 단건 백스톱(Stage-2)에서 보강.
       .filter((o) => String(o.status) === 'FILLED')
       .map((o) => {
         const qty = parseFloat(o.executedQty ?? '0');
         const quote = parseFloat(o.cummulativeQuoteQty ?? '0');
-        const avg = qty > 0 ? quote / qty : parseFloat(o.price ?? '0');
+        const avgRaw = qty > 0 ? quote / qty : parseFloat(o.price ?? '0');
+        const avg = Number.isFinite(avgRaw) ? avgRaw : 0;
         const ts = Number(o.updateTime ?? o.time ?? Date.now());
         return { uuid: String(o.orderId), state: 'done', avgFillPrice: avg, filledQty: qty, trades: [{ created_at: new Date(ts).toISOString() }] };
       });
