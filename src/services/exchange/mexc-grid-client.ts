@@ -1,7 +1,7 @@
 // MEXC 현물 그리드 어댑터 — GridTradeClient 규격 구현.
 // 재고형 아비용 MexcLeg(IOC)와 별개: 그리드는 GTC 지정가 + 체결 폴링이 필요하다.
 import axios from 'axios';
-import { MEXC, mexcPost } from './exchange-signer';
+import { MEXC, mexcPost, signedGet } from './exchange-signer';
 
 /** unit의 소수 자릿수. (0.000001→6, 0.1→1, 0.25→2, 1→0) */
 function decimalsOf(unit: number): number {
@@ -128,5 +128,24 @@ export class MexcGridClient {
 
   async sellLimit(market: string, price: number, volume: number): Promise<{ uuid: string }> {
     return this.placeLimit(market, 'SELL', price, volume);
+  }
+
+  /** MEXC 체결건을 업비트형({uuid,state:'done',avgFillPrice,filledQty,trades})으로 정규화. */
+  async getFilledOrders(market?: string, limit: number = 100): Promise<any[]> {
+    if (!market) return []; // MEXC allOrders는 symbol 필수
+    const data = await signedGet(
+      MEXC.baseUrl, MEXC.apiKeyHeader, this.creds.apiKey, this.creds.secretKey,
+      '/api/v3/allOrders', { symbol: market, limit: String(Math.min(limit, 100)) },
+    );
+    const rows: any[] = Array.isArray(data) ? data : [];
+    return rows
+      .filter((o) => String(o.status) === 'FILLED')
+      .map((o) => {
+        const qty = parseFloat(o.executedQty ?? '0');
+        const quote = parseFloat(o.cummulativeQuoteQty ?? '0');
+        const avg = qty > 0 ? quote / qty : parseFloat(o.price ?? '0');
+        const ts = Number(o.updateTime ?? o.time ?? Date.now());
+        return { uuid: String(o.orderId), state: 'done', avgFillPrice: avg, filledQty: qty, trades: [{ created_at: new Date(ts).toISOString() }] };
+      });
   }
 }

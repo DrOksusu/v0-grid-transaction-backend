@@ -153,3 +153,29 @@ describe('MexcGridClient 주문', () => {
     await expect(client.buyLimit('BTCUSDT', 63000, 0.001)).rejects.toThrow(/orderId/);
   });
 });
+
+describe('MexcGridClient getFilledOrders 정규화', () => {
+  const client = new MexcGridClient({ apiKey: 'k', secretKey: 's' });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('FILLED 주문을 {uuid,state:done,avgFillPrice,filledQty}로 정규화', async () => {
+    jest.spyOn(signer, 'signedGet').mockResolvedValue([
+      { orderId: 1, status: 'FILLED', executedQty: '0.002', cummulativeQuoteQty: '126.0', price: '63000', updateTime: 1730000000000 },
+      { orderId: 2, status: 'NEW', executedQty: '0', cummulativeQuoteQty: '0', price: '62000' },
+    ]);
+    const r = await client.getFilledOrders('BTCUSDT', 100);
+    expect(r).toHaveLength(1);
+    expect(r[0].uuid).toBe('1');
+    expect(r[0].state).toBe('done');
+    expect(r[0].filledQty).toBeCloseTo(0.002, 9);
+    expect(r[0].avgFillPrice).toBeCloseTo(63000, 6); // 126.0/0.002
+    expect(r[0].trades[0].created_at).toBeTruthy();
+  });
+
+  it('market 없으면 빈 배열(MEXC allOrders는 symbol 필수)', async () => {
+    const spy = jest.spyOn(signer, 'signedGet');
+    const r = await client.getFilledOrders(undefined, 100);
+    expect(r).toEqual([]);
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
