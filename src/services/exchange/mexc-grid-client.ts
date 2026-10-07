@@ -1,7 +1,7 @@
 // MEXC 현물 그리드 어댑터 — GridTradeClient 규격 구현.
 // 재고형 아비용 MexcLeg(IOC)와 별개: 그리드는 GTC 지정가 + 체결 폴링이 필요하다.
 import axios from 'axios';
-import { MEXC } from './exchange-signer';
+import { MEXC, mexcPost } from './exchange-signer';
 
 /** unit의 소수 자릿수. (0.000001→6, 0.1→1, 0.25→2, 1→0) */
 function decimalsOf(unit: number): number {
@@ -39,6 +39,12 @@ export function roundToTick(price: number, tick: number): number {
 /** qty*price 가 minNotional 이상인지. */
 export function meetsMinNotional(qty: number, price: number, minNotional: number): boolean {
   return qty * price >= minNotional;
+}
+
+/** number → 거래소 전송용 문자열. 지수표기(1e-7)는 거래소가 거부하므로 고정소수로 변환. */
+function toPlain(n: number, unit: number): string {
+  const s = String(n);
+  return s.includes('e') ? n.toFixed(decimalsOf(unit)) : s;
 }
 
 export interface SymbolFilters { tickSize: number; stepSize: number; minNotional: number; }
@@ -92,5 +98,32 @@ export class MexcGridClient {
       console.warn(`[MexcGridClient] ${symbol} exchangeInfo 조회 실패 — 기본 필터 사용:`, (e as Error)?.message);
       return { ...DEFAULT_FILTERS };
     }
+  }
+
+  private async placeLimit(symbol: string, side: 'BUY' | 'SELL', price: number, volume: number): Promise<{ uuid: string }> {
+    const f = await this.getFilters(symbol);
+    const p = roundToTick(price, f.tickSize);
+    const q = roundToStep(volume, f.stepSize);
+    if (!meetsMinNotional(q, p, f.minNotional)) {
+      throw new Error(`MEXC minNotional 미만: ${(q * p).toFixed(4)} < ${f.minNotional}`);
+    }
+    const params: Record<string, string> = {
+      symbol,
+      side,
+      type: 'LIMIT',
+      timeInForce: 'GTC',
+      quantity: toPlain(q, f.stepSize),
+      price: toPlain(p, f.tickSize),
+    };
+    const resp = await mexcPost(this.creds.apiKey, this.creds.secretKey, '/api/v3/order', params);
+    return { uuid: String(resp.orderId) };
+  }
+
+  async buyLimit(market: string, price: number, volume: number): Promise<{ uuid: string }> {
+    return this.placeLimit(market, 'BUY', price, volume);
+  }
+
+  async sellLimit(market: string, price: number, volume: number): Promise<{ uuid: string }> {
+    return this.placeLimit(market, 'SELL', price, volume);
   }
 }

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import * as signer from '../../src/services/exchange/exchange-signer';
 import { roundToStep, roundToTick, meetsMinNotional, MexcGridClient } from '../../src/services/exchange/mexc-grid-client';
 
 describe('MexcGridClient 정밀도 유틸', () => {
@@ -107,5 +108,39 @@ describe('getFilters: MEXC 실제 응답 shape 파싱', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('NOPEUSDT'));
     await c.getFilters('NOPEUSDT');
     expect(spy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('MexcGridClient 주문', () => {
+  const client = new MexcGridClient({ apiKey: 'k', secretKey: 's' });
+  beforeEach(() => {
+    jest.spyOn(client, 'getFilters').mockResolvedValue({ tickSize: 0.01, stepSize: 0.000001, minNotional: 1 });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('buyLimit: GTC 지정가 파라미터로 mexcPost 호출하고 {uuid} 반환', async () => {
+    const spy = jest.spyOn(signer, 'mexcPost').mockResolvedValue({ orderId: 123456 });
+    const r = await client.buyLimit('BTCUSDT', 63123.479, 0.0012345678);
+    expect(r).toEqual({ uuid: '123456' });
+    const [, , endpoint, params] = spy.mock.calls[0] as any;
+    expect(endpoint).toBe('/api/v3/order');
+    expect(params.symbol).toBe('BTCUSDT');
+    expect(params.side).toBe('BUY');
+    expect(params.type).toBe('LIMIT');
+    expect(params.timeInForce).toBe('GTC');
+    expect(params.price).toBe('63123.47'); // tick 0.01 floor
+    expect(params.quantity).toBe('0.001234'); // step 0.000001 floor
+  });
+
+  it('sellLimit: side SELL', async () => {
+    const spy = jest.spyOn(signer, 'mexcPost').mockResolvedValue({ orderId: 999 });
+    const r = await client.sellLimit('BTCUSDT', 64000, 0.002);
+    expect(r).toEqual({ uuid: '999' });
+    expect((spy.mock.calls[0] as any)[3].side).toBe('SELL');
+  });
+
+  it('minNotional 미만이면 주문 안 하고 throw', async () => {
+    jest.spyOn(signer, 'mexcPost');
+    await expect(client.buyLimit('BTCUSDT', 1, 0.0000001)).rejects.toThrow(/minNotional|최소/);
   });
 });
