@@ -5,6 +5,10 @@ import { AuthRequest } from '../types';
 import { priceManager } from '../services/upbit-price-manager';
 import { binancePriceManager } from '../services/binance-price-manager';
 import { bithumbPriceManager } from '../services/bithumb-grid-price-manager';
+import { mexcGridPriceManager } from '../services/mexc-grid-price-manager';
+
+// MEXC 그리드 MVP 큐레이션 메이저(USDT 페어). 추후 MEXC exchangeInfo 전체조회로 확대 예정.
+const MEXC_CURATED_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'SOLUSDT', 'DOGEUSDT', 'BNBUSDT'];
 
 // 티커 캐시 (메모리 캐시, 5분간 유효)
 let tickerCache: {
@@ -39,7 +43,7 @@ export const getTickers = async (
   try {
     const { exchange } = req.params;
 
-    if (exchange !== 'upbit' && exchange !== 'binance') {
+    if (exchange !== 'upbit' && exchange !== 'binance' && exchange !== 'mexc') {
       return errorResponse(
         res,
         'INVALID_EXCHANGE',
@@ -50,6 +54,16 @@ export const getTickers = async (
 
     const now = Date.now();
     let tickers: any[] = [];
+
+    if (exchange === 'mexc') {
+      // 상수 목록이라 캐시 없이 즉시 반환 (binance와 동일 shape)
+      tickers = MEXC_CURATED_SYMBOLS.map((symbol) => ({
+        symbol,
+        baseAsset: symbol.replace(/USDT$/, ''),
+        quoteAsset: 'USDT',
+      }));
+      return successResponse(res, { tickers });
+    }
 
     if (exchange === 'upbit') {
       // 캐시 확인
@@ -115,7 +129,7 @@ export const getPrice = async (
   try {
     const { exchange, ticker } = req.params;
 
-    if (exchange !== 'upbit' && exchange !== 'binance' && exchange !== 'bithumb') {
+    if (exchange !== 'upbit' && exchange !== 'binance' && exchange !== 'bithumb' && exchange !== 'mexc') {
       return errorResponse(
         res,
         'INVALID_EXCHANGE',
@@ -133,6 +147,21 @@ export const getPrice = async (
 
     if (cached && (now - cached.timestamp) < PRICE_CACHE_TTL) {
       return successResponse(res, cached.data);
+    }
+
+    if (exchange === 'mexc') {
+      const price = await mexcGridPriceManager.getPriceWithFallback(ticker);
+      priceData = {
+        ticker,
+        currentPrice: price,
+        change24h: 0,
+        volume24h: 0,
+        high24h: 0,
+        low24h: 0,
+        timestamp: new Date().toISOString(),
+      };
+      priceCache.set(cacheKey, { data: priceData, timestamp: now });
+      return successResponse(res, priceData);
     }
 
     if (exchange === 'bithumb') {
