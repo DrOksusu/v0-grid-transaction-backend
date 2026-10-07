@@ -3,7 +3,7 @@ import prisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { GridService, calculateBuyPrices } from '../services/grid.service';
-import { resolveGridClient } from '../services/trading.service';
+import { resolveGridClient, checkMexcUsdtBalance } from '../services/trading.service';
 import { priceManager } from '../services/upbit-price-manager';
 import { decrypt } from '../utils/encryption';
 import { botEngine } from '../services/bot-engine.service';
@@ -300,6 +300,28 @@ export const startBot = async (
 
     if (!bot) {
       return errorResponse(res, 'BOT_NOT_FOUND', '봇을 찾을 수 없습니다', 404);
+    }
+
+    // MEXC 봇은 시작 전 USDT 가용잔고 pre-flight (부족하면 error 상태로 두고 중단)
+    if (bot.exchange === 'mexc') {
+      const mexcCred = await prisma.credential.findFirst({
+        where: { userId, exchange: 'mexc' },
+      });
+      if (!mexcCred) {
+        return errorResponse(res, 'CREDENTIAL_NOT_FOUND', 'MEXC API 키가 등록되지 않았습니다', 400);
+      }
+      const pre = await checkMexcUsdtBalance(
+        { apiKey: decrypt(mexcCred.apiKey), secretKey: decrypt(mexcCred.secretKey) },
+        bot.investmentAmount,
+      );
+      if (!pre.ok) {
+        const message = `MEXC USDT 잔고 부족: 가용 ${pre.available} < 투입 ${bot.investmentAmount}`;
+        await prisma.bot.update({
+          where: { id: botId },
+          data: { status: 'error', errorMessage: message },
+        });
+        return errorResponse(res, 'INSUFFICIENT_BALANCE', message, 400);
+      }
     }
 
     // 그리드 레벨 생성 (등비수열)

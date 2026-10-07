@@ -35,6 +35,15 @@ function getFeeRate(exchange: string): number {
 }
 export { getFeeRate };
 
+// MEXC 그리드 시작 전 USDT 가용잔고 pre-flight (부족 시 주문 실패 노이즈 방지)
+export async function checkMexcUsdtBalance(
+  cred: { apiKey: string; secretKey: string }, investmentUsdt: number,
+): Promise<{ ok: boolean; available: number }> {
+  const client = new MexcGridClient({ apiKey: cred.apiKey, secretKey: cred.secretKey });
+  const available = await client.getUsdtBalance();
+  return { ok: available >= investmentUsdt, available };
+}
+
 // 자격증명 캐시 (5분 TTL)
 interface CachedCredential {
   apiKey: string;

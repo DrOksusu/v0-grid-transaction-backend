@@ -16,3 +16,20 @@ describe('trading.service mexc 분기', () => {
     expect(resolveGridClient('upbit', cred)).toBeInstanceOf(UpbitService);
   });
 });
+
+import { checkMexcUsdtBalance } from '../../src/services/trading.service';
+
+describe('MEXC start pre-flight', () => {
+  afterEach(() => jest.restoreAllMocks());
+  it('USDT 가용 < 투입금이면 ok:false', async () => {
+    jest.spyOn(MexcGridClient.prototype, 'getUsdtBalance').mockResolvedValue(10);
+    const r = await checkMexcUsdtBalance({ apiKey: 'k', secretKey: 's' }, 50);
+    expect(r.ok).toBe(false);
+    expect(r.available).toBe(10);
+  });
+  it('USDT 가용 ≥ 투입금이면 ok:true', async () => {
+    jest.spyOn(MexcGridClient.prototype, 'getUsdtBalance').mockResolvedValue(100);
+    const r = await checkMexcUsdtBalance({ apiKey: 'k', secretKey: 's' }, 50);
+    expect(r.ok).toBe(true);
+  });
+});

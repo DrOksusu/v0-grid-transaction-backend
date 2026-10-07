@@ -168,6 +168,15 @@ export class MexcGridClient {
     return { status, avgFillPrice: Number.isFinite(avgRaw) ? avgRaw : 0, filledQty: qty };
   }
 
+  /** USDT 가용 잔고(free). pre-flight용. */
+  async getUsdtBalance(): Promise<number> {
+    const data = await signedGet(
+      MEXC.baseUrl, MEXC.apiKeyHeader, this.creds.apiKey, this.creds.secretKey, '/api/v3/account',
+    );
+    const b = (data.balances ?? []).find((x: any) => String(x.asset).toUpperCase() === 'USDT');
+    return b ? parseFloat(b.free ?? '0') : 0;
+  }
+
   /** 미체결 취소(DELETE /api/v3/order). 이미 종료된 주문일 수 있어 실패는 무시. */
   async cancelOrder(orderId: string, symbol?: string): Promise<void> {
     if (!symbol) return; // MEXC는 symbol 필수

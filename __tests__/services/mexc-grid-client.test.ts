@@ -243,3 +243,16 @@ describe('MexcGridClient getOrder/cancelOrder', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 });
+
+describe('MexcGridClient getUsdtBalance', () => {
+  const client = new MexcGridClient({ apiKey: 'k', secretKey: 's' });
+  afterEach(() => jest.restoreAllMocks());
+  it('account의 USDT free를 숫자로', async () => {
+    jest.spyOn(signer, 'signedGet').mockResolvedValue({ balances: [{ asset: 'USDT', free: '123.45', locked: '0' }, { asset: 'BTC', free: '0.01' }] });
+    expect(await client.getUsdtBalance()).toBeCloseTo(123.45, 6);
+  });
+  it('USDT 없으면 0', async () => {
+    jest.spyOn(signer, 'signedGet').mockResolvedValue({ balances: [{ asset: 'BTC', free: '0.01' }] });
+    expect(await client.getUsdtBalance()).toBe(0);
+  });
+});
