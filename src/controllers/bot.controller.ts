@@ -3,8 +3,7 @@ import prisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { GridService, calculateBuyPrices } from '../services/grid.service';
-import { UpbitService } from '../services/upbit.service';
-import { BithumbClient } from '../services/exchange/bithumb-client';
+import { resolveGridClient } from '../services/trading.service';
 import { priceManager } from '../services/upbit-price-manager';
 import { decrypt } from '../utils/encryption';
 import { botEngine } from '../services/bot-engine.service';
@@ -375,16 +374,15 @@ export const stopBot = async (
       const apiKey = decrypt(botCred.apiKey);
       const secretKey = decrypt(botCred.secretKey);
 
-      const upbit = bot.exchange === 'bithumb'
-        ? new BithumbClient({ accessKey: apiKey, secretKey })
-        : new UpbitService({ accessKey: apiKey, secretKey });
+      // 거래소별 클라이언트 (upbit/bithumb/mexc)
+      const upbit = resolveGridClient(bot.exchange as string, { apiKey, secretKey });
 
       console.log(`[StopBot] Cancelling ${bot.gridLevels.length} pending orders for bot ${botId} (${bot.exchange})...`);
 
       for (const grid of bot.gridLevels) {
         if (grid.orderId) {
           try {
-            await upbit.cancelOrder(grid.orderId);
+            await upbit.cancelOrder(grid.orderId, bot.ticker);
             cancelledOrders++;
 
             // 그리드 상태를 available로 변경
@@ -487,9 +485,8 @@ export const deleteBot = async (
           const apiKey = decrypt(credential.apiKey);
           const secretKey = decrypt(credential.secretKey);
 
-          const upbit = bot.exchange === 'bithumb'
-            ? new BithumbClient({ accessKey: apiKey, secretKey })
-            : new UpbitService({ accessKey: apiKey, secretKey });
+          // 거래소별 클라이언트 (upbit/bithumb/mexc)
+          const upbit = resolveGridClient(bot.exchange as string, { apiKey, secretKey });
 
           const cancelTypeLabel = cancelType === 'buy' ? '매수' : '모든';
           console.log(`[DeleteBot] Cancelling ${gridLevels.length} ${cancelTypeLabel} pending orders for bot ${botId}...`);
@@ -498,7 +495,7 @@ export const deleteBot = async (
             const grid = gridLevels[i];
             if (grid.orderId) {
               try {
-                await upbit.cancelOrder(grid.orderId);
+                await upbit.cancelOrder(grid.orderId, bot.ticker);
                 console.log(`[DeleteBot] Cancelled ${grid.type} order ${grid.orderId}`);
               } catch (error: any) {
                 console.error(`[DeleteBot] Failed to cancel order ${grid.orderId}:`, error.message);

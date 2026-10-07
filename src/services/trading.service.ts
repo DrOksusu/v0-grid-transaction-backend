@@ -1434,7 +1434,9 @@ export class TradingService {
       // 1. 현재가 조회 (거래소별)
       const market = ticker.startsWith('KRW-') ? ticker : `KRW-${ticker.replace('KRW-', '')}`;
       let currentPrice: number;
-      if (exchange === 'bithumb') {
+      if (exchange === 'mexc') {
+        currentPrice = await mexcGridPriceManager.getPriceWithFallback(ticker);
+      } else if (exchange === 'bithumb') {
         currentPrice = await bithumbPriceManager.getPriceWithFallback(market);
       } else {
         const tickerData = await UpbitService.getCurrentPrice(market);
