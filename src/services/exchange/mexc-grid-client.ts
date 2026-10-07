@@ -3,16 +3,29 @@
 import axios from 'axios';
 import { MEXC } from './exchange-signer';
 
-/** 수량을 stepSize 배수로 내림(floor). 거래소 LOT_SIZE 통과용. */
-export function roundToStep(qty: number, step: number): number {
-  if (!(step > 0)) return qty;
-  return Math.floor(qty / step) * step;
+/** unit의 소수 자릿수. (0.000001→6, 0.1→1, 1→0) */
+function decimalsOf(unit: number): number {
+  if (!(unit > 0) || !isFinite(unit)) return 0;
+  const m = unit.toExponential().match(/e-(\d+)/);
+  if (m) return parseInt(m[1], 10);
+  const s = String(unit);
+  return s.includes('.') ? s.split('.')[1].length : 0;
 }
 
-/** 가격을 tickSize 배수로 내림(floor). PRICE_FILTER 통과용. */
+/** 수량을 stepSize 배수로 내림(floor). 정확한 배수는 상대 eps로 보정하고 부동소수 잔여값을 제거. */
+export function roundToStep(qty: number, step: number): number {
+  if (!(step > 0)) return qty;
+  const ratio = qty / step;
+  const n = Math.floor(ratio + 1e-9 * Math.max(1, Math.abs(ratio)));
+  return Number((n * step).toFixed(decimalsOf(step)));
+}
+
+/** 가격을 tickSize 배수로 내림(floor). 보정 방식은 roundToStep과 동일. */
 export function roundToTick(price: number, tick: number): number {
   if (!(tick > 0)) return price;
-  return Math.floor(price / tick) * tick;
+  const ratio = price / tick;
+  const n = Math.floor(ratio + 1e-9 * Math.max(1, Math.abs(ratio)));
+  return Number((n * tick).toFixed(decimalsOf(tick)));
 }
 
 /** qty*price 가 minNotional 이상인지. */
@@ -20,33 +33,49 @@ export function meetsMinNotional(qty: number, price: number, minNotional: number
   return qty * price >= minNotional;
 }
 
-interface SymbolFilters { tickSize: number; stepSize: number; minNotional: number; }
+export interface SymbolFilters { tickSize: number; stepSize: number; minNotional: number; }
+
+const DEFAULT_FILTERS: SymbolFilters = { tickSize: 0.01, stepSize: 0.000001, minNotional: 1 };
 
 export class MexcGridClient {
   private filtersCache = new Map<string, { at: number; f: SymbolFilters }>();
 
   constructor(private readonly creds: { apiKey: string; secretKey: string }) {}
 
-  /** exchangeInfo 필터 조회(공개 API, 1시간 캐시). 실패 시 보수적 기본값. */
+  /**
+   * exchangeInfo 정밀도 조회(공개 API, 1시간 캐시).
+   * 규약: symbol은 완전 페어(예 'BTCUSDT')를 받는다 — 그리드는 bot.ticker를 그대로 넘김.
+   *       (MexcLeg는 base심볼+USDT를 조합하므로 다름.)
+   * MEXC symbols[0].filters에는 PRICE_FILTER/LOT_SIZE가 없어 심볼 객체 필드를 사용:
+   *   quotePrecision→tickSize, baseSizePrecision(없으면 baseAssetPrecision)→stepSize, quoteAmountPrecision→minNotional.
+   * 실패/파싱불가 시 보수적 기본값(캐시하지 않음).
+   */
   async getFilters(symbol: string): Promise<SymbolFilters> {
     const hit = this.filtersCache.get(symbol);
     if (hit && Date.now() - hit.at < 3600_000) return hit.f;
     try {
       const res = await axios.get(`${MEXC.baseUrl}/api/v3/exchangeInfo?symbol=${symbol}`, { timeout: 8000 });
       const info = res.data?.symbols?.[0];
-      const filters: any[] = info?.filters ?? [];
-      const price = filters.find((x) => x.filterType === 'PRICE_FILTER');
-      const lot = filters.find((x) => x.filterType === 'LOT_SIZE');
-      const notional = filters.find((x) => x.filterType === 'NOTIONAL' || x.filterType === 'MIN_NOTIONAL');
-      const f: SymbolFilters = {
-        tickSize: Number(price?.tickSize) || 0.01,
-        stepSize: Number(lot?.stepSize) || 0.000001,
-        minNotional: Number(notional?.minNotional) || 1,
-      };
+      if (!info) {
+        console.warn(`[MexcGridClient] ${symbol} exchangeInfo 심볼 정보 없음 — 기본 필터 사용`);
+        return { ...DEFAULT_FILTERS };
+      }
+      const qp = Number(info.quotePrecision);
+      const tickSize = Number.isInteger(qp) && qp >= 0 && qp <= 18 ? 10 ** -qp : DEFAULT_FILTERS.tickSize;
+      const bsp = Number(info.baseSizePrecision);
+      const bap = Number(info.baseAssetPrecision);
+      let stepSize: number;
+      if (bsp > 0) stepSize = bsp;
+      else if (Number.isInteger(bap) && bap > 0 && bap <= 18) stepSize = 10 ** -bap;
+      else stepSize = 1;
+      const qap = Number(info.quoteAmountPrecision);
+      const minNotional = qap > 0 ? qap : DEFAULT_FILTERS.minNotional;
+      const f: SymbolFilters = { tickSize, stepSize, minNotional };
       this.filtersCache.set(symbol, { at: Date.now(), f });
       return f;
-    } catch {
-      return { tickSize: 0.01, stepSize: 0.000001, minNotional: 1 };
+    } catch (e) {
+      console.warn(`[MexcGridClient] ${symbol} exchangeInfo 조회 실패 — 기본 필터 사용:`, (e as Error)?.message);
+      return { ...DEFAULT_FILTERS };
     }
   }
 }
