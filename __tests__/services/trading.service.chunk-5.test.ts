@@ -649,8 +649,8 @@ describe('TradingService - chunk-5: executeOppositeOrder, trimBuyOrdersOnInsuffi
       // 현재가(50,000,000)에서 가까운 3개 유지: 49,500,000, 49,000,000, 48,500,000
       // 원거리 2개 취소: 47,000,000, 45,000,000
       expect(mockUpbit.cancelOrder).toHaveBeenCalledTimes(2);
-      expect(mockUpbit.cancelOrder).toHaveBeenCalledWith('order-4');
-      expect(mockUpbit.cancelOrder).toHaveBeenCalledWith('order-5');
+      expect(mockUpbit.cancelOrder).toHaveBeenCalledWith('order-4', ticker);
+      expect(mockUpbit.cancelOrder).toHaveBeenCalledWith('order-5', ticker);
 
       // 그리드 상태를 inactive로 변경
       expect(prisma.gridLevel.update).toHaveBeenCalledTimes(2);

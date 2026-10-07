@@ -3,12 +3,41 @@ import prisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { GridService, calculateBuyPrices } from '../services/grid.service';
-import { UpbitService } from '../services/upbit.service';
-import { BithumbClient } from '../services/exchange/bithumb-client';
+import { resolveGridClient, checkMexcUsdtBalance } from '../services/trading.service';
 import { priceManager } from '../services/upbit-price-manager';
 import { decrypt } from '../utils/encryption';
 import { botEngine } from '../services/bot-engine.service';
 import { ProfitService } from '../services/profit.service';
+
+// MEXC 그리드 봇 시작 전 USDT 잔고 pre-flight. 통과하면 true, 실패하면 res로 에러응답 후 false.
+async function ensureMexcUsdtOrRespond(
+  bot: { id: number; exchange: string; investmentAmount: number },
+  userId: number,
+  res: Response,
+): Promise<boolean> {
+  if (bot.exchange !== 'mexc') return true;
+  const mexcCred = await prisma.credential.findFirst({
+    where: { userId, exchange: 'mexc' },
+  });
+  if (!mexcCred) {
+    errorResponse(res, 'CREDENTIAL_NOT_FOUND', 'MEXC API 키가 등록되지 않았습니다', 400);
+    return false;
+  }
+  const pre = await checkMexcUsdtBalance(
+    { apiKey: decrypt(mexcCred.apiKey), secretKey: decrypt(mexcCred.secretKey) },
+    bot.investmentAmount,
+  );
+  if (!pre.ok) {
+    const message = `MEXC USDT 잔고 부족: 가용 ${pre.available} < 투입 ${bot.investmentAmount}`;
+    await prisma.bot.update({
+      where: { id: bot.id },
+      data: { status: 'error', errorMessage: message },
+    });
+    errorResponse(res, 'INSUFFICIENT_BALANCE', message, 400);
+    return false;
+  }
+  return true;
+}
 
 export const createBot = async (
   req: AuthRequest,
@@ -82,6 +111,15 @@ export const createBot = async (
 
     // autoStart가 true면 그리드 레벨도 생성
     if (autoStart) {
+      // MEXC pre-flight (실패 시 봇은 error 상태로 두고 에러응답, 생성 자체는 유지)
+      if (!(await ensureMexcUsdtOrRespond(bot, userId, res))) {
+        // 자격증명 없음 등 헬퍼가 상태를 바꾸지 않은 경우 running 잔존 방지
+        await prisma.bot.updateMany({
+          where: { id: bot.id, status: 'running' },
+          data: { status: 'error', errorMessage: 'MEXC pre-flight 실패' },
+        });
+        return;
+      }
       await GridService.createGridLevels(
         bot.id,
         lowerPrice,
@@ -303,6 +341,9 @@ export const startBot = async (
       return errorResponse(res, 'BOT_NOT_FOUND', '봇을 찾을 수 없습니다', 404);
     }
 
+    // MEXC 봇은 시작 전 USDT 가용잔고 pre-flight (부족하면 error 상태로 두고 중단)
+    if (!(await ensureMexcUsdtOrRespond(bot, userId, res))) return;
+
     // 그리드 레벨 생성 (등비수열)
     await GridService.createGridLevels(
       botId,
@@ -312,11 +353,12 @@ export const startBot = async (
       bot.priceChangePercent
     );
 
-    // 봇 상태 업데이트
+    // 봇 상태 업데이트 (이전 잔고부족 등 errorMessage 잔존 방지)
     await prisma.bot.update({
       where: { id: botId },
       data: {
         status: 'running',
+        errorMessage: null,
         lastExecutedAt: new Date(),
       },
     });
@@ -375,16 +417,15 @@ export const stopBot = async (
       const apiKey = decrypt(botCred.apiKey);
       const secretKey = decrypt(botCred.secretKey);
 
-      const upbit = bot.exchange === 'bithumb'
-        ? new BithumbClient({ accessKey: apiKey, secretKey })
-        : new UpbitService({ accessKey: apiKey, secretKey });
+      // 거래소별 클라이언트 (upbit/bithumb/mexc)
+      const upbit = resolveGridClient(bot.exchange as string, { apiKey, secretKey });
 
       console.log(`[StopBot] Cancelling ${bot.gridLevels.length} pending orders for bot ${botId} (${bot.exchange})...`);
 
       for (const grid of bot.gridLevels) {
         if (grid.orderId) {
           try {
-            await upbit.cancelOrder(grid.orderId);
+            await upbit.cancelOrder(grid.orderId, bot.ticker);
             cancelledOrders++;
 
             // 그리드 상태를 available로 변경
@@ -487,9 +528,8 @@ export const deleteBot = async (
           const apiKey = decrypt(credential.apiKey);
           const secretKey = decrypt(credential.secretKey);
 
-          const upbit = bot.exchange === 'bithumb'
-            ? new BithumbClient({ accessKey: apiKey, secretKey })
-            : new UpbitService({ accessKey: apiKey, secretKey });
+          // 거래소별 클라이언트 (upbit/bithumb/mexc)
+          const upbit = resolveGridClient(bot.exchange as string, { apiKey, secretKey });
 
           const cancelTypeLabel = cancelType === 'buy' ? '매수' : '모든';
           console.log(`[DeleteBot] Cancelling ${gridLevels.length} ${cancelTypeLabel} pending orders for bot ${botId}...`);
@@ -498,7 +538,7 @@ export const deleteBot = async (
             const grid = gridLevels[i];
             if (grid.orderId) {
               try {
-                await upbit.cancelOrder(grid.orderId);
+                await upbit.cancelOrder(grid.orderId, bot.ticker);
                 console.log(`[DeleteBot] Cancelled ${grid.type} order ${grid.orderId}`);
               } catch (error: any) {
                 console.error(`[DeleteBot] Failed to cancel order ${grid.orderId}:`, error.message);
