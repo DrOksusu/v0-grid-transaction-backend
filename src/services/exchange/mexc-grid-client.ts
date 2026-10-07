@@ -116,6 +116,9 @@ export class MexcGridClient {
       price: toPlain(p, f.tickSize),
     };
     const resp = await mexcPost(this.creds.apiKey, this.creds.secretKey, '/api/v3/order', params);
+    if (resp?.orderId == null || resp.orderId === '') {
+      throw new Error('MEXC 주문 응답에 orderId 없음: ' + JSON.stringify(resp));
+    }
     return { uuid: String(resp.orderId) };
   }
 

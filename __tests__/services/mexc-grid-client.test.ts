@@ -139,8 +139,17 @@ describe('MexcGridClient 주문', () => {
     expect((spy.mock.calls[0] as any)[3].side).toBe('SELL');
   });
 
-  it('minNotional 미만이면 주문 안 하고 throw', async () => {
-    jest.spyOn(signer, 'mexcPost');
+  it('minNotional 미만이면 주문 안 하고 throw (floor→0, 그리고 q>0 저액)', async () => {
+    const spy = jest.spyOn(signer, 'mexcPost').mockResolvedValue({ orderId: 1 });
+    // floor→0: step 1e-6에서 0.0000001 → q=0
     await expect(client.buyLimit('BTCUSDT', 1, 0.0000001)).rejects.toThrow(/minNotional|최소/);
+    // q>0 저액: minNotional 1인데 0.5*1=0.5 < 1
+    await expect(client.buyLimit('BTCUSDT', 1, 0.5)).rejects.toThrow(/minNotional|최소/);
+    expect(spy).not.toHaveBeenCalled(); // 핵심: minNotional 미달이면 실제 주문 안 나감
+  });
+
+  it('MEXC 응답에 orderId 없으면 throw (상태오염 방지)', async () => {
+    jest.spyOn(signer, 'mexcPost').mockResolvedValue({ code: 200, msg: 'ok' }); // orderId 없음
+    await expect(client.buyLimit('BTCUSDT', 63000, 0.001)).rejects.toThrow(/orderId/);
   });
 });
