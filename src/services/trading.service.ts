@@ -76,7 +76,9 @@ const BALANCE_ERROR_COOLDOWN_MAX_MS  = 60 * 60 * 1000; // 최대 1시간
 
 // 사용자별 잔고 부족 쿨다운 (한 봇이 실패하면 해당 유저의 모든 봇 하방 대기 중단)
 // 이유: 한 봇이 잔고 고갈 → trim 해제 → 다른 봇이 즉시 재소비 → 잔고 널뛰기 방지
-const userBalanceErrorCooldownMap = new Map<number, number>(); // userId -> 쿨다운 만료 시각
+// 키: 거래소군(mexc=USDT / 그 외 업비트·빗썸=KRW) 스코프 + userId — USDT 소진이 KRW 그리드를 멈추지 않도록 분리
+const userBalanceErrorCooldownMap = new Map<string, number>(); // `${scope}:${userId}` -> 쿨다운 만료 시각
+const userCooldownKey = (userId: number, exchange: string) => (exchange === 'mexc' ? 'mexc:' : 'krw:') + userId;
 const USER_BALANCE_COOLDOWN_MS = 10 * 60 * 1000; // 10분
 
 // dead-zone 자가치유(self-heal) 파라미터
@@ -107,9 +109,14 @@ export class TradingService {
   }
 
   // 사용자별 잔고 쿨다운 상태 조회 (외부 노출용)
-  static isUserOnBalanceCooldown(userId: number): boolean {
-    const expiry = userBalanceErrorCooldownMap.get(userId);
+  static isUserOnBalanceCooldown(userId: number, exchange: string): boolean {
+    const expiry = userBalanceErrorCooldownMap.get(userCooldownKey(userId, exchange));
     return !!expiry && Date.now() < expiry;
+  }
+
+  // 사용자별 잔고 쿨다운 설정 (거래소군 스코프)
+  static setUserBalanceCooldown(userId: number, exchange: string): void {
+    userBalanceErrorCooldownMap.set(userCooldownKey(userId, exchange), Date.now() + USER_BALANCE_COOLDOWN_MS);
   }
 
   // 봇별 잔고 부족 쿨다운 상태 조회 (self-heal 게이트용)
@@ -364,7 +371,7 @@ export class TradingService {
       }
 
       // 사용자 잔고 쿨다운 체크 (해당 유저의 다른 봇이 최근 잔고 부족이면 하방 대기 스킵)
-      const isUserBalanceCooldown = TradingService.isUserOnBalanceCooldown(bot.userId);
+      const isUserBalanceCooldown = TradingService.isUserOnBalanceCooldown(bot.userId, botExchange);
 
       // 실행 가능한 그리드 찾기 (가격 크로싱 감지 방식)
       const executableGrids = await GridService.findExecutableGrids(botId, currentPrice, previousPrice, isUserBalanceCooldown);
@@ -478,7 +485,7 @@ export class TradingService {
 
             // 사용자 단위 하방 대기 중단 (10분): 해당 유저의 모든 봇이 신규 하방 대기 주문 스킵
             // → trim으로 해제된 잔고를 다른 봇이 즉시 재소비하는 순환 방지
-            userBalanceErrorCooldownMap.set(bot.userId, Date.now() + USER_BALANCE_COOLDOWN_MS);
+            TradingService.setUserBalanceCooldown(bot.userId, botExchange);
             console.log(`[Trading] User ${bot.userId}: 잔고 부족 → 10분간 하방 대기 주문 전체 중단`);
 
             // 원거리 pending 매수 주문 취소하여 잔고 확보 (백그라운드 실행)
@@ -679,7 +686,7 @@ export class TradingService {
       if (!bot || bot.status !== 'running') return { healed: 0, skippedReason: 'not-running' };
 
       // 잔고 쿨다운 게이트: 방금 잔고 부족으로 백오프한 봇/유저를 재무장하면 공유계정 KRW 고갈 증폭
-      if (this.isBotOnBalanceCooldown(botId) || this.isUserOnBalanceCooldown(bot.userId)) {
+      if (this.isBotOnBalanceCooldown(botId) || this.isUserOnBalanceCooldown(bot.userId, bot.exchange)) {
         return { healed: 0, skippedReason: 'balance-cooldown' };
       }
 

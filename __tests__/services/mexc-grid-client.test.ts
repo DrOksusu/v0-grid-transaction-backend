@@ -261,3 +261,40 @@ describe('MexcGridClient getUsdtBalance', () => {
     expect(await client.getUsdtBalance()).toBe(0);
   });
 });
+
+describe('MexcGridClient BUY 잔고부족 에러 정규화', () => {
+  const client = new MexcGridClient({ apiKey: 'k', secretKey: 's' });
+  const isBalanceError = (m: string) => m.includes('부족') || m.includes('insufficient') || m.includes('balance');
+  beforeEach(() => {
+    jest.spyOn(client, 'getFilters').mockResolvedValue({ tickSize: 0.01, stepSize: 0.000001, minNotional: 1 });
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  const apiErr = (code: number, msg: string) => Object.assign(new Error(msg), { response: { data: { code, msg } } });
+
+  it('BUY + code -2010 → isBalanceError에 걸리는 메시지로 재던짐', async () => {
+    jest.spyOn(signer, 'mexcPost').mockRejectedValue(apiErr(-2010, 'rejected'));
+    const e = await client.buyLimit('BTCUSDT', 100, 0.1).catch((x) => x);
+    expect(isBalanceError(e.message)).toBe(true);
+  });
+
+  it('BUY + msg Oversold → isBalanceError 매칭', async () => {
+    jest.spyOn(signer, 'mexcPost').mockRejectedValue(apiErr(30005, 'Oversold'));
+    const e = await client.buyLimit('BTCUSDT', 100, 0.1).catch((x) => x);
+    expect(isBalanceError(e.message)).toBe(true);
+  });
+
+  it('SELL + 동일 입력 → 원문 유지(balance/insufficient 주입 안 함)', async () => {
+    jest.spyOn(signer, 'mexcPost').mockRejectedValue(apiErr(30005, 'Oversold'));
+    const e = await client.sellLimit('BTCUSDT', 100, 0.1).catch((x) => x);
+    expect(e.message).toBe('Oversold');
+    expect(isBalanceError(e.message)).toBe(false);
+  });
+
+  it('BUY + 무관한 에러 → 원문 유지', async () => {
+    jest.spyOn(signer, 'mexcPost').mockRejectedValue(apiErr(700003, 'Timestamp outside recvWindow'));
+    const e = await client.buyLimit('BTCUSDT', 100, 0.1).catch((x) => x);
+    expect(e.message).toBe('Timestamp outside recvWindow');
+  });
+});

@@ -115,7 +115,25 @@ export class MexcGridClient {
       quantity: toPlain(q, f.stepSize),
       price: toPlain(p, f.tickSize),
     };
-    const resp = await mexcPost(this.creds.apiKey, this.creds.secretKey, '/api/v3/order', params);
+    let resp: any;
+    try {
+      resp = await mexcPost(this.creds.apiKey, this.creds.secretKey, '/api/v3/order', params);
+    } catch (err) {
+      // BUY 잔고부족을 엔진의 isBalanceError(쿨다운/원거리 주문 정리)가 감지하도록 정규화.
+      // 실제 code/msg 실측이 없어 관대하게 감지하고 원시값을 로깅한다(추후 타이트닝용).
+      // SELL(코인 부족=oversold)은 매수주문 정리를 유발하면 안 되므로 원문 그대로 던진다.
+      const code = (err as any)?.response?.data?.code;
+      const rawMsg = String((err as any)?.response?.data?.msg ?? (err as any)?.message ?? '');
+      // code가 문자열로 올 수도 있어 Number()로 보정(NaN은 미매칭)
+      const looksInsufficient = /insufficient|oversold|not enough|balance|position/i.test(rawMsg) || [-2010, 30004, 30005].includes(Number(code));
+      if (side === 'BUY' && looksInsufficient) {
+        console.warn(`[MexcGridClient] ${symbol} BUY 잔고부족 추정 (code=${code}, msg=${rawMsg})`);
+        const e: any = new Error(`MEXC 잔고 부족(insufficient balance): ${rawMsg}`);
+        e.response = (err as any)?.response;
+        throw e;
+      }
+      throw err;
+    }
     if (resp?.orderId == null || resp.orderId === '') {
       throw new Error('MEXC 주문 응답에 orderId 없음: ' + JSON.stringify(resp));
     }
