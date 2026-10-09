@@ -3,15 +3,17 @@ import prisma from '../config/database';
 import { successResponse, errorResponse } from '../utils/response';
 import { AuthRequest } from '../types';
 import { GridService, calculateBuyPrices } from '../services/grid.service';
-import { resolveGridClient, checkMexcUsdtBalance } from '../services/trading.service';
+import { resolveGridClient } from '../services/trading.service';
 import { priceManager } from '../services/upbit-price-manager';
 import { decrypt } from '../utils/encryption';
 import { botEngine } from '../services/bot-engine.service';
 import { ProfitService } from '../services/profit.service';
 
-// MEXC 그리드 봇 시작 전 USDT 잔고 pre-flight. 통과하면 true, 실패하면 res로 에러응답 후 false.
-async function ensureMexcUsdtOrRespond(
-  bot: { id: number; exchange: string; investmentAmount: number },
+// MEXC 그리드 봇 시작 전 자격증명 확인. 통과하면 true, 실패하면 res로 에러응답 후 false.
+// 잔고는 확인하지 않는다: 업비트/빗썸과 동일하게 엔진이 현재가 근처 주문만 점진 배치하고,
+// 잔고부족은 주문 실패 시 쿨다운/원거리 주문 정리로 처리한다.
+async function ensureMexcCredentialOrRespond(
+  bot: { exchange: string },
   userId: number,
   res: Response,
 ): Promise<boolean> {
@@ -21,19 +23,6 @@ async function ensureMexcUsdtOrRespond(
   });
   if (!mexcCred) {
     errorResponse(res, 'CREDENTIAL_NOT_FOUND', 'MEXC API 키가 등록되지 않았습니다', 400);
-    return false;
-  }
-  const pre = await checkMexcUsdtBalance(
-    { apiKey: decrypt(mexcCred.apiKey), secretKey: decrypt(mexcCred.secretKey) },
-    bot.investmentAmount,
-  );
-  if (!pre.ok) {
-    const message = `MEXC USDT 잔고 부족: 가용 ${pre.available} < 투입 ${bot.investmentAmount}`;
-    await prisma.bot.update({
-      where: { id: bot.id },
-      data: { status: 'error', errorMessage: message },
-    });
-    errorResponse(res, 'INSUFFICIENT_BALANCE', message, 400);
     return false;
   }
   return true;
@@ -111,12 +100,12 @@ export const createBot = async (
 
     // autoStart가 true면 그리드 레벨도 생성
     if (autoStart) {
-      // MEXC pre-flight (실패 시 봇은 error 상태로 두고 에러응답, 생성 자체는 유지)
-      if (!(await ensureMexcUsdtOrRespond(bot, userId, res))) {
+      // MEXC 자격증명 확인 (실패 시 봇은 error 상태로 두고 에러응답, 생성 자체는 유지)
+      if (!(await ensureMexcCredentialOrRespond(bot, userId, res))) {
         // 자격증명 없음 등 헬퍼가 상태를 바꾸지 않은 경우 running 잔존 방지
         await prisma.bot.updateMany({
           where: { id: bot.id, status: 'running' },
-          data: { status: 'error', errorMessage: 'MEXC pre-flight 실패' },
+          data: { status: 'error', errorMessage: 'MEXC 자격증명 확인 실패' },
         });
         return;
       }
@@ -341,8 +330,8 @@ export const startBot = async (
       return errorResponse(res, 'BOT_NOT_FOUND', '봇을 찾을 수 없습니다', 404);
     }
 
-    // MEXC 봇은 시작 전 USDT 가용잔고 pre-flight (부족하면 error 상태로 두고 중단)
-    if (!(await ensureMexcUsdtOrRespond(bot, userId, res))) return;
+    // MEXC 봇은 시작 전 자격증명 존재 확인 (없으면 중단)
+    if (!(await ensureMexcCredentialOrRespond(bot, userId, res))) return;
 
     // 그리드 레벨 생성 (등비수열)
     await GridService.createGridLevels(
