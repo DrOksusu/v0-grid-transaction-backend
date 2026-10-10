@@ -37,3 +37,6 @@ coverage
 .nyc_output
 tmpclaude-*
 nul
+
+# Claude Code 로컬 설정 (개인 권한/시크릿 포함 가능)
+.claude/settings.local.json
