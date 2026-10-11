@@ -994,3 +994,15 @@ model UsdtInventoryArbTrade {
   @@index([botId, status])
   @@map("usdt_inventory_arb_trades")
 }
+
+// 거래소 BTC 보유량 일별 데이터 (CoinMetrics SplyExNtv/FlowInExNtv/FlowOutExNtv)
+model ExchangeReserveDaily {
+  id         Int      @id @default(autoincrement())
+  date       DateTime @unique @db.Date        // UTC 기준 일자
+  supplyBtc  Decimal  @db.Decimal(20, 8)      // 거래소 보유량
+  inflowBtc  Decimal? @db.Decimal(20, 8)      // 입금량
+  outflowBtc Decimal? @db.Decimal(20, 8)      // 출금량
+  fetchedAt  DateTime @default(now()) @updatedAt
+
+  @@map("exchange_reserve_daily")
+}

@@ -14,6 +14,7 @@ import { binancePriceManager } from './services/binance-price-manager';
 import { agentManager, GridAgent, InfiniteBuyAgent, VRAgent, MakerTakerSimulatorAgent, PairScannerAgent, GeneralArbScannerAgent, UpbitListingMonitorAgent, BithumbListingMonitorAgent, BtcRsiAgent, RebalancerAgent, VolatilityBreakoutAgent, MultiExchangeArbAgent, InventoryArbAgent, UsdtInventoryArbAgent, ReclaimAgent } from './agents';
 import { sendDailyReport } from './services/daily-report.service';
 import { startMarketRegimeScheduler } from './services/market-regime-scheduler.service';
+import { startExchangeReserveScheduler } from './services/exchange-reserve-scheduler.service';
 
 const startServer = async () => {
   try {
@@ -123,6 +124,15 @@ const startServer = async () => {
         // BTC LTH regime 스케줄러 시작 (백필 + 일별 폴링)
         startMarketRegimeScheduler().catch((e) => console.error('scheduler start failed', e));
         console.log('[market-regime] scheduler started');
+
+        // 거래소 BTC 보유량 스케줄러 시작 (백필 + 매일 KST 11:30/13:30 수집)
+        // 잘못된 cron 식(env) 등 동기 throw가 listen 콜백 밖으로 새어 프로세스를 죽이지 않도록 격리
+        try {
+          startExchangeReserveScheduler();
+          console.log('[exchange-reserve] scheduler started');
+        } catch (e) {
+          console.error('[exchange-reserve] scheduler start failed', e);
+        }
 
         // 일일 수익 리포트 — 매일 오전 6시 KST (= UTC 21:00)
         cron.schedule('0 21 * * *', async () => {

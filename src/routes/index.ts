@@ -28,6 +28,7 @@ import marketRegimeRoutes from './market-regime';
 import inventoryArbRoutes from './inventory-arb';
 import usdtInventoryArbRoutes from './usdt-inventory-arb';
 import reclaimRoutes from './reclaim';
+import exchangeReserveRoutes from './exchange-reserve';
 
 const router = Router();
 
@@ -69,5 +70,6 @@ router.use('/market-regime', marketRegimeRoutes);
 router.use('/inventory-arb', inventoryArbRoutes);
 router.use('/usdt-inventory-arb', usdtInventoryArbRoutes);
 router.use('/reclaim', reclaimRoutes);
+router.use('/exchange-reserve', exchangeReserveRoutes);
 
 export default router;
