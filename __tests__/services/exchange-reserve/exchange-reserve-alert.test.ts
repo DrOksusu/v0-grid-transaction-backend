@@ -58,6 +58,13 @@ describe('decideAlert', () => {
     expect(d).toMatchObject({ send: false, reason: 'no_new_low' })
   })
 
+  it('장기 미발송(알림 OFF·발송 실패 지속) 후에도 최근 cooldownDays일 밖의 오래된 갱신은 보내지 않음', () => {
+    // 01-21=90(갱신) 후 01-22~01-30 = 95, 마지막 알림은 01-10 → 최근 7일(01-24~) 안에 갱신 없음
+    const series = makeSeries('2026-01-01', [...flat(20), 90, ...Array(9).fill(95)])
+    const d = decideAlert({ ...base, series, latestDate: '2026-01-30', lastAlertDataDate: '2026-01-10' })
+    expect(d).toMatchObject({ send: false, reason: 'no_new_low' })
+  })
+
   it('enabled=false → 미발송', () => {
     const series = makeSeries('2026-01-01', [...flat(20), 99])
     const d = decideAlert({ ...base, enabled: false, series, latestDate: '2026-01-21', lastAlertDataDate: null })

@@ -76,14 +76,19 @@ export async function runAlertCheck(latestDate: string): Promise<AlertCheckResul
     return { sent: false, reason: 'send_failed', newLowCount: decision.newLowCount }
   }
 
-  await prisma.exchangeReserveAlert.create({
-    data: {
-      dataDate: dayToDate(latestDate),
-      supplyBtc: latest.supply,
-      prevLowBtc: decision.prevLow,
-      newLowCount: decision.newLowCount,
-      message,
-    },
-  })
+  try {
+    await prisma.exchangeReserveAlert.create({
+      data: {
+        dataDate: dayToDate(latestDate),
+        supplyBtc: latest.supply,
+        prevLowBtc: decision.prevLow,
+        newLowCount: decision.newLowCount,
+        message,
+      },
+    })
+  } catch (e) {
+    // 카톡은 이미 나갔으므로 sent=true 유지. 기록이 없어 다음 판정에서 같은 갱신이 중복 발송될 수 있음
+    console.error(`[exchange-reserve] 카톡 발송됨·이력 기록 실패 (dataDate=${latestDate}) — 다음 판정에서 중복 발송 가능`, e)
+  }
   return { sent: true, reason: 'new_low', newLowCount: decision.newLowCount }
 }

@@ -62,6 +62,15 @@ describe('runAlertCheck', () => {
     expect(alerts.create).not.toHaveBeenCalled()
   })
 
+  it('발송 성공 후 이력 기록이 실패해도 throw하지 않고 sent=true (중복 발송 가능성은 에러 로그로 남김)', async () => {
+    alerts.findFirst.mockResolvedValue(null)
+    send.mockResolvedValue(undefined)
+    alerts.create.mockRejectedValue(new Error('db down'))
+    const r = await runAlertCheck('2026-01-21')
+    expect(r).toEqual({ sent: true, reason: 'new_low', newLowCount: 1 })
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('이력 기록 실패'), expect.any(Error))
+  })
+
   it('쿨다운 중이면 발송 안 함', async () => {
     alerts.findFirst.mockResolvedValue({ dataDate: new Date('2026-01-18T00:00:00Z') })
     const r = await runAlertCheck('2026-01-21')

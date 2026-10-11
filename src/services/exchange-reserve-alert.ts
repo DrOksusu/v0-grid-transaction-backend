@@ -32,8 +32,11 @@ export function decideAlert(input: AlertInput): AlertDecision {
     return skip('cooldown')
   }
 
-  // 최초 가동이면 최근 cooldownDays일 안의 갱신만 (과거 갱신 몰아서 보내지 않기)
-  const fromExclusive = lastAlertDataDate ?? addDays(latestDate, -cooldownDays)
+  // 최근 cooldownDays일 안의 갱신만 묶는다 — 최초 가동·장기 미발송(OFF, 발송 실패 지속) 후
+  // 오래된 갱신을 "최근 갱신"처럼 몰아서 보내지 않기 위함
+  const recentStart = addDays(latestDate, -cooldownDays)
+  const fromExclusive =
+    lastAlertDataDate !== null && lastAlertDataDate > recentStart ? lastAlertDataDate : recentStart
   const lowIdx: number[] = []
   series.forEach((p, i) => {
     if (p.date > fromExclusive && p.date <= latestDate && isNewLowAt(series, i, lookbackDays).isLow) {

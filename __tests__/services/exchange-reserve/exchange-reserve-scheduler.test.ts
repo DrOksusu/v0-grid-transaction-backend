@@ -39,9 +39,17 @@ describe('runCycle', () => {
     expect(runAlertCheck).toHaveBeenCalledWith('2026-10-10')
   })
 
-  it('새 데이터가 없으면 알림 판정 생략 (재시도 실행 중복 방지)', async () => {
+  it('새 데이터가 없어도 판정 실행 — 메인 실행의 발송 실패를 재시도 실행이 복구 (중복은 쿨다운이 막음)', async () => {
     ;(runBackfill as jest.Mock).mockResolvedValue({ skipped: true, inserted: 0 })
     ;(runDailyCollect as jest.Mock).mockResolvedValue({ status: 'ok', newData: false, latest: '2026-10-10' })
+    ;(runAlertCheck as jest.Mock).mockResolvedValue({ sent: false, reason: 'cooldown', newLowCount: 0 })
+    await runCycle('retry')
+    expect(runAlertCheck).toHaveBeenCalledWith('2026-10-10')
+  })
+
+  it('수집이 busy면 판정 생략', async () => {
+    ;(runBackfill as jest.Mock).mockResolvedValue({ skipped: true, inserted: 0 })
+    ;(runDailyCollect as jest.Mock).mockResolvedValue({ status: 'busy', newData: false, latest: null })
     await runCycle('retry')
     expect(runAlertCheck).not.toHaveBeenCalled()
   })

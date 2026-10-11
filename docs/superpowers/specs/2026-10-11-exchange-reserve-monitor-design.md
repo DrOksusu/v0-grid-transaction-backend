@@ -115,7 +115,7 @@ model ExchangeReserveAlert {
 - 실행 절차:
   1. 실행 전 DB의 최신 일자 `prevLatest` 기록.
   2. 최근 7일 조회 → upsert(잠정치 수정 반영).
-  3. 최신 일자가 `prevLatest`보다 새로우면 → 알림 판정(5.3). 같으면 종료(재시도 실행에서는 대부분 이 경로 → 중복 알림 없음).
+  3. 수집 성공 시 매 실행 알림 판정(5.3) — 새 일자가 없어도 판정해 메인 실행의 발송 실패를 재시도 실행이 복구한다. 중복 발송은 이력·쿨다운이 막는다(2026-10-11 리뷰 반영).
 - 동시 실행 방지: 모듈 내 실행 중 플래그.
 
 ### 5.3 알림 판정 `decideAlert(input) → { send, newLowCount, prevLow, reason }`
@@ -129,7 +129,7 @@ model ExchangeReserveAlert {
 규칙:
 1. `enabled=false` → `send=false`.
 2. 어떤 일자 d가 **갱신일**인 조건: `supply(d) < min(supply over (d−lookbackDays, d−1])`. 비교 구간 데이터가 lookbackDays의 90% 미만이면 갱신으로 보지 않는다(데이터 부족 시 오탐 방지).
-3. `pending` = `lastAlertDataDate` 이후 ~ `latestDate`까지의 갱신일 목록(마지막 알림이 없으면 최근 `cooldownDays`일 안의 갱신일만 — 최초 가동 시 과거 갱신을 몰아서 보내지 않기 위함).
+3. `pending` = `max(lastAlertDataDate, latestDate − cooldownDays)` 이후 ~ `latestDate`까지의 갱신일 목록 — 최초 가동·장기 미발송(OFF, 발송 실패 지속) 후 오래된 갱신을 몰아서 보내지 않기 위함(2026-10-11 리뷰 반영).
 4. 쿨다운 경과 = `lastAlertDataDate`가 null 이거나 `latestDate − lastAlertDataDate ≥ cooldownDays`.
 5. `send = 쿨다운 경과 && pending.length > 0`.
    - 오늘이 갱신일이 아니어도 쿨다운이 막 끝났고 묶인 갱신이 있으면 발송(요약).

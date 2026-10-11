@@ -14,7 +14,8 @@ export async function runCycle(label: string): Promise<void> {
     if (!backfill.skipped) console.log(`[exchange-reserve] ${label} backfill`, backfill)
     const collect = await runDailyCollect()
     console.log(`[exchange-reserve] ${label} collect`, collect)
-    if (collect.status === 'ok' && collect.newData && collect.latest) {
+    // 새 일자가 없어도 판정한다: 메인 실행의 발송 실패를 재시도 실행이 복구. 중복 발송은 이력·쿨다운이 막는다
+    if (collect.status === 'ok' && collect.latest) {
       const alert = await runAlertCheck(collect.latest)
       console.log(`[exchange-reserve] ${label} alert`, alert)
     }
