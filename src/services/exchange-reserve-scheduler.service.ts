@@ -3,16 +3,22 @@ import * as cron from 'node-cron'
 import type { ScheduledTask } from 'node-cron'
 import { EXCHANGE_RESERVE_CONFIG as CFG } from '../config/exchange-reserve'
 import { runBackfill, runDailyCollect } from './exchange-reserve.service'
+import { runAlertCheck } from './exchange-reserve-alert.service'
 
 let tasks: ScheduledTask[] = []
 
-// 1회 수집 사이클: 빈 DB면 백필(이전 실패 재시도) → 최근 구간 수집
+// 1회 수집 사이클: 빈 DB면 백필(이전 실패 재시도) → 최근 구간 수집 → 새 일자면 알림 판정
 export async function runCycle(label: string): Promise<void> {
   try {
     const backfill = await runBackfill()
     if (!backfill.skipped) console.log(`[exchange-reserve] ${label} backfill`, backfill)
     const collect = await runDailyCollect()
     console.log(`[exchange-reserve] ${label} collect`, collect)
+    // 새 일자가 없어도 판정한다: 메인 실행의 발송 실패를 재시도 실행이 복구. 중복 발송은 이력·쿨다운이 막는다
+    if (collect.status === 'ok' && collect.latest) {
+      const alert = await runAlertCheck(collect.latest)
+      console.log(`[exchange-reserve] ${label} alert`, alert)
+    }
   } catch (e) {
     console.error(`[exchange-reserve] ${label} 실패`, e)
   }

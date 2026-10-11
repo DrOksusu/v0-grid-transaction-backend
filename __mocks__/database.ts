@@ -8,6 +8,14 @@ const prisma = {
     findFirst: jest.fn(),
     findMany: jest.fn(),
   },
+  exchangeReserveAlertConfig: {
+    upsert: jest.fn(),
+  },
+  exchangeReserveAlert: {
+    findFirst: jest.fn(),
+    findMany: jest.fn(),
+    create: jest.fn(),
+  },
   // BTC LTH regime 스냅샷 테이블
   btcDormantSnapshot: {
     count: jest.fn(),
