@@ -126,8 +126,13 @@ const startServer = async () => {
         console.log('[market-regime] scheduler started');
 
         // 거래소 BTC 보유량 스케줄러 시작 (백필 + 매일 KST 11:30/13:30 수집)
-        startExchangeReserveScheduler();
-        console.log('[exchange-reserve] scheduler started');
+        // 잘못된 cron 식(env) 등 동기 throw가 listen 콜백 밖으로 새어 프로세스를 죽이지 않도록 격리
+        try {
+          startExchangeReserveScheduler();
+          console.log('[exchange-reserve] scheduler started');
+        } catch (e) {
+          console.error('[exchange-reserve] scheduler start failed', e);
+        }
 
         // 일일 수익 리포트 — 매일 오전 6시 KST (= UTC 21:00)
         cron.schedule('0 21 * * *', async () => {

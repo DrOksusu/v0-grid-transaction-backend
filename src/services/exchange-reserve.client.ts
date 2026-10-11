@@ -9,14 +9,14 @@ const numericString = z.preprocess((v) => (typeof v === 'string' ? Number(v) : v
 const rowSchema = z.object({
   asset: z.string(),
   time: z.string(),
-  SplyExNtv: numericString.optional(),
-  FlowInExNtv: numericString.optional(),
-  FlowOutExNtv: numericString.optional(),
+  SplyExNtv: numericString.nullish(),
+  FlowInExNtv: numericString.nullish(),
+  FlowOutExNtv: numericString.nullish(),
 })
 
 const responseSchema = z.object({
   data: z.array(rowSchema),
-  next_page_url: z.string().optional(),
+  next_page_url: z.string().nullish(),
 })
 
 async function getJson(url: string): Promise<unknown> {
@@ -50,7 +50,7 @@ export async function fetchExchangeReserve(start: string): Promise<ReservePoint[
     if (pages > CFG.maxPages) throw new Error('CoinMetrics 페이지 수 초과')
     const parsed = responseSchema.parse(await getJson(url))
     for (const r of parsed.data) {
-      if (r.SplyExNtv === undefined) continue
+      if (r.SplyExNtv == null) continue
       out.push({
         date: r.time.slice(0, 10),
         supply: r.SplyExNtv,
@@ -58,7 +58,7 @@ export async function fetchExchangeReserve(start: string): Promise<ReservePoint[
         outflow: r.FlowOutExNtv ?? null,
       })
     }
-    url = parsed.next_page_url
+    url = parsed.next_page_url ?? undefined
   }
 
   return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))

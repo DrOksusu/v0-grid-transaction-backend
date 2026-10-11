@@ -65,6 +65,20 @@ describe('fetchExchangeReserve', () => {
     expect(out).toEqual([{ date: '2026-10-08', supply: 100, inflow: null, outflow: null }])
   })
 
+  it('metric·next_page_url이 null이어도 응답 전체를 버리지 않음', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      okJson({
+        data: [
+          { asset: 'btc', time: '2026-10-07T00:00:00.000000000Z', SplyExNtv: null },
+          { asset: 'btc', time: '2026-10-08T00:00:00.000000000Z', SplyExNtv: '100', FlowInExNtv: null },
+        ],
+        next_page_url: null,
+      }),
+    ) as any
+    const out = await fetchExchangeReserve('2026-10-07')
+    expect(out).toEqual([{ date: '2026-10-08', supply: 100, inflow: null, outflow: null }])
+  })
+
   it('HTTP 오류면 throw', async () => {
     global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 503, json: async () => ({}) }) as any
     await expect(fetchExchangeReserve('2026-10-08')).rejects.toThrow('CoinMetrics 503')

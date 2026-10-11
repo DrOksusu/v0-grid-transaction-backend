@@ -39,7 +39,7 @@ export function isNewLowAt(
   let count = 0
   for (let i = idx - 1; i >= 0; i--) {
     const gap = daysBetween(series[i].date, target.date)
-    if (gap > lookbackDays) break
+    if (gap >= lookbackDays) break // 비교 구간 = 직전 1 ~ (lookbackDays-1)일 (요약 low1y 창과 일치)
     if (gap < 1) continue
     count++
     if (series[i].supply < min) min = series[i].supply

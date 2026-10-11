@@ -240,7 +240,7 @@ git commit -m "feat: 거래소 BTC 보유량 일별 테이블 스키마 추가"
 - Create: `__tests__/services/exchange-reserve/helpers.ts`
 - Test: `__tests__/services/exchange-reserve/exchange-reserve-math.test.ts`
 
-규칙: 일자 d가 **갱신일** ⇔ `supply(d) < min(supply of 직전 lookbackDays일)` (직전 = d−1 ~ d−lookbackDays, 포함). 비교 구간 데이터가 `ceil(lookbackDays × 0.9)`개 미만이면 갱신 아님.
+규칙: 일자 d가 **갱신일** ⇔ `supply(d) < min(supply of 직전 lookbackDays일)` (직전 = d−1 ~ d−(lookbackDays−1), 즉 요약 low1y 창과 동일 — 2026-10-11 리뷰 반영). 비교 구간 데이터가 `ceil(lookbackDays × 0.9)`개 미만이면 갱신 아님.
 
 - [ ] **Step 1: 테스트 헬퍼 작성** (`__tests__/services/exchange-reserve/helpers.ts`, jest testMatch가 `*.test.ts`라 테스트로 실행되지 않음)
 
@@ -349,7 +349,7 @@ export function isNewLowAt(
   let count = 0
   for (let i = idx - 1; i >= 0; i--) {
     const gap = daysBetween(series[i].date, target.date)
-    if (gap > lookbackDays) break
+    if (gap >= lookbackDays) break
     if (gap < 1) continue
     count++
     if (series[i].supply < min) min = series[i].supply
