@@ -1006,3 +1006,28 @@ model ExchangeReserveDaily {
 
   @@map("exchange_reserve_daily")
 }
+
+// 거래소 보유량 알림 설정 (단일 행 id=1)
+model ExchangeReserveAlertConfig {
+  id           Int      @id @default(1)
+  enabled      Boolean  @default(true)
+  cooldownDays Int      @default(7)
+  lookbackDays Int      @default(365)
+  updatedAt    DateTime @updatedAt
+
+  @@map("exchange_reserve_alert_config")
+}
+
+// 거래소 보유량 발송 알림 이력 (쿨다운 판정 기준)
+model ExchangeReserveAlert {
+  id          Int      @id @default(autoincrement())
+  dataDate    DateTime @db.Date               // 알림 근거 데이터 일자
+  supplyBtc   Decimal  @db.Decimal(20, 8)
+  prevLowBtc  Decimal  @db.Decimal(20, 8)     // 직전 lookback 최저치
+  newLowCount Int                             // 지난 알림 이후 갱신 횟수(묶음)
+  message     String   @db.Text
+  sentAt      DateTime @default(now())
+
+  @@index([sentAt])
+  @@map("exchange_reserve_alerts")
+}
