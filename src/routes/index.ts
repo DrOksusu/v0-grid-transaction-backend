@@ -29,6 +29,7 @@ import inventoryArbRoutes from './inventory-arb';
 import usdtInventoryArbRoutes from './usdt-inventory-arb';
 import reclaimRoutes from './reclaim';
 import exchangeReserveRoutes from './exchange-reserve';
+import exchangeReserveAdminRoutes from './exchange-reserve-admin';
 
 const router = Router();
 
@@ -71,5 +72,6 @@ router.use('/inventory-arb', inventoryArbRoutes);
 router.use('/usdt-inventory-arb', usdtInventoryArbRoutes);
 router.use('/reclaim', reclaimRoutes);
 router.use('/exchange-reserve', exchangeReserveRoutes);
+router.use('/admin/exchange-reserve', exchangeReserveAdminRoutes);
 
 export default router;
