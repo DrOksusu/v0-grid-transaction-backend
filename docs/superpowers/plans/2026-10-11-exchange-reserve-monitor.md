@@ -1943,6 +1943,8 @@ git commit -m "feat: 거래소 보유량 알림 메시지 빌더"
 - Create: `src/services/exchange-reserve-alert.service.ts`
 - Test: `__tests__/services/exchange-reserve/exchange-reserve-alert.service.test.ts`
 
+> ⚠️ 카톡 링크 도메인: 현재 백엔드의 어떤 `sendToMe` 호출도 `grid.koco.me` 링크를 쓰지 않는다(기본값은 옛 Vercel 도메인). 카카오 메시지 링크는 **카카오 앱의 Web 플랫폼에 등록된 도메인만** 동작한다. 구현 전 카카오 개발자 콘솔에서 `https://grid.koco.me` 등록 여부를 사용자에게 확인하고, 미등록이면 등록을 요청한다(등록 전에는 메시지는 가도 링크 클릭이 안 될 수 있음).
+
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 ```ts
