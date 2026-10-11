@@ -1,5 +1,13 @@
 // Prisma 클라이언트 Mock
 const prisma = {
+  // 거래소 BTC 보유량 일별 테이블
+  exchangeReserveDaily: {
+    count: jest.fn(),
+    createMany: jest.fn(),
+    upsert: jest.fn(),
+    findFirst: jest.fn(),
+    findMany: jest.fn(),
+  },
   // BTC LTH regime 스냅샷 테이블
   btcDormantSnapshot: {
     count: jest.fn(),
