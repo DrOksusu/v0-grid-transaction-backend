@@ -33,9 +33,22 @@ describe('GET /api/exchange-reserve', () => {
     expect(getReserveView).toHaveBeenCalledWith(90)
   })
 
+  it('days=1825 허용', async () => {
+    ;(getReserveView as jest.Mock).mockResolvedValue({ series: [], summary: {} })
+    await getExchangeReserve({ query: { days: '1825' } } as unknown as Request, res as Response, next)
+    expect(getReserveView).toHaveBeenCalledWith(1825)
+  })
+
+  it("days=all 허용", async () => {
+    ;(getReserveView as jest.Mock).mockResolvedValue({ series: [], summary: {} })
+    await getExchangeReserve({ query: { days: 'all' } } as unknown as Request, res as Response, next)
+    expect(getReserveView).toHaveBeenCalledWith('all')
+  })
+
   it('허용되지 않은 days는 400', async () => {
     await getExchangeReserve({ query: { days: '30' } } as unknown as Request, res as Response, next)
     expect(status).toHaveBeenCalledWith(400)
+    expect(json).toHaveBeenCalledWith({ error: 'invalid days (use 90|365|1095|1825|all)' })
     expect(getReserveView).not.toHaveBeenCalled()
   })
 
