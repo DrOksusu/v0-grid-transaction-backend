@@ -1,7 +1,8 @@
 // 거래소 BTC 보유량 — 백필·일일 수집·조회 서비스
 import prisma from '../config/database'
-import { EXCHANGE_RESERVE_CONFIG as CFG } from '../config/exchange-reserve'
+import { EXCHANGE_RESERVE_CONFIG as CFG, type ViewRange } from '../config/exchange-reserve'
 import { fetchExchangeReserve } from './exchange-reserve.client'
+import { downsampleWeekly } from './exchange-reserve-downsample'
 import { addDays, dayToDate, toDay, type ReservePoint } from './exchange-reserve-math'
 import { computeReserveSummary, type ReserveSummary } from './exchange-reserve-summary'
 
@@ -46,11 +47,16 @@ export interface BackfillResult {
   inserted: number
 }
 
-// 데이터가 부족하면 최근 730일 일괄 적재 (알림 판정 없음)
-export async function runBackfill(now: Date = new Date()): Promise<BackfillResult> {
-  const count = await prisma.exchangeReserveDaily.count()
-  if (count >= CFG.backfillMinRows) return { skipped: true, inserted: 0 }
-  const points = await fetchExchangeReserve(addDays(toDay(now), -CFG.backfillDays))
+// 가장 오래된 행이 historyStart보다 한참 늦으면 전체 기간을 적재 (멱등, 알림 판정 없음)
+export async function runBackfill(_now: Date = new Date()): Promise<BackfillResult> {
+  const first = await prisma.exchangeReserveDaily.findFirst({
+    orderBy: { date: 'asc' },
+    select: { date: true },
+  })
+  const oldest = first ? toDay(first.date) : null
+  if (oldest !== null && oldest <= addDays(CFG.historyStart, 7)) return { skipped: true, inserted: 0 }
+  const fetched = await fetchExchangeReserve(CFG.historyStart)
+  const points = oldest === null ? fetched : fetched.filter((p) => p.date < oldest)
   if (points.length === 0) return { skipped: false, inserted: 0 }
   const result = await prisma.exchangeReserveDaily.createMany({
     data: points.map(toRow),
@@ -106,13 +112,13 @@ export interface ReserveView {
   summary: ReserveSummary
 }
 
-// 조회 API용: 요약은 400일 데이터로 계산, series는 최근 days일만
-export async function getReserveView(days: number, now: Date = new Date()): Promise<ReserveView> {
+// 조회 API용: 요약은 일 단위 전체 데이터로 계산, series는 range 구간 (365일 초과·전체는 주 단위)
+export async function getReserveView(range: ViewRange, now: Date = new Date()): Promise<ReserveView> {
   const today = toDay(now)
-  const all = await loadSeries(addDays(today, -CFG.viewLookbackDays))
-  const cutoff = addDays(today, -days)
-  return {
-    series: all.filter((p) => p.date > cutoff),
-    summary: computeReserveSummary(all, now),
-  }
+  const from = range === 'all' ? CFG.historyStart : addDays(today, -Math.max(range, CFG.viewLookbackDays))
+  const all = await loadSeries(from)
+  const summary = computeReserveSummary(all, now)
+  const series = range === 'all' ? all : all.filter((p) => p.date > addDays(today, -range))
+  const reduced = range === 'all' || range > CFG.downsampleAboveDays
+  return { series: reduced ? downsampleWeekly(series) : series, summary }
 }

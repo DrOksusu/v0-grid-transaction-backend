@@ -10,13 +10,15 @@ export const EXCHANGE_RESERVE_CONFIG = {
   cronRetry: process.env.EXCHANGE_RESERVE_RETRY_CRON ?? '30 4 * * *',
   fetchTimeoutMs: 10_000,
   maxPages: 20,              // 페이지네이션 무한루프 방지
-  backfillDays: 730,         // 부팅 백필 범위
-  backfillMinRows: 400,      // 이 행 수 미만이면 백필 실행
+  historyStart: '2011-04-24', // CoinMetrics SplyExNtv 데이터 시작일 (전체 기간 백필 기준)
   recollectDays: 7,          // 일일 수집 시 재조회 구간 (잠정치 수정 반영)
   staleDays: 2,              // 최신 일자가 오늘(UTC)보다 이만큼 초과 경과하면 지연
   viewLookbackDays: 400,     // 조회 API가 요약 계산용으로 읽는 범위
   lookbackDays: 365,         // 1년 최저/최고 기준
+  downsampleAboveDays: 365,  // 이 일수 초과 조회는 주 단위로 줄여 반환
 } as const
 
 // 조회 API가 허용하는 기간(일)
-export const ALLOWED_VIEW_DAYS = [90, 365] as const
+export const ALLOWED_VIEW_DAYS = [90, 365, 1095, 1825] as const
+// 조회 범위: 허용 일수 또는 전체 기간
+export type ViewRange = (typeof ALLOWED_VIEW_DAYS)[number] | 'all'
