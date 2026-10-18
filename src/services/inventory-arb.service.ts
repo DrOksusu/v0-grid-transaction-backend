@@ -26,6 +26,14 @@ export function decideAction(bot: { enabled: boolean; killSwitch: boolean; autoE
   return { action: bot.autoExecute ? 'execute' : 'notify' };
 }
 
+/**
+ * 로밍 일상 카톡(체결·반자동 감지) 토글. ROAM_KAKAO_NOTIFY='true'일 때만 발송(기본 OFF — 2026-10-18 잦은 알림으로 끔).
+ * flatten 실패 긴급 알림·일일 손실한도 자동정지 알림은 이 토글과 무관하게 항상 발송.
+ */
+export function isRoamKakaoEnabled(value: string | undefined = process.env.ROAM_KAKAO_NOTIFY): boolean {
+  return value === 'true';
+}
+
 export function buildEmergencyMessage(symbol: string, imbalanceQty: number, note: string): string {
   return `🚨 재고형 아비 flatten 실패 — ${symbol} 방향노출 ${imbalanceQty} 잔존!\n봇 killSwitch ON + 정지됨. 수동 확인 필요.\n(${note})`;
 }
@@ -305,7 +313,9 @@ class InventoryArbService {
       });
       // persistResult에 실제 코인 심볼을 덮어쓴 봇 객체 전달 — flatten_failed 긴급 카톡/알림이
       // sentinel('__MANUAL__') 대신 실제 코인을 명시하도록. bot.id는 그대로라 FK/업데이트는 sentinel에 귀속.
-      await this.persistResult({ ...manualBot, symbol }, trade.id, opp, feas, result);
+      // 로밍 경로는 토글 OFF면 체결 카톡 생략 (긴급 카톡은 persistResult에서 항상 발송)
+      const silentResult = sentinelSymbol === ROAM_BOT_SYMBOL && !isRoamKakaoEnabled();
+      await this.persistResult({ ...manualBot, symbol }, trade.id, opp, feas, result, silentResult);
 
       const netKrw = result.kind === 'filled' || result.kind === 'partial_flattened' ? result.netKrw : undefined;
       const note = 'note' in result ? result.note : 'reason' in result ? result.reason : undefined;
@@ -369,7 +379,8 @@ class InventoryArbService {
 
     const top = picks[0];
     if (!cfg.autoExecute) {
-      // 반자동: 감지 카톡만 (심볼당 30분 스로틀)
+      // 반자동: 감지 카톡만 (심볼당 30분 스로틀). 토글 OFF면 무음
+      if (!isRoamKakaoEnabled()) return;
       const last = roamNotifyAt.get(top.symbol) ?? 0;
       if (Date.now() - last > ROAM_NOTIFY_THROTTLE_MS) {
         roamNotifyAt.set(top.symbol, Date.now());
@@ -387,6 +398,7 @@ class InventoryArbService {
     const result = await this.executeManual(cfg.userId, top.symbol, cfg.orderKrw, grossBps, ROAM_BOT_SYMBOL);
     try {
       if (result.executed && (result.kind === 'filled' || result.kind === 'partial_flattened')) {
+        if (!isRoamKakaoEnabled()) return;
         const sign = (result.netKrw ?? 0) >= 0 ? '+' : '';
         await kakaoNotifyService.sendToMe(
           '⚡ 로밍 아비 체결 · ' + top.symbol + '\n순손익 ' + sign + '₩' + Math.round(result.netKrw ?? 0).toLocaleString() + ' (규모 ₩' + Math.round(result.notionalKrw ?? 0).toLocaleString() + ')\n오늘 ' + (todayCount + 1) + '건째',
@@ -674,7 +686,7 @@ class InventoryArbService {
     }
   }
 
-  private async persistResult(bot: any, tradeId: number, opp: SpreadOpportunity, feas: any, result: ExecutorResult): Promise<void> {
+  private async persistResult(bot: any, tradeId: number, opp: SpreadOpportunity, feas: any, result: ExecutorResult, silentResult = false): Promise<void> {
     const now = new Date();
     const base = { status: result.kind, executedAt: now };
     if (result.kind === 'filled' || result.kind === 'partial_flattened') {
@@ -684,7 +696,7 @@ class InventoryArbService {
         where: { id: tradeId },
         data: { ...base, grossKrw: +gross.toFixed(4), feeKrw: +result.feeKrw.toFixed(4), netKrw: +result.netKrw.toFixed(4), note: result.note },
       });
-      await this.notifyResult(bot, opp, result);
+      if (!silentResult) await this.notifyResult(bot, opp, result);
     } else if (result.kind === 'flatten_failed') {
       // 터미널: killSwitch ON + 봇 정지 + 긴급 카톡. 재시도 금지.
       // 각 부수효과를 독립 try/catch로 실행 — DB 오류가 정지/알림을 서로 삼키지 않도록(안전망 보장).
