@@ -55,3 +55,18 @@ describe('pickRoamCandidates (로밍 실행 대상 선택)', () => {
     expect(picks).toEqual([]);
   });
 });
+
+describe('isRoamKakaoEnabled (로밍 일상 카톡 토글)', () => {
+  const { isRoamKakaoEnabled } = require('../../src/services/inventory-arb.service');
+
+  it('미설정이면 OFF (기본 무음)', () => {
+    expect(isRoamKakaoEnabled(undefined)).toBe(false);
+  });
+  it("'true'일 때만 ON", () => {
+    expect(isRoamKakaoEnabled('true')).toBe(true);
+  });
+  it("'false'·기타 값은 OFF", () => {
+    expect(isRoamKakaoEnabled('false')).toBe(false);
+    expect(isRoamKakaoEnabled('1')).toBe(false);
+  });
+});
