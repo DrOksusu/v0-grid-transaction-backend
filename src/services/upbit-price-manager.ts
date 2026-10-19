@@ -506,13 +506,8 @@ class UpbitPriceManager {
    * 재연결 스케줄링 (지수 백오프)
    */
   private scheduleReconnect(): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('[PriceManager] Max reconnect attempts reached. Giving up.');
-      return;
-    }
-
-    // 지수 백오프: 1초, 2초, 4초, 8초... (최대 30초)
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    // 빠른 재시도 한도 이후에도 포기하지 않고 60초 간격으로 계속 재연결 (업비트 장시간 점검 대비)
+    const delay = computeReconnectDelay(this.reconnectAttempts, this.maxReconnectAttempts);
     this.reconnectAttempts++;
 
     console.log(`[PriceManager] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
@@ -521,6 +516,16 @@ class UpbitPriceManager {
       this.connect();
     }, delay);
   }
+}
+
+/**
+ * 재연결 지연(ms). 빠른 재시도 구간은 지수 백오프(1s, 2s, 4s... 최대 30s),
+ * 그 이후에는 포기하지 않고 60초 간격으로 계속 재시도한다.
+ * (2026-10-19 업비트 6시간 점검 중 10회 실패 후 영구 중단 → 점검 후에도 실시간 가격 끊김 사고)
+ */
+export function computeReconnectDelay(attempt: number, maxFastAttempts: number = 10): number {
+  if (attempt >= maxFastAttempts) return 60000;
+  return Math.min(1000 * Math.pow(2, attempt), 30000);
 }
 
 // 싱글톤 인스턴스 export
@@ -567,14 +572,10 @@ const UPBIT_WS_URL = 'wss://api.upbit.com/websocket/v1';
 
 /**
  * 지수 백오프 재연결 스케줄링 (1s, 2s, 4s, ... 최대 30s)
- * 최대 시도 횟수 초과 시 중단
+ * 빠른 재시도 횟수 초과 후에도 중단하지 않고 60초 간격으로 계속 재시도
  */
 function scheduleOrderbookReconnect(): void {
-  if (orderbookReconnectAttempts >= MAX_ORDERBOOK_RECONNECT_ATTEMPTS) {
-    console.error(`[StablecoinArb] 최대 재연결 횟수(${MAX_ORDERBOOK_RECONNECT_ATTEMPTS}) 초과. 중단.`);
-    return;
-  }
-  const delay = Math.min(1000 * Math.pow(2, orderbookReconnectAttempts), 30000);
+  const delay = computeReconnectDelay(orderbookReconnectAttempts, MAX_ORDERBOOK_RECONNECT_ATTEMPTS);
   orderbookReconnectAttempts++;
   console.log(`[StablecoinArb] ${delay}ms 후 재연결 (${orderbookReconnectAttempts}/${MAX_ORDERBOOK_RECONNECT_ATTEMPTS})`);
   orderbookReconnectTimer = setTimeout(() => {
