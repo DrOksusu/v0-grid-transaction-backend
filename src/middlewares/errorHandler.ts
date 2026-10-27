@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import axios from 'axios';
 
 export class AppError extends Error {
   statusCode: number;
@@ -26,7 +27,12 @@ export const errorHandler = (
     });
   }
 
-  console.error('ERROR:', err);
+  // axios 오류는 통째로 찍으면 요청 본문·헤더·URL의 비밀값(client_secret, 토큰)이 로그에 남으므로 응답만 요약
+  if (axios.isAxiosError(err)) {
+    console.error('ERROR (외부 API):', err.response?.status ?? err.code, JSON.stringify(err.response?.data ?? null).slice(0, 500));
+  } else {
+    console.error('ERROR:', err);
+  }
 
   return res.status(500).json({
     status: 'error',

@@ -3,6 +3,16 @@ import axios from 'axios';
 import { config } from '../config/env';
 import prisma from '../config/database';
 
+/** axios 오류를 카카오 응답 코드·설명만 담은 Error로 바꿈 (요청 본문의 client_secret·토큰, Bearer 헤더가 로그에 남지 않게) */
+export function toSafeKakaoError(err: unknown, action: string): Error {
+  if (!axios.isAxiosError(err)) return err instanceof Error ? err : new Error(String(err));
+  const data = (err.response?.data ?? {}) as Record<string, unknown>;
+  const detail = [err.response?.status, data.error_code ?? data.code, data.error, data.error_description ?? data.msg]
+    .filter((v) => v !== undefined && v !== null && v !== '')
+    .join(' ');
+  return new Error(`카카오 ${action} 실패: ${detail || err.code || err.message}`);
+}
+
 class KakaoNotifyService {
   /** OAuth 인증 URL 반환 (관리자가 한 번 방문하여 승인) */
   getAuthUrl(): string {
@@ -27,7 +37,7 @@ class KakaoNotifyService {
     const res = await axios.post('https://kauth.kakao.com/oauth/token', params.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       timeout: 10000,
-    });
+    }).catch((e) => { throw toSafeKakaoError(e, '토큰 발급'); });
     await this.saveTokens(res.data.access_token, res.data.refresh_token, res.data.expires_in);
     console.log('[KakaoNotify] 토큰 발급 완료 (expires_in:', res.data.expires_in, 's)');
   }
@@ -68,7 +78,7 @@ class KakaoNotifyService {
         },
         timeout: 10000,
       },
-    );
+    ).catch((e) => { throw toSafeKakaoError(e, '메시지 발송'); });
     console.log('[KakaoNotify] 메시지 발송 완료');
   }
 
@@ -93,7 +103,7 @@ class KakaoNotifyService {
     const res = await axios.post('https://kauth.kakao.com/oauth/token', params.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       timeout: 10000,
-    });
+    }).catch((e) => { throw toSafeKakaoError(e, '토큰 갱신'); });
     const newRefresh = res.data.refresh_token ?? refreshToken;
     await this.saveTokens(res.data.access_token, newRefresh, res.data.expires_in);
     console.log('[KakaoNotify] 액세스 토큰 갱신 완료');
