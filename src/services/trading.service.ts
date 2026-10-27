@@ -407,6 +407,7 @@ export class TradingService {
             },
             data: {
               status: 'pending',
+              orderId: null,  // 옛 주문 ID 잔존 시 실패 롤백(orderId: null 조건)이 빗나감
             },
           });
 
@@ -535,6 +536,7 @@ export class TradingService {
             },
             data: {
               status: 'pending',
+              orderId: null,  // 옛 주문 ID 잔존 시 실패 롤백(orderId: null 조건)이 빗나감
             },
           });
 
@@ -1045,6 +1047,18 @@ export class TradingService {
       return;
     }
 
+    // 이미 체결 처리된 주문 재처리 방지: 반대 주문 실패로 옛 orderId를 든 채 pending에 갇힌 그리드를
+    // stale 체크가 다시 '체결'로 넘기면 수익·거래수가 실제 거래 없이 반복 누적됨.
+    // 그리드는 filled(재사용 가능 상태)로 두고 수익/통계/반대 주문은 건너뜀
+    const alreadyFilled = await prisma.trade.findFirst({
+      where: { orderId: grid.orderId!, status: 'filled' },
+      select: { id: true },
+    });
+    if (alreadyFilled) {
+      console.warn(`[Trading] Bot ${botId}: 이미 체결 처리된 주문 재감지 → 중복 처리 스킵 (grid ${grid.id}, orderId ${grid.orderId})`);
+      return;
+    }
+
     // 업비트 실제 체결 시간 추출
     let actualFilledAt = new Date();
     if (order.trades && order.trades.length > 0) {
@@ -1303,6 +1317,20 @@ export class TradingService {
         if (!grid || order.state !== 'done') continue;
 
         try {
+          // 이미 체결 처리된 주문 재처리 방지 (processFilledOrder와 동일)
+          const alreadyFilled = await prisma.trade.findFirst({
+            where: { orderId: grid.orderId!, status: 'filled' },
+            select: { id: true },
+          });
+          if (alreadyFilled) {
+            console.warn(`[Trading] Bot ${botId}: 이미 체결 처리된 주문 재감지 → 중복 처리 스킵 (grid ${grid.id}, orderId ${grid.orderId})`);
+            await prisma.gridLevel.updateMany({
+              where: { id: grid.id, status: 'pending' },
+              data: { status: 'filled' },
+            });
+            continue;
+          }
+
           // 업비트 실제 체결 시간 추출 (trades 배열의 마지막 거래 시간 사용)
           let actualFilledAt = new Date();
           if (order.trades && order.trades.length > 0) {
@@ -1617,12 +1645,14 @@ export class TradingService {
         console.log(`[Trading] Bot ${bot.id}: 매도 그리드 찾음 - id: ${sellGrid.id}, price: ${sellGrid.price}, status: ${sellGrid.status}`);
 
         // Race condition 방지: 상태가 여전히 inactive/filled인 경우에만 pending으로 변경
+        // orderId도 비움: 이전 사이클의 체결 완료 주문 ID가 남으면 주문 실패 시 롤백(orderId: null 조건)이 빗나가고,
+        // stale 체크가 그 옛 주문을 '체결'로 재처리해 가짜 수익이 무한 누적됨
         const sellUpdateResult = await prisma.gridLevel.updateMany({
           where: {
             id: sellGrid.id,
             status: { in: ['inactive', 'filled'] },
           },
-          data: { status: 'pending' },
+          data: { status: 'pending', orderId: null },
         });
 
         if (sellUpdateResult.count === 0) {
@@ -1721,12 +1751,13 @@ export class TradingService {
         console.log(`[Trading] Bot ${bot.id}: 매수 그리드 찾음 - id: ${buyGrid.id}, price: ${buyGrid.price}, status: ${buyGrid.status}`);
 
         // Race condition 방지: 상태가 여전히 filled인 경우에만 pending으로 변경
+        // orderId도 비움 (매도 측과 동일한 이유 — 옛 주문 ID 재처리로 인한 가짜 체결 방지)
         const buyUpdateResult = await prisma.gridLevel.updateMany({
           where: {
             id: buyGrid.id,
             status: 'filled',
           },
-          data: { status: 'pending' },
+          data: { status: 'pending', orderId: null },
         });
 
         if (buyUpdateResult.count === 0) {
