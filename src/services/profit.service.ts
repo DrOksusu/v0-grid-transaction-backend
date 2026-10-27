@@ -462,6 +462,8 @@ export class ProfitService {
     const userProfitMap = new Map<number, { user: any; totalProfit: number }>();
     for (const mp of allProfits) {
       if (!mp.user) continue;
+      // MEXC(USDT) 수익은 KRW 랭킹에서 제외 (getSummary와 동일 기준)
+      if (isUsdtQuote(mp.exchange)) continue;
       const existing = userProfitMap.get(mp.userId);
       if (existing) {
         existing.totalProfit += mp.totalProfit;
@@ -558,7 +560,8 @@ export class ProfitService {
       },
     });
 
-    const botIds = bots.map(b => b.id);
+    // MEXC(USDT) 봇은 KRW 랭킹 상세에서 제외 (getMonthlyRanking과 일치)
+    const botIds = bots.filter(b => !isUsdtQuote(b.exchange)).map(b => b.id);
 
     // 해당 월의 매도 거래 조회 (profit null 포함)
     const trades = await prisma.trade.findMany({
