@@ -237,6 +237,7 @@ export class GridService {
       buy: buyLevels[0] || null,
       buys: buyLevels,
       sell: sellLevels[0] || null,
+      pendingBuyCount, // 이번 사이클 주문 전 미체결 매수 수 (미체결 매수 상한 정리용, #118)
     };
   }
 
