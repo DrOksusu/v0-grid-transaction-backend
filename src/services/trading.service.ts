@@ -87,6 +87,14 @@ const HEAL_COOLDOWN_MS = 5 * 60 * 1000;  // heal 후 5분간 재개입 금지 (�
 const HEAL_STALE_MS = 10 * 60 * 1000;    // 10분 이상 안 바뀐 레벨만 대상 (in-flight 반대주문과 충돌 방지)
 const HEAL_CAP = 2;                       // 사이클당 봇별 최대 재활성 개수
 
+// 봇별 미체결 매수 상한 (#118): 초과 시 원거리 매수부터 취소해 체결 가능성 낮은 주문에 원화가 묶이지 않게 함
+// 하방 추가 기준(GridService.MAX_PENDING_BUY_ORDERS=7)과 상한 사이가 완충 구간 → 경계에서 취소·재주문 반복 방지
+const DEFAULT_PENDING_BUY_CAP = 15;       // GRID_MAX_PENDING_BUYS 미설정 시 (0이면 끔)
+const PENDING_BUY_CAP_MAX_CANCEL = 3;     // 사이클당 봇별 최대 취소 개수
+const pendingBuyCapInFlight = new Set<number>(); // 정리 진행 중인 봇 (중복 실행 방지)
+const pendingBuyCapCooldownMap = new Map<number, number>(); // botId -> 재시도 허용 시각 (취소 0건 시)
+const PENDING_BUY_CAP_IDLE_COOLDOWN_MS = 10 * 60 * 1000; // 취소 0건이면 10분 쉼 (점검 중 조회 실패 반복 방지)
+
 // 사용자별 자격증명 캐시 (중앙 집중식 조회용)
 interface UserCredentialCache {
   apiKey: string;
@@ -106,6 +114,7 @@ export class TradingService {
     balanceErrorCooldownMap.delete(botId);
     balanceErrorCountMap.delete(botId);
     healCooldownMap.delete(botId);
+    pendingBuyCapCooldownMap.delete(botId);
   }
 
   // 사용자별 잔고 쿨다운 상태 조회 (외부 노출용)
@@ -123,6 +132,75 @@ export class TradingService {
   static isBotOnBalanceCooldown(botId: number): boolean {
     const expiry = balanceErrorCooldownMap.get(botId);
     return !!expiry && Date.now() < expiry;
+  }
+
+  // 미체결 매수 상한 (0=끔). 하방 추가 기준보다 작으면 추가·취소가 반복되므로 그 값으로 올림
+  static getPendingBuyCap(): number {
+    const raw = process.env.GRID_MAX_PENDING_BUYS;
+    const parsed = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+    const cap = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_PENDING_BUY_CAP;
+    if (cap === 0) return 0;
+    return Math.max(cap, GridService.MAX_PENDING_BUY_ORDERS ?? 0);
+  }
+
+  /**
+   * 미체결 매수 상한 정리 (#118): 추정 개수가 상한을 넘으면 현재가에서 먼 매수부터 최대 3개 취소.
+   * 평상시 정리라 무음(소켓 알림·errorMessage 초기화 없음). executeTrade가 사이클 끝에 백그라운드로 호출.
+   */
+  static async enforcePendingBuyCap(
+    upbit: GridTradeClient,
+    botId: number,
+    ticker: string,
+    exchange: string,
+    currentPrice: number,
+    estimatedPendingBuys: number
+  ): Promise<{ cancelled: number }> {
+    const cap = this.getPendingBuyCap();
+    if (cap === 0 || !(estimatedPendingBuys > cap) || pendingBuyCapInFlight.has(botId)) {
+      return { cancelled: 0 };
+    }
+    const retryAt = pendingBuyCapCooldownMap.get(botId);
+    if (retryAt && Date.now() < retryAt) return { cancelled: 0 };
+
+    pendingBuyCapInFlight.add(botId);
+    try {
+      const { cancelled } = await this.trimBuyOrdersOnInsufficientBalance(upbit, botId, ticker, cap, exchange, {
+        currentPrice,
+        maxCancel: PENDING_BUY_CAP_MAX_CANCEL,
+        silent: true,
+      });
+      if (cancelled === 0) {
+        pendingBuyCapCooldownMap.set(botId, Date.now() + PENDING_BUY_CAP_IDLE_COOLDOWN_MS);
+      } else {
+        pendingBuyCapCooldownMap.delete(botId);
+      }
+      return { cancelled };
+    } finally {
+      pendingBuyCapInFlight.delete(botId);
+    }
+  }
+
+  /**
+   * 취소해도 안전한 주문인지 확인: 미체결(대기)이고 체결 수량이 0일 때만 true.
+   * 부분 체결분을 취소하면 그 코인이 그리드 추적에서 빠지므로 제외, 체결 완료는 체결 처리에 맡김.
+   * 조회 실패 시에도 보수적으로 false.
+   */
+  private static async isSafeToCancelBuy(
+    upbit: GridTradeClient,
+    orderId: string,
+    ticker: string,
+    exchange: string
+  ): Promise<boolean> {
+    const client = upbit as any;
+    if (typeof client.getOrder !== 'function') return true;
+
+    const order = exchange === 'mexc' ? await client.getOrder(orderId, ticker) : await client.getOrder(orderId);
+    if (!order) return true;
+
+    // upbit: raw API(state/executed_volume), bithumb·mexc: PlacedOrder(status/filledQty)
+    if (order.state === 'done' || order.status === 'filled') return false;
+    const executed = order.filledQty != null ? Number(order.filledQty) : parseFloat(order.executed_volume ?? '0');
+    return !(executed > 0);
   }
 
   // 사용자별 자격증명 조회 (중앙 집중식 조회용)
@@ -382,6 +460,7 @@ export class TradingService {
       }
 
       let executed = false;
+      let placedBuyCount = 0;
 
       // 매수 주문 실행 (가격 크로싱된 모든 그리드 레벨에 대해)
       // 잔고 부족 쿨다운 체크: 5분간 매수 주문 스킵
@@ -461,6 +540,7 @@ export class TradingService {
             balanceErrorCountMap.delete(botId);
 
             executed = true;
+            placedBuyCount++;
           }
         } catch (error: any) {
           console.error(`매수 주문 실패 (Bot ${botId}):`, error.message);
@@ -619,6 +699,12 @@ export class TradingService {
           });
         }
       }
+
+      // 미체결 매수 상한 정리 (#118): 백그라운드 실행 (취소 API가 거래 사이클을 지연시키지 않도록)
+      const estimatedPendingBuys = (executableGrids.pendingBuyCount ?? 0) + placedBuyCount;
+      this.enforcePendingBuyCap(upbit, botId, bot.ticker, botExchange, currentPrice, estimatedPendingBuys).catch(
+        (e: any) => console.error(`[Trading] Bot ${botId}: 미체결 매수 상한 정리 실패 - ${e.message}`)
+      );
 
       // 봇 마지막 실행 시간 업데이트
       if (executed) {
@@ -1464,21 +1550,29 @@ export class TradingService {
   /**
    * 잔고 부족 시 원거리 매수 주문 정리
    * 현재가 기준 가까운 N개만 유지하고 나머지 취소
+   * opts (#118 미체결 매수 상한 정리용):
+   * - currentPrice: 이미 아는 현재가 (REST 재조회 생략)
+   * - maxCancel   : 이번 호출 최대 취소 개수 (가장 먼 것부터)
+   * - silent      : 소켓 알림·errorMessage 초기화 생략 (평상시 정리)
    */
   private static async trimBuyOrdersOnInsufficientBalance(
     upbit: GridTradeClient,
     botId: number,
     ticker: string,
     keepCount: number = 7,
-    exchange: string = 'upbit'
+    exchange: string = 'upbit',
+    opts: { currentPrice?: number; maxCancel?: number; silent?: boolean } = {}
   ): Promise<{ cancelled: number; kept: number }> {
     try {
-      console.log(`[Trading] Bot ${botId}: 잔고 부족으로 매수 주문 정리 시작 (유지할 주문: ${keepCount}개)`);
+      const reason = opts.silent ? '미체결 매수 상한 초과' : '잔고 부족';
+      console.log(`[Trading] Bot ${botId}: ${reason}으로 매수 주문 정리 시작 (유지할 주문: ${keepCount}개)`);
 
       // 1. 현재가 조회 (거래소별)
       const market = ticker.startsWith('KRW-') ? ticker : `KRW-${ticker.replace('KRW-', '')}`;
       let currentPrice: number;
-      if (exchange === 'mexc') {
+      if (opts.currentPrice !== undefined) {
+        currentPrice = opts.currentPrice;
+      } else if (exchange === 'mexc') {
         currentPrice = await mexcGridPriceManager.getPriceWithFallback(ticker);
       } else if (exchange === 'bithumb') {
         currentPrice = await bithumbPriceManager.getPriceWithFallback(market);
@@ -1516,7 +1610,10 @@ export class TradingService {
 
       // 4. 유지할 주문과 취소할 주문 분리
       const toKeep = sortedByDistance.slice(0, keepCount);
-      const toCancel = sortedByDistance.slice(keepCount);
+      // maxCancel이 있으면 가장 먼 것부터 그 개수만 (나머지는 다음 사이클)
+      const toCancel = opts.maxCancel !== undefined
+        ? sortedByDistance.slice(keepCount).reverse().slice(0, opts.maxCancel)
+        : sortedByDistance.slice(keepCount);
 
       console.log(`[Trading] Bot ${botId}: 유지 ${toKeep.length}개, 취소 ${toCancel.length}개`);
 
@@ -1525,6 +1622,19 @@ export class TradingService {
       for (const grid of toCancel) {
         try {
           if (grid.orderId) {
+            // 부분 체결·체결 완료 주문은 취소하지 않음 (코인 추적 상실 방지)
+            let safe: boolean;
+            try {
+              safe = await this.isSafeToCancelBuy(upbit, grid.orderId, ticker, exchange);
+            } catch (checkError: any) {
+              console.error(`[Trading] Bot ${botId}: 주문 상태 조회 실패로 취소 보류 (${grid.price}원) - ${checkError.message}`);
+              continue;
+            }
+            if (!safe) {
+              console.warn(`[Trading] Bot ${botId}: 부분/완료 체결 주문이라 취소하지 않음 - ${grid.price.toLocaleString()}원`);
+              continue;
+            }
+
             await upbit.cancelOrder(grid.orderId, ticker);
 
             // 그리드 상태를 available로 변경 (가격이 내려오면 다시 주문 가능)
@@ -1544,8 +1654,8 @@ export class TradingService {
         }
       }
 
-      // 6. 에러 메시지 제거 (정리 완료 후 정상 동작)
-      if (cancelledCount > 0) {
+      // 6. 에러 메시지 제거 (정리 완료 후 정상 동작) — 평상시 정리(silent)는 다른 에러를 지우지 않도록 생략
+      if (cancelledCount > 0 && !opts.silent) {
         await prisma.bot.update({
           where: { id: botId },
           data: { errorMessage: null },
