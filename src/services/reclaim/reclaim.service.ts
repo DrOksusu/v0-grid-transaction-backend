@@ -6,6 +6,7 @@ import { BithumbClient } from '../exchange/bithumb-client';
 import { UpbitLeg, BithumbLeg, type ExchangeLeg } from '../exchange-leg';
 import { fetchOrderbookDepth, fetchUpbitDepthBatch } from '../inventory-arb/orderbook-depth';
 import { inventoryArbService } from '../inventory-arb.service';
+import { tryLockSymbol, unlockSymbol } from '../inventory-arb/symbol-lock';
 import { selectReclaimTargets } from './target-selector';
 import { shouldReclaim, RECLAIM_FEE_BPS } from './net';
 import { computeReclaimQty } from './sizing';
@@ -128,14 +129,18 @@ class ReclaimService {
     const legs = await this.getLegs(userId);
     const upbitDepth = await fetchUpbitDepthBatch(targets);
     for (const sym of targets) {
+      // 로밍·수동 실행이 같은 코인을 주문 중이면 이번 사이클은 건너뜀 (#123 — 같은 빗썸 재고 동시 매도)
+      if (!tryLockSymbol(userId, sym)) continue;
       try {
         const up = upbitDepth.get(sym);
         const bt = await fetchOrderbookDepth('bithumb', sym);
         if (!up || !bt) continue;
         if (!shouldReclaim(bt.bid, up.ask, cfg.minNetPct, RECLAIM_FEE_BPS)) continue;
+        // 수량은 잠금 후 최신 잔고로 — 60초 캐시는 방금 다른 작업이 바꾼 재고를 모른다
+        const fresh = await inventoryArbService.getKrwHoldings(userId, { fresh: true });
         const qty = computeReclaimQty({
           bithumbBidQty: bt.bidQty, upbitAskQty: up.askQty,
-          bithumbHolding: holdings.bithumb[sym] ?? 0, upbitKrw: holdings.upbit['KRW'] ?? 0,
+          bithumbHolding: fresh.bithumb[sym] ?? 0, upbitKrw: fresh.upbit['KRW'] ?? 0,
           upbitAsk: up.ask, maxOrderKrw: cfg.maxOrderKrw, feeBps: UPBIT_BUY_FEE_BPS,
         });
         if (qty * up.ask < MIN_ORDER_KRW) continue;
@@ -153,6 +158,8 @@ class ReclaimService {
         console.log(`[Reclaim] ${sym} ${r.status} net ${Math.round(r.netKrw)} (${r.note})`);
       } catch (e: any) {
         console.error(`[Reclaim] ${sym} 실패:`, e?.message);
+      } finally {
+        unlockSymbol(userId, sym);
       }
     }
   }

@@ -13,6 +13,7 @@ import { fetchOrderbookDepth, fetchUpbitDepthBatch } from './inventory-arb/order
 import { evaluateFeasibility } from './inventory-arb/feasibility-gate';
 import { stableTradeableAmount, peekStableAmount } from './inventory-arb/inventory-stability';
 import { executeArb } from './inventory-arb/executor';
+import { tryLockSymbol, unlockSymbol } from './inventory-arb/symbol-lock';
 import { buildCandidate, rankCandidates, fetchCommonListings, EXCLUDED_STABLES } from './inventory-arb/candidate-scanner';
 import { summarizeCoinWallet } from './inventory-arb/wallet-info';
 import { multiArbWalletStatusService } from './multi-arb-wallet-status.service';
@@ -40,8 +41,7 @@ export function buildEmergencyMessage(symbol: string, imbalanceQty: number, note
 
 // ── 동시성 락: 같은 봇 중복 실행 방지 ────────────────────────────────────
 const inFlightBots = new Set<number>();
-// 수동 실행 동시성 락 (userId:symbol 단위)
-const manualInFlight = new Set<string>();
+// 수동·로밍 실행 동시성 락은 symbol-lock(userId:symbol) — 재고 되돌림과 공유 (#123)
 // 수동 1회 실행 하드 캡 (fat-finger 방지)
 const MANUAL_MAX_KRW = 1_000_000;
 const MANUAL_MIN_ORDER_KRW = 5000;
@@ -261,9 +261,8 @@ class InventoryArbService {
    * @param maxKrw 이번 주문 상한 (서버 하드캡 MANUAL_MAX_KRW로 재차 제한)
    */
   async executeManual(userId: number, symbol: string, maxKrw: number, minSpreadBps: number = 30, sentinelSymbol: string = MANUAL_BOT_SYMBOL): Promise<ManualExecuteResult> {
-    const key = `${userId}:${symbol}`;
-    if (manualInFlight.has(key)) return { executed: false, reason: '이미 실행 중입니다' };
-    manualInFlight.add(key);
+    // 같은 코인을 다른 작업(재고 되돌림 등)이 주문 중이면 건너뜀 — 잔고 확인~주문 사이 재고 선점 방지
+    if (!tryLockSymbol(userId, symbol)) return { executed: false, reason: '이미 실행 중입니다 (같은 코인 주문 진행 중)' };
     try {
       const cappedMaxKrw = Math.min(Number(maxKrw) || 0, MANUAL_MAX_KRW);
       if (cappedMaxKrw < MANUAL_MIN_ORDER_KRW) {
@@ -327,7 +326,7 @@ class InventoryArbService {
       console.error(`[InventoryArb] 수동실행 ${symbol} 실패:`, err.message);
       return { executed: false, reason: err.message ?? '실행 오류' };
     } finally {
-      manualInFlight.delete(key);
+      unlockSymbol(userId, symbol);
     }
   }
 
@@ -415,9 +414,12 @@ class InventoryArbService {
   // KRW 보유 잔고 캐시 (알림 사이클마다 재조회 방지, 60초)
   private krwHoldingsCache: { at: number; data: { upbit: Record<string, number>; bithumb: Record<string, number> } } | null = null;
 
-  /** 업비트/빗썸 available 잔고 맵 (60초 캐시). 알림 보유표시·기회통계에 사용. */
-  async getKrwHoldings(userId: number): Promise<{ upbit: Record<string, number>; bithumb: Record<string, number> }> {
-    if (this.krwHoldingsCache && Date.now() - this.krwHoldingsCache.at < 60_000) return this.krwHoldingsCache.data;
+  /**
+   * 업비트/빗썸 available 잔고 맵 (60초 캐시). 알림 보유표시·기회통계에 사용.
+   * fresh=true면 캐시를 건너뛰고 새로 조회 — 주문 수량 계산용 (재고 되돌림, #123)
+   */
+  async getKrwHoldings(userId: number, opts: { fresh?: boolean } = {}): Promise<{ upbit: Record<string, number>; bithumb: Record<string, number> }> {
+    if (!opts.fresh && this.krwHoldingsCache && Date.now() - this.krwHoldingsCache.at < 60_000) return this.krwHoldingsCache.data;
     const upbit = await this.getUpbit(userId);
     const bithumbClient = await this.getBithumb(userId);
     const [upbitAccounts, bithumbBalances] = await Promise.all([
