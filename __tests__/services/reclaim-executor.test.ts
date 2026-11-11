@@ -98,4 +98,15 @@ describe('executeReclaim (sell-first + 예산캡)', () => {
     expect(budget).toBeLessThanOrEqual(10000 - 4); // 매도 순대금 이내(손실 불가)
     expect(r.netKrw).toBeGreaterThanOrEqual(0);
   });
+
+  it('매도 체결 후 업비트 매수가 예외(점검 403)여도 throw하지 않고 partial로 기록용 결과 반환', async () => {
+    // 11-09 업비트 점검: 빗썸 매도만 되고 예외가 그대로 튀어 기록이 안 남아 불균형 한도가 못 막고 4번 반복됨
+    const bithumbLeg = mockLeg({ sellIoc: async () => ({ filledQty: 20, grossKrw: 99999, feeKrw: 40 }) });
+    const upbitLeg = mockLeg({ buyIoc: async () => { throw new Error('Request failed with status code 403'); } });
+    const r = await executeReclaim({ bithumbLeg, upbitLeg, symbol: 'NEAR', qty: 20, bithumbBid: 5000, upbitAsk: 4933 });
+    expect(r.status).toBe('partial');
+    expect(r.sellFilled).toBe(20);
+    expect(r.buyFilled).toBe(0);
+    expect(r.note).toContain('403');
+  });
 });

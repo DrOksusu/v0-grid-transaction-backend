@@ -6,6 +6,18 @@ const UPBIT_ORDERBOOK = 'https://api.upbit.com/v1/orderbook';
 const BITHUMB_ORDERBOOK = 'https://api.bithumb.com/public/orderbook';
 const FETCH_TIMEOUT_MS = 4000;
 
+// 거래소 점검 중에는 호가 API가 점검 직전 호가를 그대로 돌려줘 가짜 차익이 잡힌다(이슈 #107: 10-19 DKA, 11-09 NEAR).
+// 호가 timestamp가 이보다 오래되면 실행 불가로 보고 버린다.
+// 평상시 업비트 호가 나이는 최대 ~2.5분, 빗썸 ~20초(2026-11-11 실측) → 10분은 정상 호가를 막지 않는다.
+export const MAX_BOOK_AGE_MS = 10 * 60 * 1000;
+
+/** 호가 timestamp(ms)가 MAX_BOOK_AGE_MS보다 오래됐으면 true. 값이 없거나 숫자가 아니면 판단 불가 → 통과(기존 동작) */
+function isStaleBook(timestampMs: unknown): boolean {
+  const ts = Number(timestampMs);
+  if (!Number.isFinite(ts) || ts <= 0) return false;
+  return Date.now() - ts > MAX_BOOK_AGE_MS;
+}
+
 async function fetchJson(url: string): Promise<any | null> {
   try {
     const ctrl = new AbortController();
@@ -40,15 +52,23 @@ export async function fetchUpbitDepthBatch(symbols: string[]): Promise<Map<strin
   const markets = symbols.map((s) => `KRW-${s}`).join(',');
   const j = await fetchJson(`${UPBIT_ORDERBOOK}?markets=${markets}`);
   if (!Array.isArray(j)) return out;
+  let staleCount = 0;
   for (const entry of j) {
     const market: string = entry?.market ?? '';
     const sym = market.startsWith('KRW-') ? market.slice(4) : '';
     const units = entry?.orderbook_units;
     if (!sym || !Array.isArray(units) || units.length === 0) continue;
+    if (isStaleBook(entry?.timestamp)) {
+      staleCount++;
+      continue;
+    }
     const bids: BookLevel[] = units.map((u: any) => ({ price: Number(u.bid_price), qty: Number(u.bid_size) }));
     const asks: BookLevel[] = units.map((u: any) => ({ price: Number(u.ask_price), qty: Number(u.ask_size) }));
     const book = buildBook(bids, asks);
     if (book) out.set(sym, book);
+  }
+  if (staleCount > 0) {
+    console.warn(`[orderbook-depth] 업비트 호가 ${staleCount}개가 10분 넘게 멈춤 — 제외 (거래소 점검 의심)`);
   }
   return out;
 }
@@ -62,6 +82,7 @@ export async function fetchOrderbookDepth(exchange: ExchangeName, symbol: string
     const j = await fetchJson(`${UPBIT_ORDERBOOK}?markets=KRW-${symbol}`);
     const units = j?.[0]?.orderbook_units;
     if (!Array.isArray(units) || units.length === 0) return null;
+    if (isStaleBook(j[0].timestamp)) return null;
     const bids: BookLevel[] = units.map((u: any) => ({ price: Number(u.bid_price), qty: Number(u.bid_size) }));
     const asks: BookLevel[] = units.map((u: any) => ({ price: Number(u.ask_price), qty: Number(u.ask_size) }));
     return buildBook(bids, asks);
@@ -69,6 +90,7 @@ export async function fetchOrderbookDepth(exchange: ExchangeName, symbol: string
     const j = await fetchJson(`${BITHUMB_ORDERBOOK}/${symbol}_KRW?count=10`);
     const d = j?.data;
     if (!d || !Array.isArray(d.bids) || !Array.isArray(d.asks)) return null;
+    if (isStaleBook(d.timestamp)) return null;
     const bids: BookLevel[] = d.bids.map((x: any) => ({ price: Number(x.price), qty: Number(x.quantity) }));
     const asks: BookLevel[] = d.asks.map((x: any) => ({ price: Number(x.price), qty: Number(x.quantity) }));
     return buildBook(bids, asks);
