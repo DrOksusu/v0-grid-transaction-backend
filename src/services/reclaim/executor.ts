@@ -56,7 +56,16 @@ export async function executeReclaim(i: ReclaimExecInput): Promise<ReclaimExecRe
   const maxLossBps = Math.max(0, i.maxLossBps ?? 0);
   const spendableKrw = (sell.grossKrw - sell.feeKrw) + (sell.grossKrw * maxLossBps) / 10000;
   const budget = Math.floor(spendableKrw / (1 + buyFeeBps / 10000));
-  const buyRes = await i.upbitLeg.buyIoc(i.symbol, sell.filledQty, i.upbitAsk, budget);
+  // 매도는 이미 체결됨 → 매수 예외(거래소 점검 403·timeout 등)를 그대로 던지면 호출자가 기록을 못 남겨
+  // 불균형 한도가 이 노출을 모르고 같은 매도를 반복한다(11-09 NEAR 4회). 미체결로 보고 partial 결과로 반환.
+  let buyRes: Awaited<ReturnType<ExchangeLeg['buyIoc']>> = null;
+  let buyErr = '';
+  try {
+    buyRes = await i.upbitLeg.buyIoc(i.symbol, sell.filledQty, i.upbitAsk, budget);
+  } catch (e: any) {
+    buyErr = String(e?.message ?? e).slice(0, 200);
+    console.error(`[Reclaim] ${i.symbol} 업비트 매수 예외(매도 ${sell.filledQty} 체결됨):`, buyErr);
+  }
   const buy = buyRes ?? { filledQty: 0, grossKrw: 0, feeKrw: 0 };
 
   const feeKrw = sell.feeKrw + buy.feeKrw;
@@ -73,6 +82,6 @@ export async function executeReclaim(i: ReclaimExecInput): Promise<ReclaimExecRe
     sellFilled: sell.filledQty, buyFilled: buy.filledQty,
     sellGrossKrw: sell.grossKrw, buyGrossKrw: buy.grossKrw,
     feeKrw, netKrw, status,
-    note: `sell ${sell.filledQty}/buy ${buy.filledQty}`,
+    note: `sell ${sell.filledQty}/buy ${buy.filledQty}${buyErr ? ` | buyErr=${buyErr}` : ''}`,
   };
 }
