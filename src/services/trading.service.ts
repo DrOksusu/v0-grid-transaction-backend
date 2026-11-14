@@ -9,6 +9,7 @@ import { bithumbPriceManager } from './bithumb-grid-price-manager';
 import { ProfitService } from './profit.service';
 import { MexcGridClient } from './exchange/mexc-grid-client';
 import { mexcGridPriceManager } from './mexc-grid-price-manager';
+import { isTemporaryTradeError } from './grid-trade-error';
 
 // 그리드 거래에 필요한 최소 거래소 클라이언트 인터페이스
 interface GridTradeClient {
@@ -720,15 +721,8 @@ export class TradingService {
     } catch (error: any) {
       console.error(`거래 실행 실패 (Bot ${botId}):`, error.message);
 
-      // 일시적인 에러는 상태를 error로 변경하지 않음
-      const isTemporaryError = error.message.includes('429') ||
-                               error.message.includes('현재가 조회 실패') ||
-                               error.message.includes('Too Many Requests') ||
-                               error.message.includes('connection pool') ||
-                               error.message.includes('Timed out fetching') ||
-                               error.message.includes('P2024');
-
-      if (isTemporaryError) {
+      // 일시적인 에러(레이트리밋·DB 순간 끊김 등)는 상태를 error로 변경하지 않음
+      if (isTemporaryTradeError(error)) {
         // 에러 메시지만 저장하고 상태는 유지
         await prisma.bot.update({
           where: { id: botId },
