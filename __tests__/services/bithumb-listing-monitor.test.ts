@@ -337,6 +337,61 @@ describe('bithumbListingMonitorService.checkNewBithumbMarkets', () => {
   });
 });
 
+describe('마켓 조회 장애 경고 (#129: 점검 중 1분마다 카톡 반복)', () => {
+  // 빗썸 점검 중 /v1/market/all 응답: HTTP 200 + 배열이 아닌 안내 객체
+  const maintenance = { data: { status: 999, data: { title: '서비스 점검 중' } } };
+  const ok = { data: [{ market: 'KRW-BTC', korean_name: '비트코인', english_name: 'Bitcoin' }] };
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('장애가 길어져도 경고는 한 번만 보내고 사유(점검 안내 제목)를 담는다', async () => {
+    mockAxiosGet.mockResolvedValue(maintenance);
+
+    // 5초 주기로 30회(2.5분) — 예전에는 10회마다 재발송
+    for (let i = 0; i < 30; i++) await service.checkNewBithumbMarkets();
+    await flushAsync();
+
+    expect(mockSendToMe).toHaveBeenCalledTimes(1);
+    expect(mockSendToMe.mock.calls[0][0]).toContain('서비스 점검 중');
+  });
+
+  it('10분이 안 된 실패는 경고하지 않는다', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000_000);
+    mockAxiosGet.mockResolvedValueOnce(ok);
+    await service.checkNewBithumbMarkets({ silent: true });
+
+    now.mockReturnValue(1_000_000_000 + 9 * 60 * 1000);
+    mockAxiosGet.mockResolvedValue(maintenance);
+    await service.checkNewBithumbMarkets();
+    await flushAsync();
+
+    expect(mockSendToMe).not.toHaveBeenCalled();
+  });
+
+  it('회복되면 회복 알림을 한 번 보내고, 다음 장애 때 다시 경고한다', async () => {
+    mockAxiosGet.mockResolvedValue(maintenance);
+    await service.checkNewBithumbMarkets();
+    await service.checkNewBithumbMarkets();
+
+    mockAxiosGet.mockResolvedValue(ok);
+    await service.checkNewBithumbMarkets();
+    await service.checkNewBithumbMarkets();
+    await flushAsync();
+
+    expect(mockSendToMe).toHaveBeenCalledTimes(2);
+    expect(mockSendToMe.mock.calls[1][0]).toContain('회복');
+
+    // 다음 장애: 10분이 지나면 다시 경고
+    const later = Date.now() + 11 * 60 * 1000;
+    jest.spyOn(Date, 'now').mockReturnValue(later);
+    mockAxiosGet.mockResolvedValue(maintenance);
+    await service.checkNewBithumbMarkets();
+    await flushAsync();
+
+    expect(mockSendToMe).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe('stableHash (I1 회귀: 결정적 합성 noticeId)', () => {
   const SYNTHETIC_BAND = 200_000_000;
 

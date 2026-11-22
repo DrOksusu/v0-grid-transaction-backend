@@ -78,6 +78,8 @@ class BithumbListingMonitorService {
   private lastMarketRefreshOkAt: number = 0;
   // 마켓 새로고침 연속 실패 횟수
   private marketRefreshFailCount: number = 0;
+  // 이번 장애에 경고를 이미 보냈는지 (장애 1회당 경고 1번, 회복 시 리셋)
+  private marketBlindAlertSent: boolean = false;
 
   /**
    * 테스트 전용: 내부 state 초기화.
@@ -93,6 +95,7 @@ class BithumbListingMonitorService {
     this.bithumbMarkets.clear();
     this.lastMarketRefreshOkAt = 0;
     this.marketRefreshFailCount = 0;
+    this.marketBlindAlertSent = false;
   }
 
   /**
@@ -297,20 +300,33 @@ class BithumbListingMonitorService {
         korean_name: string;
         english_name: string;
       }> = res.data;
+      // 점검 중에는 HTTP 200 + 안내 객체(status 999)가 온다 — 안내 제목을 사유로 남김
+      if (!Array.isArray(markets)) {
+        throw new Error(res.data?.data?.title ?? `배열이 아닌 응답 (status ${res.data?.status})`);
+      }
       krwMarkets = markets.filter(m => m.market.startsWith('KRW-'));
       this.lastMarketRefreshOkAt = Date.now();
       this.marketRefreshFailCount = 0;
+      if (this.marketBlindAlertSent) {
+        this.marketBlindAlertSent = false;
+        kakaoNotifyService
+          .sendToMe('✅ [빗썸] 마켓 목록 조회 회복 — 신규 상장 감지 정상화')
+          .catch((notifyErr: Error) =>
+            console.error(
+              '[BithumbListingMonitor] 카카오 알림 실패:',
+              notifyErr.message,
+            ),
+          );
+      }
     } catch (e: any) {
       this.marketRefreshFailCount++;
       const elapsedSinceOk = Date.now() - this.lastMarketRefreshOkAt;
-      // 10분 연속 실패 시 카카오 알림 (이후 10회마다 재알림)
-      if (
-        elapsedSinceOk > 10 * 60 * 1000 &&
-        this.marketRefreshFailCount % 10 === 1
-      ) {
+      // 10분 연속 실패 시 카카오 알림 — 장애 1회당 한 번만 (5초 주기라 반복하면 카톡 폭주)
+      if (elapsedSinceOk > 10 * 60 * 1000 && !this.marketBlindAlertSent) {
+        this.marketBlindAlertSent = true;
         kakaoNotifyService
           .sendToMe(
-            '⚠️ [빗썸] 마켓 목록 조회 10분 연속 실패 — 감지 blind 가능성',
+            `⚠️ [빗썸] 마켓 목록 조회 10분 연속 실패 — 감지 blind 가능성\n사유: ${e?.message ?? e}`,
           )
           .catch((notifyErr: Error) =>
             console.error(
