@@ -45,8 +45,8 @@ const inFlightBots = new Set<number>();
 // 수동 1회 실행 하드 캡 (fat-finger 방지)
 const MANUAL_MAX_KRW = 1_000_000;
 const MANUAL_MIN_ORDER_KRW = 5000;
-// 수동·로밍 이상치 가드: 스프레드가 이보다 크면 시세 이상으로 보고 건너뜀 (2026-11-24 20%→30%, #131)
-const MANUAL_ANOMALY_MAX_BPS = 3000;
+// 수동·로밍 이상치 가드: 스프레드가 이보다 크면 시세 이상으로 보고 건너뜀 (2026-11-24 20%→30%, 11-25 →40%, #131)
+const MANUAL_ANOMALY_MAX_BPS = 4000;
 // 수동 실행 기록용 sentinel 봇 심볼 (봇 목록에서 숨김)
 export const MANUAL_BOT_SYMBOL = '__MANUAL__';
 export const ROAM_BOT_SYMBOL = '__ROAM__'; // 로밍 자동실행 기록용 sentinel 봇 (봇 목록에서 숨김)
